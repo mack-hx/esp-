@@ -4,7 +4,9 @@
  * @note  - 实时显示加速度 (ax/ay/az) / 陀螺仪 (gx/gy/gz) / 温度
  *        - 显示欧拉角 (Roll/Pitch/Yaw) - 取自 mpu9250_get_euler_angle()
  *        - K1 退出回菜单
- *        - K2 / K3 在此版本无操作 (后续可加入"校准/复位/切换量程")
+ *        - K2 触发陀螺仪校准
+ *        - K3 触发软复位
+ *        - 当 MPU9250 初始化失败 (模块未接), 显示 "NOT READY" 并禁用 K2/K3
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */
@@ -19,6 +21,23 @@ static const char *TAG __attribute__((unused)) = "UI_MPU9250";
 
 /* 进入页面后是否需要触发陀螺仪校准 */
 static bool s_need_calibrate = true;
+
+/* MPU9250 是否就绪 (在 page_enter 时通过一次 ping 检测) */
+static bool s_ready = false;
+
+/**
+ * @brief 检测 MPU9250 是否就绪 (通过读取 WHO_AM_I)
+ * @return true=就绪, false=未就绪
+ */
+static bool check_mpu9250_ready(void)
+{
+    // 读一次 WHO_AM_I, 失败或 ID 不匹配则视为未就绪
+    // 此处直接调用底层接口: 1 字节读
+    // (mpu9250.h 没有 ping 函数, 用 mpu9250_read_data 一次, 失败也算)
+    mpu9250_data_t tmp;
+    esp_err_t ret = mpu9250_read_data(&tmp);
+    return (ret == ESP_OK);
+}
 
 /**
  * @brief 绘制静态骨架
@@ -110,8 +129,21 @@ static void ui_mpu9250_draw_data(void)
 static void page_enter(void)
 {
     s_need_calibrate = true;
+
+    // 检测 MPU9250 是否就绪
+    s_ready = check_mpu9250_ready();
+
     ui_mpu9250_draw_static();
-    // 首次显示空数据 (等首次刷新填充)
+
+    if (!s_ready) {
+        // 显示 "NOT READY"
+        ui_fill_rect(0, 24, UI_SCREEN_W, UI_SCREEN_H - 24 - 32, TFT_COLOR_BLACK);
+        ui_draw_string(20, 50, "MPU9250", TFT_COLOR_RED, TFT_COLOR_BLACK);
+        ui_draw_string(20, 70, "NOT READY", TFT_COLOR_RED, TFT_COLOR_BLACK);
+        ui_draw_string(2, 100, "Check I2C & module", TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
+        return;
+    }
+
     ui_mpu9250_draw_data();
 }
 
@@ -124,6 +156,9 @@ static void page_key(ui_key_t key)
 {
     if (key == UI_KEY_K1) {
         lcd_ui_switch_to(UI_PAGE_MENU);
+    } else if (!s_ready) {
+        // 模块未就绪, K2/K3 无效
+        return;
     } else if (key == UI_KEY_K2) {
         // 触发陀螺仪零点校准 (200 次采样, 约 2 秒)
         ESP_LOGI(TAG, "开始陀螺仪校准...");
@@ -138,11 +173,23 @@ static void page_key(ui_key_t key)
         mpu9250_reset();
         // 重新初始化 (reset 后需重新调用 init)
         mpu9250_init();
+        // 复位后重新检测
+        s_ready = check_mpu9250_ready();
     }
 }
 
 static void page_refresh(void)
 {
+    if (!s_ready) {
+        // 周期性重试检测, 模块接上后能自动恢复
+        if (check_mpu9250_ready()) {
+            s_ready = true;
+            // 重新绘制完整骨架
+            ui_mpu9250_draw_static();
+            ui_mpu9250_draw_data();
+        }
+        return;
+    }
     ui_mpu9250_draw_data();
 }
 

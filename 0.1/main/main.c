@@ -40,6 +40,15 @@ static ui_key_t key_get_from_pcf8574(void)
 }
 
 /**
+ * @brief dummy 按键回调: 始终返回 NONE
+ *        当 PCF8574 不可用时使用, 保证 UI 仍然显示
+ */
+static ui_key_t key_get_none(void)
+{
+    return UI_KEY_NONE;
+}
+
+/**
  * @brief 主函数
  */
 void app_main(void)
@@ -76,11 +85,21 @@ void app_main(void)
     // 6. 初始化编码器
     ESP_ERROR_CHECK(encoder_init());
 
-    // 7. 初始化 MPU9250
-    ESP_ERROR_CHECK(mpu9250_init());
+    // 7. 初始化 MPU9250 (允许失败: 模块可能未接, UI 会显示 "NOT READY")
+    esp_err_t mpu_ret = mpu9250_init();
+    if (mpu_ret != ESP_OK) {
+        ESP_LOGE(TAG, "MPU9250 初始化失败 (模块未接或 I2C 故障), UI 仍可正常工作");
+        ESP_LOGE(TAG, "请检查 MPU9250 模块接线 (SCL=GPIO%d, SDA=GPIO%d, VCC, GND, AD0)",
+                 MPU9250_SCL_GPIO, MPU9250_SDA_GPIO);
+    }
 
-    // 8. 初始化 PCF8574 (按键)
-    ESP_ERROR_CHECK(pcf8574_init());
+    // 8. 初始化 PCF8574 (按键) - 允许失败: 模块可能未接
+    esp_err_t pcf_ret = pcf8574_init();
+    if (pcf_ret != ESP_OK) {
+        ESP_LOGE(TAG, "PCF8574 初始化失败 (按键模块未接), UI 无法响应按键");
+        ESP_LOGE(TAG, "请检查 PCF8574 模块接线 (SCL=GPIO%d, SDA=GPIO%d, INT=GPIO%d, VCC, GND)",
+                 PCF8574_SCL_GPIO, PCF8574_SDA_GPIO, PCF8574_INT_GPIO);
+    }
 
     // ========================================================
     // UI 系统初始化
@@ -93,8 +112,13 @@ void app_main(void)
     ESP_ERROR_CHECK(ui_mpu9250_register());
     ESP_ERROR_CHECK(ui_wifi_bt_register());
 
+    // 根据 PCF8574 是否就绪, 选择按键回调
+    // - 就绪: 从 PCF8574 读取真实按键
+    // - 未就绪: 用一个 dummy 回调 (返回 NONE, UI 仍然显示但按键无效)
+    ui_key_get_t key_cb = (pcf_ret == ESP_OK) ? key_get_from_pcf8574 : key_get_none;
+
     // 初始化 UI 系统 (会在主页显示初始画面)
-    ESP_ERROR_CHECK(lcd_ui_init(key_get_from_pcf8574));
+    ESP_ERROR_CHECK(lcd_ui_init(key_cb));
 
     ESP_LOGI(TAG, "UI 系统就绪, 进入主循环");
 
