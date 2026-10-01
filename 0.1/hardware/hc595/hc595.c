@@ -1,0 +1,170 @@
+/**
+ * @file hc595.c
+ * @brief 74HC595D 串行移位寄存器驱动实现
+ * @note  硬件改动 (2026-10-01):
+ *        - 移除 hc595_set_led() 接口 (Q0 不再用于 SK6812)
+ *        - Q0 仍可作为通用输出使用 hc595_set_pin(HC595_Q0, state) 控制
+ * @author ESP32 机械狗项目
+ * @date 2026-10-01
+ */
+
+#include "hc595.h"
+#include "driver/gpio.h"
+#include "esp_log.h"
+
+static const char *TAG = "HC595";
+
+/* 当前输出状态 */
+static uint8_t current_state = 0x00;
+
+/**
+ * @brief 初始化 74HC595
+ */
+esp_err_t hc595_init(void)
+{
+    // 配置 GPIO 为输出模式
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << HC595_SCLK_GPIO) | 
+                        (1ULL << HC595_RCLK_GPIO) | 
+                        (1ULL << HC595_DS_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    
+    esp_err_t ret = gpio_config(&io_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "GPIO 配置失败");
+        return ret;
+    }
+    
+    // 初始化引脚状态
+    gpio_set_level(HC595_SCLK_GPIO, 0);
+    gpio_set_level(HC595_RCLK_GPIO, 0);
+    gpio_set_level(HC595_DS_GPIO, 0);
+    
+    // 清除所有输出
+    hc595_clear_all();
+    
+    ESP_LOGI(TAG, "74HC595 初始化成功 (SCLK=%d, RCLK=%d, DS=%d)", 
+             HC595_SCLK_GPIO, HC595_RCLK_GPIO, HC595_DS_GPIO);
+    
+    return ESP_OK;
+}
+
+/**
+ * @brief 写入 8 位数据到 74HC595
+ */
+esp_err_t hc595_write_byte(uint8_t data)
+{
+    // 逐位移位
+    for (int i = 7; i >= 0; i--) {
+        // 设置数据位
+        gpio_set_level(HC595_DS_GPIO, (data >> i) & 0x01);
+        
+        // 产生串行时钟脉冲
+        gpio_set_level(HC595_SCLK_GPIO, 1);
+        esp_rom_delay_us(1);  // 短延迟确保时序
+        gpio_set_level(HC595_SCLK_GPIO, 0);
+        esp_rom_delay_us(1);
+    }
+    
+    // 产生锁存时钟脉冲,更新输出
+    gpio_set_level(HC595_RCLK_GPIO, 1);
+    esp_rom_delay_us(1);
+    gpio_set_level(HC595_RCLK_GPIO, 0);
+    
+    // 更新当前状态
+    current_state = data;
+    
+    return ESP_OK;
+}
+
+/**
+ * @brief 设置单个输出引脚
+ */
+esp_err_t hc595_set_pin(hc595_pin_t pin, bool state)
+{
+    if (pin > HC595_Q7) {
+        ESP_LOGE(TAG, "无效的引脚编号: %d", pin);
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    if (state) {
+        current_state |= (1 << pin);   // 设置位
+    } else {
+        current_state &= ~(1 << pin);  // 清除位
+    }
+    
+    return hc595_write_byte(current_state);
+}
+
+/**
+ * @brief 获取当前输出状态
+ */
+uint8_t hc595_get_state(void)
+{
+    return current_state;
+}
+
+/**
+ * @brief 清除所有输出
+ */
+esp_err_t hc595_clear_all(void)
+{
+    return hc595_write_byte(0x00);
+}
+
+/**
+ * @brief 设置电机方向
+ */
+esp_err_t hc595_set_motor_dir(motor_id_t motor, motor_dir_t dir)
+{
+    uint8_t in1_pin, in2_pin;
+    
+    // 确定控制引脚
+    if (motor == MOTOR_A) {
+        in1_pin = HC595_Q1;  // AIN1
+        in2_pin = HC595_Q2;  // AIN2
+    } else {
+        in1_pin = HC595_Q3;  // BIN1
+        in2_pin = HC595_Q4;  // BIN2
+    }
+    
+    // 根据方向设置引脚
+    switch (dir) {
+        case MOTOR_DIR_BRAKE:
+            // 短路制动: IN1=0, IN2=0
+            current_state &= ~(1 << in1_pin);
+            current_state &= ~(1 << in2_pin);
+            break;
+            
+        case MOTOR_DIR_FORWARD:
+            // 正转: IN1=0, IN2=1
+            current_state &= ~(1 << in1_pin);
+            current_state |= (1 << in2_pin);
+            break;
+            
+        case MOTOR_DIR_REVERSE:
+            // 反转: IN1=1, IN2=0
+            current_state |= (1 << in1_pin);
+            current_state &= ~(1 << in2_pin);
+            break;
+            
+        default:
+            ESP_LOGE(TAG, "无效的电机方向: %d", dir);
+            return ESP_ERR_INVALID_ARG;
+    }
+    
+    return hc595_write_byte(current_state);
+}
+
+/**
+ * @brief 控制电磁铁
+ */
+esp_err_t hc595_set_magnet(magnet_id_t magnet, bool state)
+{
+    hc595_pin_t pin = (magnet == MAGNET_1) ? HC595_Q5 : HC595_Q6;
+    return hc595_set_pin(pin, state);
+}
