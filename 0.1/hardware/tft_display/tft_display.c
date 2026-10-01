@@ -71,7 +71,8 @@ static esp_err_t tft_spi_init(void)
         .mosi_io_num = TFT_SDA_GPIO,
         .sclk_io_num = TFT_SCL_GPIO,
         .miso_io_num = -1,        // TFT 不需要 MISO
-        .max_transfer_sz = TFT_WIDTH * TFT_HEIGHT * 2,
+        // 一行像素 (128*2 = 256 字节) 作为一次 DMA 上限, 避免申请过大内存
+        .max_transfer_sz = TFT_SCREEN_W * 2,
     };
 
     esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
@@ -153,6 +154,74 @@ static esp_err_t tft_backlight_pwm_init(void)
 }
 
 /**
+ * @brief ST7735S 完整初始化序列
+ * @note  来源: 参考工程 LCD.c (江协科技/正点原子模板, 经 TI MSPM0 移植)
+ *        RST 引脚已短接 VCC, 依赖模块内部 POR, 此处不再做软件复位
+ */
+static esp_err_t tft_st7735s_init_seq(void)
+{
+    // -------- Start Initial Sequence -------- //
+    tft_write_cmd(0x11);  // SLPOUT - 必须先退出睡眠
+    vTaskDelay(pdMS_TO_TICKS(120));
+
+    // -------- Frame Rate -------- //
+    tft_write_cmd(0xB1);
+    tft_write_data_bytes((uint8_t[]){0x05, 0x3C, 0x3C}, 3);
+    tft_write_cmd(0xB2);
+    tft_write_data_bytes((uint8_t[]){0x05, 0x3C, 0x3C}, 3);
+    tft_write_cmd(0xB3);
+    tft_write_data_bytes((uint8_t[]){0x05, 0x3C, 0x3C, 0x05, 0x3C, 0x3C}, 6);
+
+    tft_write_cmd(0xB4);  // Dot inversion
+    tft_write_data_bytes((uint8_t[]){0x03}, 1);
+
+    // -------- Power Sequence -------- //
+    tft_write_cmd(0xC0);
+    tft_write_data_bytes((uint8_t[]){0x28, 0x08, 0x04}, 3);
+    tft_write_cmd(0xC1);
+    tft_write_data_bytes((uint8_t[]){0xC0}, 1);
+    tft_write_cmd(0xC2);
+    tft_write_data_bytes((uint8_t[]){0x0D, 0x00}, 2);
+    tft_write_cmd(0xC3);
+    tft_write_data_bytes((uint8_t[]){0x8D, 0x2A}, 2);
+    tft_write_cmd(0xC4);
+    tft_write_data_bytes((uint8_t[]){0x8D, 0xEE}, 2);
+
+    tft_write_cmd(0xC5);  // VCOM
+    tft_write_data_bytes((uint8_t[]){0x1A}, 1);
+
+    // -------- MADCTL: 扫描方向 + RGB/BGR 顺序 -------- //
+    tft_write_cmd(0x36);
+#if USE_HORIZONTAL == 0
+    tft_write_data_bytes((uint8_t[]){0x00}, 1);
+#elif USE_HORIZONTAL == 1
+    tft_write_data_bytes((uint8_t[]){0xC0}, 1);
+#elif USE_HORIZONTAL == 2
+    tft_write_data_bytes((uint8_t[]){0x70}, 1);
+#else
+    tft_write_data_bytes((uint8_t[]){0xA0}, 1);
+#endif
+
+    // -------- Gamma Sequence -------- //
+    tft_write_cmd(0xE0);
+    tft_write_data_bytes((uint8_t[]){0x04, 0x22, 0x07, 0x0A, 0x2E, 0x30, 0x25, 0x2A,
+                                     0x28, 0x26, 0x2E, 0x3A, 0x00, 0x01, 0x03, 0x13}, 16);
+    tft_write_cmd(0xE1);
+    tft_write_data_bytes((uint8_t[]){0x04, 0x16, 0x06, 0x0D, 0x2D, 0x26, 0x23, 0x27,
+                                     0x27, 0x25, 0x2D, 0x3B, 0x00, 0x01, 0x04, 0x13}, 16);
+
+    // -------- Color Mode -------- //
+    tft_write_cmd(0x3A);  // COLMOD
+    tft_write_data_bytes((uint8_t[]){0x05}, 1);  // 16bit/pixel (RGB565)
+
+    // -------- Display On -------- //
+    tft_write_cmd(0x29);  // DISPON
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    return ESP_OK;
+}
+
+/**
  * @brief 初始化 TFT 显示屏
  */
 esp_err_t tft_display_init(void)
@@ -168,27 +237,29 @@ esp_err_t tft_display_init(void)
     ret = tft_backlight_pwm_init();
     if (ret != ESP_OK) return ret;
 
-    // 硬件复位已移除: RST 引脚已短接 VCC, 上电由模块内部 POR 自复位
-    // 仅等待 POR 稳定 (~120ms 经验值)
-    vTaskDelay(pdMS_TO_TICKS(120));
+    // 依赖模块内部 POR 完成硬件复位
+    // POR 稳定 + SLPOUT 准备: 共等待 ~300ms
+    vTaskDelay(pdMS_TO_TICKS(300));
 
-    // ST7735 初始化序列 (基础示例, 实际请根据使用的驱动芯片调整)
-    tft_write_cmd(0x01);  // SWRESET
-    vTaskDelay(pdMS_TO_TICKS(150));
-    tft_write_cmd(0x11);  // SLPOUT
-    vTaskDelay(pdMS_TO_TICKS(255));
-    tft_write_cmd(0x3A);  // COLMOD
-    uint8_t colmod = 0x05; // 16bit/pixel (RGB565)
-    tft_write_data_bytes(&colmod, 1);
-    tft_write_cmd(0x29);  // DISPON
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // ST7735S 完整初始化序列
+    tft_st7735s_init_seq();
 
     // 默认开启背光
     tft_backlight_on(true);
     tft_clear(TFT_COLOR_BLACK);
 
-    ESP_LOGI(TAG, "TFT 初始化成功 (DC=%d, CS=%d, BLK=%d, RST=VCC 内部 POR)",
-             TFT_DC_GPIO, TFT_CS_GPIO, TFT_BLK_GPIO);
+    ESP_LOGI(TAG, "TFT 初始化成功 (ST7735S, %dx%d, MADCTL=0x%X, RST=VCC 内部 POR)",
+             TFT_SCREEN_W, TFT_SCREEN_H,
+#if USE_HORIZONTAL == 0
+             0x00
+#elif USE_HORIZONTAL == 1
+             0xC0
+#elif USE_HORIZONTAL == 2
+             0x70
+#else
+             0xA0
+#endif
+             );
     return ESP_OK;
 }
 
@@ -220,26 +291,36 @@ esp_err_t tft_clear(uint16_t color)
 {
     uint8_t hi = color >> 8;
     uint8_t lo = color & 0xFF;
-    uint8_t buf[TFT_WIDTH * 2];
+    uint8_t buf[TFT_SCREEN_W * 2];
 
-    for (int x = 0; x < TFT_WIDTH; x++) {
+    for (int x = 0; x < TFT_SCREEN_W; x++) {
         buf[x * 2] = hi;
         buf[x * 2 + 1] = lo;
     }
 
     tft_write_cmd(0x2A);  // CASET
-    uint8_t caset[] = {0, 0, 0, TFT_WIDTH - 1};
+    uint8_t caset[] = {
+        (uint8_t)((TFT_X_OFFSET) >> 8), (uint8_t)(TFT_X_OFFSET & 0xFF),
+        (uint8_t)((TFT_SCREEN_W - 1 + TFT_X_OFFSET) >> 8),
+        (uint8_t)((TFT_SCREEN_W - 1 + TFT_X_OFFSET) & 0xFF)
+    };
     tft_write_data_bytes(caset, 4);
+
     tft_write_cmd(0x2B);  // RASET
-    uint8_t raset[] = {0, 0, 0, TFT_HEIGHT - 1};
+    uint8_t raset[] = {
+        (uint8_t)((TFT_Y_OFFSET) >> 8), (uint8_t)(TFT_Y_OFFSET & 0xFF),
+        (uint8_t)((TFT_SCREEN_H - 1 + TFT_Y_OFFSET) >> 8),
+        (uint8_t)((TFT_SCREEN_H - 1 + TFT_Y_OFFSET) & 0xFF)
+    };
     tft_write_data_bytes(raset, 4);
+
     tft_write_cmd(0x2C);  // RAMWR
 
     gpio_set_level(TFT_DC_GPIO, 1);
     gpio_set_level(TFT_CS_GPIO, 0);
-    for (int y = 0; y < TFT_HEIGHT; y++) {
+    for (int y = 0; y < TFT_SCREEN_H; y++) {
         spi_transaction_t t = {
-            .length = TFT_WIDTH * 2 * 8,
+            .length = TFT_SCREEN_W * 2 * 8,
             .tx_buffer = buf,
         };
         esp_err_t ret = spi_device_polling_transmit(spi_dev, &t);
@@ -257,15 +338,21 @@ esp_err_t tft_clear(uint16_t color)
  */
 esp_err_t tft_draw_pixel(uint8_t x, uint8_t y, uint16_t color)
 {
-    if (x >= TFT_WIDTH || y >= TFT_HEIGHT) {
+    if (x >= TFT_SCREEN_W || y >= TFT_SCREEN_H) {
         return ESP_ERR_INVALID_ARG;
     }
 
     tft_write_cmd(0x2A);
-    uint8_t caset[] = {0, x, 0, x};
+    uint8_t caset[] = {
+        (uint8_t)((x + TFT_X_OFFSET) >> 8), (uint8_t)((x + TFT_X_OFFSET) & 0xFF),
+        (uint8_t)((x + TFT_X_OFFSET) >> 8), (uint8_t)((x + TFT_X_OFFSET) & 0xFF)
+    };
     tft_write_data_bytes(caset, 4);
     tft_write_cmd(0x2B);
-    uint8_t raset[] = {0, y, 0, y};
+    uint8_t raset[] = {
+        (uint8_t)((y + TFT_Y_OFFSET) >> 8), (uint8_t)((y + TFT_Y_OFFSET) & 0xFF),
+        (uint8_t)((y + TFT_Y_OFFSET) >> 8), (uint8_t)((y + TFT_Y_OFFSET) & 0xFF)
+    };
     tft_write_data_bytes(raset, 4);
     tft_write_cmd(0x2C);
     uint8_t color_bytes[] = {color >> 8, color & 0xFF};
@@ -294,15 +381,21 @@ esp_err_t tft_draw_string(uint8_t x, uint8_t y, const char *str,
  */
 esp_err_t tft_set_window(uint8_t x0, uint8_t y0, uint8_t x1, uint8_t y1)
 {
-    if (x1 >= TFT_WIDTH || y1 >= TFT_HEIGHT || x0 > x1 || y0 > y1) {
+    if (x1 >= TFT_SCREEN_W || y1 >= TFT_SCREEN_H || x0 > x1 || y0 > y1) {
         return ESP_ERR_INVALID_ARG;
     }
 
     tft_write_cmd(0x2A);
-    uint8_t caset[] = {0, x0, 0, x1};
+    uint8_t caset[] = {
+        (uint8_t)((x0 + TFT_X_OFFSET) >> 8), (uint8_t)((x0 + TFT_X_OFFSET) & 0xFF),
+        (uint8_t)((x1 + TFT_X_OFFSET) >> 8), (uint8_t)((x1 + TFT_X_OFFSET) & 0xFF)
+    };
     tft_write_data_bytes(caset, 4);
     tft_write_cmd(0x2B);
-    uint8_t raset[] = {0, y0, 0, y1};
+    uint8_t raset[] = {
+        (uint8_t)((y0 + TFT_Y_OFFSET) >> 8), (uint8_t)((y0 + TFT_Y_OFFSET) & 0xFF),
+        (uint8_t)((y1 + TFT_Y_OFFSET) >> 8), (uint8_t)((y1 + TFT_Y_OFFSET) & 0xFF)
+    };
     tft_write_data_bytes(raset, 4);
     tft_write_cmd(0x2C);
     return ESP_OK;

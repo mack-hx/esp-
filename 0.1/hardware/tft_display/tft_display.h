@@ -9,6 +9,7 @@
 #define TFT_DISPLAY_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "esp_err.h"
 
 /* ========== 引脚配置 ========== */
@@ -23,7 +24,25 @@
 /* ========== 显示屏参数 ========== */
 #define TFT_WIDTH         128     // 屏幕宽度 (像素)
 #define TFT_HEIGHT        160     // 屏幕高度 (像素)
-#define TFT_SPI_FREQ      40000000 // SPI 时钟频率 (40MHz)
+#define TFT_SPI_FREQ      20000000 // SPI 时钟频率 (20MHz, 保守值匹配 ST7735S)
+
+/* ========== 屏幕方向 (与参考工程一致) ==========
+ * 0/1: 竖屏 128×160
+ * 2/3: 横屏 160×128
+ * 当前固定 USE_HORIZONTAL=1, 配合 LCD 实际安装方向 */
+#define USE_HORIZONTAL    1
+#if (USE_HORIZONTAL == 0 || USE_HORIZONTAL == 1)
+    #define TFT_SCREEN_W  128
+    #define TFT_SCREEN_H  160
+#else
+    #define TFT_SCREEN_W  160
+    #define TFT_SCREEN_H  128
+#endif
+
+/* ========== 显示窗口偏移 (适配不同模组) ==========
+ * 若屏幕显示偏移/有黑边, 调整这两个值 */
+#define TFT_X_OFFSET  0
+#define TFT_Y_OFFSET  0
 
 /* ========== 颜色定义 (RGB565) ========== */
 #define TFT_COLOR_BLACK   0x0000

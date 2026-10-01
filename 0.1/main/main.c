@@ -54,9 +54,18 @@ void app_main(void)
     led_set_preset(LED_1, LED_PRESET_WHITE);
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // 5. 熄灭屏幕背光 (供用户根据需要调用)
-    tft_set_backlight(80);
-    tft_clear(TFT_COLOR_BLACK);
+    // 5. 测试屏幕: 蓝 -> 红 -> 绿 -> 白 -> 黑 (RGB 三色 + 验证 MADCTL)
+    ESP_LOGI(TAG, "测试 TFT: 蓝 -> 红 -> 绿 -> 白");
+    tft_set_backlight(100);
+    tft_clear(TFT_COLOR_BLUE);
+    vTaskDelay(pdMS_TO_TICKS(800));
+    tft_clear(TFT_COLOR_RED);
+    vTaskDelay(pdMS_TO_TICKS(800));
+    tft_clear(TFT_COLOR_GREEN);
+    vTaskDelay(pdMS_TO_TICKS(800));
+    tft_clear(TFT_COLOR_WHITE);
+    vTaskDelay(pdMS_TO_TICKS(800));
+    tft_clear(TFT_COLOR_BLACK);  // 最终停留黑屏
 
     ESP_LOGI(TAG, "所有外设初始化完成");
 
