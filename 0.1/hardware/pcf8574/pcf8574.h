@@ -20,7 +20,7 @@
 /* ========== I2C 配置 ========== */
 #define PCF8574_I2C_NUM     I2C_NUM_1
 #define PCF8574_I2C_FREQ    400000  // 400kHz
-#define PCF8574_I2C_ADDR    0x20    // 默认地址 (A0=A1=A2=0)
+#define PCF8574_I2C_ADDR    0x27    // 默认地址 (扫描确认 A0=A1=A2=1 → 0x27, 原配置 0x20)
 
 /* ========== PCF8574 引脚定义 ========== */
 typedef enum {
