@@ -31,41 +31,46 @@ static esp_err_t pcf8574_write_byte(uint8_t data)
 }
 
 /**
- * @brief 读取 1 字节 (含预写 0xFF 刷新 + 重试)
+ * @brief 读取 1 字节 (含预写 0xFF 刷新 + 全低重试 + 兜底)
  * @note  PCF8574 是准双向 IO, 内部 100µA 上拉很弱.
  *       当某个引脚被按键拉低时, 公共 VCC 跌落会导致其他引脚被误读为低.
+ *       (即使有外部 4.7kΩ 上拉, 多键同时按下仍可能跌落)
+ *
  *       解决办法:
- *         1. 读取前先写 0xFF 强制所有引脚为高电平 (刷新内部锁存器)
- *         2. 等待稳定 (10ms) 让上拉电流稳定
+ *         1. 读前先写 0xFF 强制所有引脚为高电平 (刷新内部锁存器)
+ *         2. 等待 10ms 让上拉稳定
  *         3. 读取真实电平
- *         4. 如果读到 0x00 (全低, 多半是上拉太弱或 VCC 跌落), 视为全松开
- *            (返回 0xFF), 保守策略保护 UI 不被假信号触发
- *         5. 否则正常返回
+ *         4. 如果读到 0x00 (全低, VCC 跌落), 重试一次 (再次写 0xFF + 等 10ms + 读)
+ *         5. 仍读到 0x00 → 视为全松开 (返回 0xFF, 保守策略)
  */
 static esp_err_t pcf8574_read_byte(uint8_t *data)
 {
     if (data == NULL) return ESP_ERR_INVALID_ARG;
 
-    // 1. 强制所有引脚为高电平 (刷新内部锁存器)
-    uint8_t all_high = 0xFF;
-    esp_err_t ret = i2c_master_write_to_device(PCF8574_I2C_NUM, PCF8574_I2C_ADDR,
-                                              &all_high, 1, pdMS_TO_TICKS(1000));
-    if (ret != ESP_OK) return ret;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        // 1. 强制所有引脚为高电平 (刷新内部锁存器)
+        uint8_t all_high = 0xFF;
+        esp_err_t ret = i2c_master_write_to_device(PCF8574_I2C_NUM, PCF8574_I2C_ADDR,
+                                                  &all_high, 1, pdMS_TO_TICKS(1000));
+        if (ret != ESP_OK) return ret;
 
-    // 2. 等待 10ms 让上拉电流稳定 (主循环 50ms 周期, 多 10ms 不影响)
-    vTaskDelay(pdMS_TO_TICKS(10));
+        // 2. 等待 10ms 让上拉电流稳定
+        vTaskDelay(pdMS_TO_TICKS(10));
 
-    // 3. 读取真实电平
-    ret = i2c_master_read_from_device(PCF8574_I2C_NUM, PCF8574_I2C_ADDR,
-                                      data, 1, pdMS_TO_TICKS(1000));
-    if (ret != ESP_OK) return ret;
+        // 3. 读取真实电平
+        ret = i2c_master_read_from_device(PCF8574_I2C_NUM, PCF8574_I2C_ADDR,
+                                          data, 1, pdMS_TO_TICKS(1000));
+        if (ret != ESP_OK) return ret;
 
-    // 4. 兜底: 如果读到 0x00 全低, 极有可能是 PCF8574 模块缺外部上拉
-    //    (内部 100µA 不够强, 按下 1 个键时 VCC 跌落导致其他引脚被误判)
-    //    视为全松开, 保守策略
-    if (*data == 0x00) {
-        *data = 0xFF;
+        // 4. 如果不是全低, 正常返回
+        if (*data != 0x00) {
+            return ESP_OK;
+        }
+        // 否则 retry (第 2 次仍 0x00 才走兜底)
     }
+
+    // 5. 兜底 - 视为全松开 (保守策略)
+    *data = 0xFF;
     return ESP_OK;
 }
 
