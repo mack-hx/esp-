@@ -95,15 +95,17 @@ static void apply_angle(uint8_t idx)
 
 static void page_enter(void)
 {
-    s_cur_servo = 0;
-    s_angle[0]  = 90;
-    s_angle[1]  = 90;
-    // 两只舵机归中
-    servo_set_angle(SERVO_1, s_angle[0]);
-    servo_set_angle(SERVO_2, s_angle[1]);
+    // 注意: 不在此重置 s_cur_servo / s_angle, 保留用户上次调整的状态
+    // (避免快速来回切换时舵机剧烈抖动 + 屏幕闪烁)
+    //
+    // lcd_ui_switch_to() 已经做过 tft_clear + on_enter 调用,
+    // 这里只负责绘制本页面内容 + 让舵机同步到当前 s_angle
     ui_servo_draw_static();
     ui_servo_draw_one(0, 30);
     ui_servo_draw_one(1, 90);
+    // 同步舵机硬件到软件状态 (避免退出后再回来时舵机停在中间位置)
+    servo_set_angle(SERVO_1, s_angle[0]);
+    servo_set_angle(SERVO_2, s_angle[1]);
 }
 
 static void page_exit(void)

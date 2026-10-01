@@ -184,8 +184,10 @@ esp_err_t lcd_ui_switch_to(ui_page_id_t id)
 
     current_page = id;
 
-    // 清屏 + 进入新页
-    tft_clear(TFT_COLOR_BLACK);
+    // 注意: 不在此处调用 tft_clear, 由各 page 的 on_enter 自行决定绘制方式
+    // 这样可以:
+    //   - 让不需要全屏刷新的页面 (例如只是更新数字) 避免闪烁
+    //   - 让需要清屏的页面 (例如 ui_servo) 在 draw_static 内部清屏
     if (target->on_enter) {
         target->on_enter();
     }
@@ -241,9 +243,16 @@ void lcd_ui_loop(void)
 {
     if (key_get_cb == NULL) return;
 
-    // 1) 读取按键并派发
+    // 1) 读取按键并派发 (边沿检测: 仅在按键从 0→非 0 时触发一次)
+    //
+    // 背景: pcf8574_scan_buttons() 内部含 30ms 消抖, 主循环周期 50ms,
+    //       单次按键按下会被识别为 3-5 次连续触发, 导致快速来回切页 + 舵机抖动.
+    //       这里加入 "上一次按键状态" 缓存, 只在状态从 NONE 变为某按键时派发,
+    //       实现类似单次脉冲触发 (用户按住按键也只触发一次).
+    static ui_key_t last_key = UI_KEY_NONE;
     ui_key_t key = key_get_cb();
-    if (key != UI_KEY_NONE) {
+
+    if (key != UI_KEY_NONE && key != last_key) {
         // 找到当前页面并派发
         for (uint8_t i = 0; i < page_count; i++) {
             if (pages[i]->id == current_page && pages[i]->on_key) {
@@ -252,6 +261,7 @@ void lcd_ui_loop(void)
             }
         }
     }
+    last_key = key;
 
     // 2) 周期性刷新当前页面 (实时数据)
     tick_counter++;
