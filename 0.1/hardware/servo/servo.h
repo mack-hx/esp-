@@ -21,8 +21,8 @@
 #define SERVO_PWM_TIMER     LEDC_TIMER_1
 #define SERVO_PWM_MODE      LEDC_LOW_SPEED_MODE
 
-#define SERVO_1_CHANNEL     LEDC_CHANNEL_0
-#define SERVO_2_CHANNEL     LEDC_CHANNEL_1
+#define SERVO_1_CHANNEL     LEDC_CHANNEL_2
+#define SERVO_2_CHANNEL     LEDC_CHANNEL_3
 
 /* ========== 舵机参数 ========== */
 #define SERVO_PERIOD_MS     20      // 周期 20ms
@@ -32,6 +32,10 @@
 
 #define SERVO_MIN_ANGLE     0
 #define SERVO_MAX_ANGLE     180
+
+/* 上电默认角度 (servo_init 归位 + UI 页面 s_angle 初值都用这个)
+ * 注: 限幅范围由 UI 层 SERVO_LOGIC_MIN/MAX 单独控制, 此处只决定"初始摆位" */
+#define SERVO_DEFAULT_ANGLE 85
 
 /* ========== 舵机 ID 定义 ========== */
 typedef enum {

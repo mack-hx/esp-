@@ -24,32 +24,14 @@
 /* ========== 输出引脚定义 ========== */
 typedef enum {
     HC595_Q0 = 0,   // 通用输出 (SK6812 LED 已迁移至 GPIO9)
-    HC595_Q1 = 1,   // TB6612 AIN1 (电机A方向1)
-    HC595_Q2 = 2,   // TB6612 AIN2 (电机A方向2)
-    HC595_Q3 = 3,   // TB6612 BIN1 (电机B方向1)
-    HC595_Q4 = 4,   // TB6612 BIN2 (电机B方向2)
-    HC595_Q5 = 5,   // 电磁铁1 IO1
-    HC595_Q6 = 6,   // 电磁铁2 IO2
-    HC595_Q7 = 7    // 保留
+    HC595_Q1 = 1,   // 通用输出 (TB6612 AIN1)
+    HC595_Q2 = 2,   // 通用输出 (TB6612 AIN2)
+    HC595_Q3 = 3,   // 通用输出 (TB6612 BIN1)
+    HC595_Q4 = 4,   // 通用输出 (TB6612 BIN2)
+    HC595_Q5 = 5,   // 通用输出 (电磁铁1)
+    HC595_Q6 = 6,   // 通用输出 (电磁铁2)
+    HC595_Q7 = 7    // 通用输出 (保留)
 } hc595_pin_t;
-
-/* ========== 电机方向定义 ========== */
-typedef enum {
-    MOTOR_A = 0,    // 电机 A
-    MOTOR_B = 1     // 电机 B
-} motor_id_t;
-
-typedef enum {
-    MOTOR_DIR_BRAKE = 0,    // 短路制动
-    MOTOR_DIR_FORWARD = 1,  // 正转
-    MOTOR_DIR_REVERSE = 2   // 反转
-} motor_dir_t;
-
-/* ========== 电磁铁定义 ========== */
-typedef enum {
-    MAGNET_1 = 0,   // 电磁铁1
-    MAGNET_2 = 1    // 电磁铁2
-} magnet_id_t;
 
 /* ========== 函数声明 ========== */
 
@@ -87,19 +69,17 @@ uint8_t hc595_get_state(void);
 esp_err_t hc595_clear_all(void);
 
 /**
- * @brief 设置电机方向
- * @param motor 电机 ID (MOTOR_A 或 MOTOR_B)
- * @param dir 电机方向
+ * @brief 设置电磁铁 1 输出 (封装 hc595_set_pin Q5)
+ * @param state true=高电平开启, false=低电平关闭
  * @return ESP_OK 成功, 其他值失败
  */
-esp_err_t hc595_set_motor_dir(motor_id_t motor, motor_dir_t dir);
+esp_err_t hc595_set_magnet1(bool state);
 
 /**
- * @brief 控制电磁铁
- * @param magnet 电磁铁 ID
- * @param state true=开启, false=关闭
+ * @brief 设置电磁铁 2 输出 (封装 hc595_set_pin Q6)
+ * @param state true=高电平开启, false=低电平关闭
  * @return ESP_OK 成功, 其他值失败
  */
-esp_err_t hc595_set_magnet(magnet_id_t magnet, bool state);
+esp_err_t hc595_set_magnet2(bool state);
 
 #endif // HC595_H

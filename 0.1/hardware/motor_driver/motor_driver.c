@@ -40,12 +40,33 @@ static uint32_t motor_speed_to_duty(int8_t speed)
 }
 
 /**
- * @brief 应用方向到 74HC595
+ * @brief 应用方向到 74HC595 (通过直接控制 Q1~Q4 输出)
  */
 static esp_err_t motor_apply_direction(motor_id_t motor, motor_dir_t dir)
 {
-    // 通过 hc595 设置电机方向 (hc595 内已映射 Q1-Q4)
-    esp_err_t ret = hc595_set_motor_dir((motor_id_t)(MOTOR_A + motor), dir);
+    // 电机 A: AIN1=Q1, AIN2=Q2;  电机 B: BIN1=Q3, BIN2=Q4
+    hc595_pin_t in1_pin = (motor == MOTOR_A) ? HC595_Q1 : HC595_Q3;
+    hc595_pin_t in2_pin = (motor == MOTOR_A) ? HC595_Q2 : HC595_Q4;
+    bool in1 = false, in2 = false;
+
+    switch (dir) {
+        case MOTOR_DIR_BRAKE:
+            in1 = false; in2 = false;
+            break;
+        case MOTOR_DIR_FORWARD:
+            in1 = false; in2 = true;
+            break;
+        case MOTOR_DIR_REVERSE:
+            in1 = true; in2 = false;
+            break;
+        default:
+            ESP_LOGE(TAG, "无效的电机方向: %d", dir);
+            return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t ret = hc595_set_pin(in1_pin, in1);
+    if (ret != ESP_OK) return ret;
+    ret = hc595_set_pin(in2_pin, in2);
     if (ret == ESP_OK) {
         current_dir[motor] = dir;
     }

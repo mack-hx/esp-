@@ -19,23 +19,48 @@
 #include "mpu9250.h"
 #include "pcf8574.h"
 #include "lcd_ui.h"
-#include "pages/ui_home.h"
-#include "pages/ui_menu.h"
-#include "pages/ui_servo.h"
-#include "pages/ui_encoder.h"
-#include "pages/ui_mpu9250.h"
-#include "pages/ui_wifi_bt.h"
+#include "ui_home.h"
+#include "ui_menu.h"
+#include "ui_servo.h"
+#include "ui_encoder.h"
+#include "ui_mpu9250.h"
+#include "ui_wifi_bt.h"
 
 static const char *TAG = "MAIN";
 
 /* ========== 按键获取回调 (PCF8574 扫描 → UI 按键) ========== */
+/**
+ * @brief  把 PCF8574 按键位图转换为 UI 按键
+ *
+ * 优先级: K1 > K3 > K2 (P0/P1/P2)
+ *   - K1: 进入/确认/退出当前页
+ *   - K2: 上/左/减
+ *   - K3: 下/右/加
+ *   - K4 (P3) 当前不响应
+ *
+ * 多键同时按下:
+ *   - 只返回优先级最高的那个键, 避免单次按键被误识别为多个键
+ *   - 注意: 4.7kΩ 外部上拉 + VCC 滤波电容 + I2C 400kHz 高速通信, 多键同按基本无 VCC 跌落问题
+ *
+ * @note  本函数仅做 "位图 → UI 键值" 映射, 不做消抖.
+ *        消抖由 pcf8574_scan_buttons() 内部状态机 + lcd_ui_loop() 边沿检测共同完成.
+ *
+ * 按下电平约定: P0~P7 内部上拉到 VCC (4.7kΩ 外部上拉), 按键按下时拉低 (接地).
+ *   因此"按下"对应位 = 0, "松开"对应位 = 1.
+ *   例: 按下 K1 (P0) → 读 0xFE, 全松开 0xFF.
+ *   ※ 验证日志: 2026-10-02 烧录后实测确认 (key_get: state=0xFE 时 K1 触发切页).
+ */
 static ui_key_t key_get_from_pcf8574(void)
 {
-    uint8_t state = pcf8574_scan_buttons();
-    // 优先级: K1 > K2 > K3 (一次只返回 1 个)
-    if (state & (1 << BTN_K1)) return UI_KEY_K1;
-    if (state & (1 << BTN_K2)) return UI_KEY_K2;
-    if (state & (1 << BTN_K3)) return UI_KEY_K3;
+    uint8_t state;
+    if (pcf8574_scan_buttons(&state) != ESP_OK) {
+        return UI_KEY_NONE;
+    }
+    // 检测位 = 0 (按下拉低), 多键同时按下按 K1>K3>K2>K4 优先级返回
+    if (!(state & (1 << BTN_K1))) return UI_KEY_K1;
+    if (!(state & (1 << BTN_K3))) return UI_KEY_K3;
+    if (!(state & (1 << BTN_K2))) return UI_KEY_K2;
+    if (!(state & (1 << BTN_K4))) return UI_KEY_K4;
     return UI_KEY_NONE;
 }
 

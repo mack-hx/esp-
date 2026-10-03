@@ -117,54 +117,17 @@ esp_err_t hc595_clear_all(void)
 }
 
 /**
- * @brief 设置电机方向
+ * @brief 设置电磁铁 1 输出 (Q5)
  */
-esp_err_t hc595_set_motor_dir(motor_id_t motor, motor_dir_t dir)
+esp_err_t hc595_set_magnet1(bool state)
 {
-    uint8_t in1_pin, in2_pin;
-    
-    // 确定控制引脚
-    if (motor == MOTOR_A) {
-        in1_pin = HC595_Q1;  // AIN1
-        in2_pin = HC595_Q2;  // AIN2
-    } else {
-        in1_pin = HC595_Q3;  // BIN1
-        in2_pin = HC595_Q4;  // BIN2
-    }
-    
-    // 根据方向设置引脚
-    switch (dir) {
-        case MOTOR_DIR_BRAKE:
-            // 短路制动: IN1=0, IN2=0
-            current_state &= ~(1 << in1_pin);
-            current_state &= ~(1 << in2_pin);
-            break;
-            
-        case MOTOR_DIR_FORWARD:
-            // 正转: IN1=0, IN2=1
-            current_state &= ~(1 << in1_pin);
-            current_state |= (1 << in2_pin);
-            break;
-            
-        case MOTOR_DIR_REVERSE:
-            // 反转: IN1=1, IN2=0
-            current_state |= (1 << in1_pin);
-            current_state &= ~(1 << in2_pin);
-            break;
-            
-        default:
-            ESP_LOGE(TAG, "无效的电机方向: %d", dir);
-            return ESP_ERR_INVALID_ARG;
-    }
-    
-    return hc595_write_byte(current_state);
+    return hc595_set_pin(HC595_Q5, state);
 }
 
 /**
- * @brief 控制电磁铁
+ * @brief 设置电磁铁 2 输出 (Q6)
  */
-esp_err_t hc595_set_magnet(magnet_id_t magnet, bool state)
+esp_err_t hc595_set_magnet2(bool state)
 {
-    hc595_pin_t pin = (magnet == MAGNET_1) ? HC595_Q5 : HC595_Q6;
-    return hc595_set_pin(pin, state);
+    return hc595_set_pin(HC595_Q6, state);
 }

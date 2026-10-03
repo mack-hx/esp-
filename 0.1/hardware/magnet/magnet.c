@@ -1,6 +1,7 @@
 /**
  * @file magnet.c
  * @brief 电磁铁控制驱动实现
+ * @note  通过 74HC595 Q5/Q6 控制电磁铁, 高电平开启。
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */
@@ -13,6 +14,18 @@ static const char *TAG = "MAGNET";
 
 /* 当前电磁铁状态缓存 */
 static bool magnet_state[MAGNET_2 + 1] = {false, false};
+
+/**
+ * @brief 内部: 控制单个 74HC595 电磁铁引脚
+ */
+static esp_err_t magnet_pin_set(magnet_id_t id, bool on)
+{
+    if (id == MAGNET_1) {
+        return hc595_set_magnet1(on);
+    } else {
+        return hc595_set_magnet2(on);
+    }
+}
 
 /**
  * @brief 初始化电磁铁模块
@@ -38,7 +51,7 @@ esp_err_t magnet_set(magnet_id_t id, bool on)
         return ESP_ERR_INVALID_ARG;
     }
 
-    esp_err_t ret = hc595_set_magnet((magnet_id_t)id, on);
+    esp_err_t ret = magnet_pin_set(id, on);
     if (ret == ESP_OK) {
         magnet_state[id] = on;
         ESP_LOGI(TAG, "电磁铁 %d: %s", id + 1, on ? "开启" : "关闭");
@@ -70,9 +83,9 @@ bool magnet_get(magnet_id_t id)
  */
 esp_err_t magnet_release_all(void)
 {
-    esp_err_t ret = hc595_set_magnet(MAGNET_1, false);
+    esp_err_t ret = magnet_pin_set(MAGNET_1, false);
     if (ret != ESP_OK) return ret;
-    ret = hc595_set_magnet(MAGNET_2, false);
+    ret = magnet_pin_set(MAGNET_2, false);
     if (ret != ESP_OK) return ret;
 
     magnet_state[MAGNET_1] = false;

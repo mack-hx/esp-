@@ -86,10 +86,15 @@ esp_err_t pcf8574_read_pin(pcf8574_pin_t pin, bool *state);
 esp_err_t pcf8574_is_pressed(btn_id_t id, bool *pressed);
 
 /**
- * @brief 扫描按键状态 (含消抖)
- * @return 8 位按键状态 (bit0=P0, bit1=P1, ..., 高电平=按下)
+ * @brief 扫描按键状态 (含多采样消抖 + 按下/释放状态机)
+ * @param[out] pressed_mask 当前稳定按下的按键位图 (bit=1 表示按下, 全松开=0xFF)
+ * @return ESP_OK 成功, 其他值失败
+ *
+ * @note  推荐调用周期 SCAN_INTERVAL_MS (8ms). 函数内部维护状态机,
+ *        相同采样连续 DEBOUNCE_SAMPLES 次才视为稳定 (总消抖时间 ≈ 40ms).
+ *        一次完整的按下-释放周期才会触发一次 BTN_EVENT_PRESS / BTN_EVENT_RELEASE 回调.
  */
-uint8_t pcf8574_scan_buttons(void);
+esp_err_t pcf8574_scan_buttons(uint8_t *pressed_mask);
 
 /**
  * @brief 注册按键事件回调

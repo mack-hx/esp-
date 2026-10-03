@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "esp32-serial-commands": {
+      "source": "h1d/agent-skills-esp32",
+      "sourceType": "github",
+      "skillPath": "skills/esp32-serial-commands/SKILL.md",
+      "computedHash": "5e806e69783cc696b18cb90f1a904b0ae6d721b0c0b41641478d3dc810ff1f8c"
+    },
+    "esp32-serial-logging": {
+      "source": "h1d/agent-skills-esp32",
+      "sourceType": "github",
+      "skillPath": "skills/esp32-serial-logging/SKILL.md",
+      "computedHash": "c90b2fc29bb3263c33086a98aab3396cbd273cd9872ee86f7a540cf444bda108"
+    }
+  }
+}

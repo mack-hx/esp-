@@ -82,12 +82,12 @@ esp_err_t servo_init(void)
         }
     }
 
-    // 默认设置到中位
-    servo_set_angle(SERVO_1, 90);
-    servo_set_angle(SERVO_2, 90);
+    // 默认设置到上电默认角度 (见 servo.h: SERVO_DEFAULT_ANGLE)
+    servo_set_angle(SERVO_1, SERVO_DEFAULT_ANGLE);
+    servo_set_angle(SERVO_2, SERVO_DEFAULT_ANGLE);
 
-    ESP_LOGI(TAG, "舵机初始化成功 (PWM1=%d, PWM2=%d, 50Hz)",
-             SERVO_1_GPIO, SERVO_2_GPIO);
+    ESP_LOGI(TAG, "舵机初始化成功 (PWM1=%d, PWM2=%d, 50Hz, 默认=%d°)",
+             SERVO_1_GPIO, SERVO_2_GPIO, SERVO_DEFAULT_ANGLE);
     return ESP_OK;
 }
 

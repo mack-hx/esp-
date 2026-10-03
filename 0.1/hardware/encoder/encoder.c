@@ -7,6 +7,7 @@
 
 #include "encoder.h"
 #include "driver/pcnt.h"
+#include "driver/gpio.h"  // gpio_num_t 类型定义
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -98,7 +99,7 @@ int encoder_get_count(encoder_id_t id)
 {
     if (id > ENCODER_2) return 0;
 
-    int count = 0;
+    int16_t count = 0;
     pcnt_get_counter_value(encoder_map[id].unit, &count);
     return count;
 }
