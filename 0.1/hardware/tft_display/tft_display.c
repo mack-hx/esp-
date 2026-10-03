@@ -237,14 +237,14 @@ esp_err_t tft_display_init(void)
     ret = tft_backlight_pwm_init();
     if (ret != ESP_OK) return ret;
 
-    // 依赖模块内部 POR 完成硬件复位
-    // POR 稳定 + SLPOUT 准备: 共等待 ~300ms
+    /* 依赖模块内部 POR 完成硬件复位
+     * POR 稳定 + SLPOUT 准备: 共等待 ~300ms */
     vTaskDelay(pdMS_TO_TICKS(300));
 
-    // ST7735S 完整初始化序列
+    /* ST7735S 完整初始化序列 */
     tft_st7735s_init_seq();
 
-    // 默认开启背光
+    /* 默认开启背光 */
     tft_backlight_on(true);
     tft_clear(TFT_COLOR_BLACK);
 
@@ -361,7 +361,8 @@ esp_err_t tft_draw_pixel(uint8_t x, uint8_t y, uint16_t color)
 }
 
 /**
- * @brief 显示字符串 (此处使用最简实现, 实际项目需要集成中英文字模)
+ * @brief 显示字符串 (占位实现, 请使用 ui_draw_string)
+ * @note  实际项目使用 lcd_ui 的 ui_draw_string (已集成 6x8 字模)
  */
 esp_err_t tft_draw_string(uint8_t x, uint8_t y, const char *str,
                           uint16_t color, uint16_t bg_color)
@@ -371,8 +372,6 @@ esp_err_t tft_draw_string(uint8_t x, uint8_t y, const char *str,
     (void)str;
     (void)color;
     (void)bg_color;
-    // 字符显示需要字模支持, 此处仅作接口预留
-    ESP_LOGW(TAG, "tft_draw_string 需要字模支持");
     return ESP_OK;
 }
 

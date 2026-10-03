@@ -17,21 +17,22 @@
 #define MOTOR_PWMA_GPIO     15      // 电机 A PWM 速度控制
 #define MOTOR_PWMB_GPIO     16      // 电机 B PWM 速度控制
 
-/* 注意: 电机方向引脚由 74HC595 控制
- *  - AIN1 -> 74HC595 Q1
- *  - AIN2 -> 74HC595 Q2
- *  - BIN1 -> 74HC595 Q3
- *  - BIN2 -> 74HC595 Q4
- */
+/* 电机方向引脚由 74HC595 控制:
+ *   AIN1 -> Q1, AIN2 -> Q2, BIN1 -> Q3, BIN2 -> Q4 */
 
-/* ========== PWM 配置 ========== */
+/* ========== PWM 配置 ==========
+ * 重要: MOTOR 与 SERVO 共用 LEDC 硬件通道, 通道不能重叠!
+ *   SERVO_1 = LEDC_CHANNEL_2, SERVO_2 = LEDC_CHANNEL_3 (TIMER_1, 50Hz)
+ *   MOTOR_A = LEDC_CHANNEL_4, MOTOR_B = LEDC_CHANNEL_5 (TIMER_2, 20kHz)
+ * 若重叠, motor_driver_init() 会把 SERVO 的 GPIO 重绑到 MOTOR 引脚,
+ * 导致 SERVO 失去 50Hz 输出 (实测变成 20kHz 干扰或无输出). */
 #define MOTOR_PWM_FREQ      20000   // 20kHz (超出人耳范围, 无噪声)
 #define MOTOR_PWM_RES       LEDC_TIMER_10_BIT
 #define MOTOR_PWM_TIMER     LEDC_TIMER_2
 #define MOTOR_PWM_MODE      LEDC_LOW_SPEED_MODE
 
-#define MOTOR_A_CHANNEL     LEDC_CHANNEL_2
-#define MOTOR_B_CHANNEL     LEDC_CHANNEL_3
+#define MOTOR_A_CHANNEL     LEDC_CHANNEL_4
+#define MOTOR_B_CHANNEL     LEDC_CHANNEL_5
 
 /* ========== 速度范围 ========== */
 #define MOTOR_SPEED_MIN     -100    // 反转最大速度
@@ -45,16 +46,16 @@ typedef enum {
 
 /* ========== 电机方向定义 ========== */
 typedef enum {
-    MOTOR_DIR_BRAKE   = 0,    // 短路制动 (AIN1=0,AIN2=0)
-    MOTOR_DIR_FORWARD = 1,    // 正转 (AIN1=0,AIN2=1)
-    MOTOR_DIR_REVERSE = 2     // 反转 (AIN1=1,AIN2=0)
+    MOTOR_DIR_BRAKE   = 0,    // 短路制动 (AIN1=0, AIN2=0)
+    MOTOR_DIR_FORWARD = 1,    // 正转     (AIN1=0, AIN2=1)
+    MOTOR_DIR_REVERSE = 2     // 反转     (AIN1=1, AIN2=0)
 } motor_dir_t;
 
 /* ========== 函数声明 ========== */
 
 /**
  * @brief 初始化电机驱动
- * @note  本函数只初始化 PWM 通道; 方向控制依赖 hc595 模块。
+ * @note  本函数只初始化 PWM 通道; 方向控制依赖 hc595 模块
  * @return ESP_OK 成功, 其他值失败
  */
 esp_err_t motor_driver_init(void);

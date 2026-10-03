@@ -17,26 +17,16 @@
 #include "esp_log.h"
 #include <stdio.h>
 
-static const char *TAG __attribute__((unused)) = "UI_MPU9250";
-
-/* 进入页面后是否需要触发陀螺仪校准 */
-static bool s_need_calibrate = true;
-
 /* MPU9250 是否就绪 (在 page_enter 时通过一次 ping 检测) */
 static bool s_ready = false;
 
 /**
- * @brief 检测 MPU9250 是否就绪 (通过读取 WHO_AM_I)
- * @return true=就绪, false=未就绪
+ * @brief 检测 MPU9250 是否就绪 (通过读取一次数据判断)
  */
 static bool check_mpu9250_ready(void)
 {
-    // 读一次 WHO_AM_I, 失败或 ID 不匹配则视为未就绪
-    // 此处直接调用底层接口: 1 字节读
-    // (mpu9250.h 没有 ping 函数, 用 mpu9250_read_data 一次, 失败也算)
     mpu9250_data_t tmp;
-    esp_err_t ret = mpu9250_read_data(&tmp);
-    return (ret == ESP_OK);
+    return (mpu9250_read_data(&tmp) == ESP_OK);
 }
 
 /**
@@ -46,29 +36,29 @@ static void ui_mpu9250_draw_static(void)
 {
     tft_clear(TFT_COLOR_BLACK);
 
-    // 顶部标题
+    /* 顶部标题 */
     ui_fill_rect(0, 0, UI_SCREEN_W, UI_FONT_H + 2, TFT_COLOR_WHITE);
     ui_draw_string(2, 1, "MPU9250", TFT_COLOR_BLACK, TFT_COLOR_WHITE);
 
-    // 加速度 (m/s^2)
+    /* 加速度 (m/s^2) */
     ui_draw_string(2, 14, "ACC:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
-    ui_draw_string(2, 24, "ax=", TFT_COLOR_WHITE, TFT_COLOR_BLACK);
-    ui_draw_string(2, 34, "ay=", TFT_COLOR_WHITE, TFT_COLOR_BLACK);
-    ui_draw_string(2, 44, "az=", TFT_COLOR_WHITE, TFT_COLOR_BLACK);
+    ui_draw_string(2, 24, "ax=",  TFT_COLOR_WHITE, TFT_COLOR_BLACK);
+    ui_draw_string(2, 34, "ay=",  TFT_COLOR_WHITE, TFT_COLOR_BLACK);
+    ui_draw_string(2, 44, "az=",  TFT_COLOR_WHITE, TFT_COLOR_BLACK);
 
-    // 陀螺仪 (deg/s)
+    /* 陀螺仪 (deg/s) */
     ui_draw_string(2, 56, "GYR:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
-    ui_draw_string(2, 66, "gx=", TFT_COLOR_WHITE, TFT_COLOR_BLACK);
-    ui_draw_string(2, 76, "gy=", TFT_COLOR_WHITE, TFT_COLOR_BLACK);
-    ui_draw_string(2, 86, "gz=", TFT_COLOR_WHITE, TFT_COLOR_BLACK);
+    ui_draw_string(2, 66, "gx=",  TFT_COLOR_WHITE, TFT_COLOR_BLACK);
+    ui_draw_string(2, 76, "gy=",  TFT_COLOR_WHITE, TFT_COLOR_BLACK);
+    ui_draw_string(2, 86, "gz=",  TFT_COLOR_WHITE, TFT_COLOR_BLACK);
 
-    // 欧拉角
-    ui_draw_string(2, 100, "RPY:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
-    ui_draw_string(2, 110, "T=", TFT_COLOR_WHITE, TFT_COLOR_BLACK);
+    /* 欧拉角 + 温度 */
+    ui_draw_string(2,  100, "RPY:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
+    ui_draw_string(2,  110, "T=",   TFT_COLOR_WHITE, TFT_COLOR_BLACK);
 
-    // 底部
+    /* 底部 */
     ui_draw_hline(0, 130, UI_SCREEN_W, TFT_COLOR_BLUE);
-    ui_draw_string(2, 136, "[K1] Back", TFT_COLOR_WHITE, TFT_COLOR_BLACK);
+    ui_draw_string(2, 136, "[K1] Back",  TFT_COLOR_WHITE, TFT_COLOR_BLACK);
     ui_draw_string(2, 146, "[K2] Calib", TFT_COLOR_WHITE, TFT_COLOR_BLACK);
     ui_draw_string(2, 156, "[K3] Reset", TFT_COLOR_WHITE, TFT_COLOR_BLACK);
 }
@@ -93,7 +83,7 @@ static void ui_mpu9250_draw_data(void)
         return;
     }
 
-    // ax, ay, az
+    /* ax, ay, az */
     ui_fill_rect(30, 24, 96, UI_FONT_H * 3, TFT_COLOR_BLACK);
     snprintf(buf, sizeof(buf), "%6.2f", data.accel.x);
     ui_draw_string(30, 24, buf, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
@@ -102,7 +92,7 @@ static void ui_mpu9250_draw_data(void)
     snprintf(buf, sizeof(buf), "%6.2f", data.accel.z);
     ui_draw_string(30, 44, buf, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
 
-    // gx, gy, gz
+    /* gx, gy, gz */
     ui_fill_rect(30, 66, 96, UI_FONT_H * 3, TFT_COLOR_BLACK);
     snprintf(buf, sizeof(buf), "%6.1f", data.gyro.x);
     ui_draw_string(30, 66, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
@@ -111,14 +101,14 @@ static void ui_mpu9250_draw_data(void)
     snprintf(buf, sizeof(buf), "%6.1f", data.gyro.z);
     ui_draw_string(30, 86, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
 
-    // Roll/Pitch/Yaw 单行
+    /* Roll/Pitch/Yaw (单行) */
     char rpy[24];
     snprintf(rpy, sizeof(rpy), "R%4.0f P%4.0f Y%4.0f",
              angle.roll, angle.pitch, angle.yaw);
     ui_fill_rect(36, 100, 90, UI_FONT_H, TFT_COLOR_BLACK);
     ui_draw_string(36, 100, rpy, TFT_COLOR_MAGENTA, TFT_COLOR_BLACK);
 
-    // 温度
+    /* 温度 */
     snprintf(buf, sizeof(buf), "%4.1fC", data.temperature);
     ui_fill_rect(30, 110, 90, UI_FONT_H, TFT_COLOR_BLACK);
     ui_draw_string(30, 110, buf, TFT_COLOR_CYAN, TFT_COLOR_BLACK);
@@ -128,19 +118,15 @@ static void ui_mpu9250_draw_data(void)
 
 static void page_enter(void)
 {
-    s_need_calibrate = true;
-
-    // 检测 MPU9250 是否就绪
     s_ready = check_mpu9250_ready();
-
     ui_mpu9250_draw_static();
 
     if (!s_ready) {
-        // 显示 "NOT READY"
+        /* 模块未就绪: 显示 "NOT READY" 提示 */
         ui_fill_rect(0, 24, UI_SCREEN_W, UI_SCREEN_H - 24 - 32, TFT_COLOR_BLACK);
-        ui_draw_string(20, 50, "MPU9250", TFT_COLOR_RED, TFT_COLOR_BLACK);
-        ui_draw_string(20, 70, "NOT READY", TFT_COLOR_RED, TFT_COLOR_BLACK);
-        ui_draw_string(2, 100, "Check I2C & module", TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
+        ui_draw_string(20, 50, "MPU9250",          TFT_COLOR_RED,    TFT_COLOR_BLACK);
+        ui_draw_string(20, 70, "NOT READY",        TFT_COLOR_RED,    TFT_COLOR_BLACK);
+        ui_draw_string(2,  100, "Check I2C & module", TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
         return;
     }
 
@@ -149,7 +135,7 @@ static void page_enter(void)
 
 static void page_exit(void)
 {
-    // MPU9250 持续运行, 无需释放
+    /* MPU9250 持续运行, 无需释放 */
 }
 
 static void page_key(ui_key_t key)
@@ -157,23 +143,19 @@ static void page_key(ui_key_t key)
     if (key == UI_KEY_K1) {
         lcd_ui_switch_to(UI_PAGE_MENU);
     } else if (!s_ready) {
-        // 模块未就绪, K2/K3 无效
+        /* 模块未就绪, K2/K3 无效 */
         return;
     } else if (key == UI_KEY_K2) {
-        // 触发陀螺仪零点校准 (200 次采样, 约 2 秒)
-        ESP_LOGI(TAG, "开始陀螺仪校准...");
+        /* 触发陀螺仪零点校准 (200 次采样, 约 2 秒) */
         if (mpu9250_calibrate_gyro(200) == ESP_OK) {
-            ESP_LOGI(TAG, "陀螺仪校准完成");
+            ESP_LOGI("UI_MPU9250", "陀螺仪校准完成");
         } else {
-            ESP_LOGE(TAG, "陀螺仪校准失败");
+            ESP_LOGE("UI_MPU9250", "陀螺仪校准失败");
         }
     } else if (key == UI_KEY_K3) {
-        // 软复位
-        ESP_LOGI(TAG, "MPU9250 软复位");
+        /* 软复位 (reset 后需重新调用 init) */
         mpu9250_reset();
-        // 重新初始化 (reset 后需重新调用 init)
         mpu9250_init();
-        // 复位后重新检测
         s_ready = check_mpu9250_ready();
     }
 }
@@ -181,10 +163,9 @@ static void page_key(ui_key_t key)
 static void page_refresh(void)
 {
     if (!s_ready) {
-        // 周期性重试检测, 模块接上后能自动恢复
+        /* 周期性重试检测, 模块接上后能自动恢复 */
         if (check_mpu9250_ready()) {
             s_ready = true;
-            // 重新绘制完整骨架
             ui_mpu9250_draw_static();
             ui_mpu9250_draw_data();
         }
@@ -196,11 +177,11 @@ static void page_refresh(void)
 /* ========== 页面注册 ========== */
 
 static const ui_page_t mpu9250_page = {
-    .id        = UI_PAGE_MPU9250,
-    .title     = "MPU9250",
-    .on_enter  = page_enter,
-    .on_exit   = page_exit,
-    .on_key    = page_key,
+    .id         = UI_PAGE_MPU9250,
+    .title      = "MPU9250",
+    .on_enter   = page_enter,
+    .on_exit    = page_exit,
+    .on_key     = page_key,
     .on_refresh = page_refresh,
 };
 

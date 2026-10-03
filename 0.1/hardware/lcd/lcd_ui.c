@@ -28,8 +28,8 @@ static ui_page_id_t current_page = UI_PAGE_HOME;
 static ui_key_get_t key_get_cb = NULL;
 
 /* 主循环周期: 50ms 按键扫描, 150ms 页面刷新 (3 个 tick) */
-#define LOOP_TICK_MS         50
-#define REFRESH_TICKS        3     // 150ms
+#define LOOP_TICK_MS    50
+#define REFRESH_TICKS   3       // 150ms
 static uint8_t tick_counter = 0;
 
 /* ========== UI 工具 API: 绘图 (供所有页面调用) ========== */
@@ -38,13 +38,12 @@ void ui_draw_char(uint8_t x, uint8_t y, char ch, uint16_t color, uint16_t bg)
 {
     const uint8_t *font = font6x8_get((uint8_t)ch);
 
-    // 设置写窗口: 字符 6x8 区域
+    /* 设置写窗口: 字符 6x8 区域 */
     esp_err_t ret = tft_set_window(x, y, x + UI_FONT_W - 1, y + UI_FONT_H - 1);
     if (ret != ESP_OK) return;
 
-    // 按行写入 (TFT RAMWR 按 X 推进: x0→x1→换行)
-    // 每行 6 列, 每列 1 字节字模 = 6 列像素 (高位=第1行, ..., 低位=第8行)
-    // 注意: 字模按列存, font[col] 的 bit(row) 表示 (col,row) 像素
+    /* 按行写入: 6 列 × 每列 1 字节字模 → 每行 12 字节 RGB565 数据
+     * 字模按列存, font[col] 的 bit(row) 表示 (col,row) 像素 */
     for (uint8_t row = 0; row < UI_FONT_H; row++) {
         uint8_t line_data[UI_FONT_W * 2];
         for (uint8_t col = 0; col < UI_FONT_W; col++) {
@@ -69,12 +68,12 @@ void ui_draw_string(uint8_t x, uint8_t y, const char *str,
             str++;
             continue;
         }
-        // 超出右边距, 换行
+        /* 超出右边距, 自动换行 */
         if (cur_x + UI_FONT_W > UI_SCREEN_W) {
             cur_x = x;
             cur_y += UI_FONT_H;
         }
-        // 超出下边距, 截断
+        /* 超出下边距, 截断 */
         if (cur_y + UI_FONT_H > UI_SCREEN_H) {
             break;
         }
@@ -133,9 +132,7 @@ void ui_fill_rect(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint16_t color)
 }
 
 /**
- * @brief 画一个 6x8 右箭头 "->" (3 列像素宽, 第 6 列空白)
- *        形状: 第1列顶部 1 点, 第2列中间 1 点, 第3列底部 1 点
- *        简化方案: 用 '>' 字符 (0x3E), 直接走 ui_draw_char
+ * @brief 画一个 6x8 右箭头 (用 '>' 字符 0x3E 实现)
  */
 void ui_draw_arrow_right(uint8_t x, uint8_t y, uint16_t color, uint16_t bg)
 {
@@ -162,7 +159,7 @@ esp_err_t lcd_ui_switch_to(ui_page_id_t id)
 {
     if (id >= UI_PAGE_MAX) return ESP_ERR_INVALID_ARG;
 
-    // 找到目标页面
+    /* 找到目标页面 */
     const ui_page_t *target = NULL;
     for (uint8_t i = 0; i < page_count; i++) {
         if (pages[i]->id == id) {
@@ -175,7 +172,7 @@ esp_err_t lcd_ui_switch_to(ui_page_id_t id)
         return ESP_ERR_NOT_FOUND;
     }
 
-    // 退出旧页
+    /* 退出旧页 */
     for (uint8_t i = 0; i < page_count; i++) {
         if (pages[i]->id == current_page && pages[i]->on_exit) {
             pages[i]->on_exit();
@@ -184,10 +181,8 @@ esp_err_t lcd_ui_switch_to(ui_page_id_t id)
 
     current_page = id;
 
-    // 注意: 不在此处调用 tft_clear, 由各 page 的 on_enter 自行决定绘制方式
-    // 这样可以:
-    //   - 让不需要全屏刷新的页面 (例如只是更新数字) 避免闪烁
-    //   - 让需要清屏的页面 (例如 ui_servo) 在 draw_static 内部清屏
+    /* 不在此处调用 tft_clear, 由各 page 的 on_enter 自行决定绘制方式
+     * (避免不需要全屏刷新的页面发生闪烁) */
     if (target->on_enter) {
         target->on_enter();
     }
@@ -208,7 +203,7 @@ esp_err_t lcd_ui_init(ui_key_get_t key_get)
 
     current_page = UI_PAGE_HOME;
 
-    // 上电显示主页 (清屏 + 触发 on_enter)
+    /* 上电显示主页 (清屏 + 触发 on_enter) */
     tft_clear(TFT_COLOR_BLACK);
     for (uint8_t i = 0; i < page_count; i++) {
         if (pages[i]->id == UI_PAGE_HOME && pages[i]->on_enter) {
@@ -221,39 +216,18 @@ esp_err_t lcd_ui_init(ui_key_get_t key_get)
     return ESP_OK;
 }
 
-/**
- * @brief 将 pcf8574 按键转换为 UI 按键
- *        K1 -> UI_KEY_K1
- *        K2 -> UI_KEY_K2
- *        K3 -> UI_KEY_K3
- *        K4 -> UI_KEY_K1 (长按/备用, 此版本暂忽略)
- * @note  当前版本未使用 (按键映射直接在 main.c 的 key_get_from_pcf8574 中实现),
- *        保留供后续切换到回调方式时使用
- */
-__attribute__((unused))
-static ui_key_t map_button_to_key(uint8_t btn_state)
-{
-    if (btn_state & (1 << BTN_K1)) return UI_KEY_K1;
-    if (btn_state & (1 << BTN_K2)) return UI_KEY_K2;
-    if (btn_state & (1 << BTN_K3)) return UI_KEY_K3;
-    return UI_KEY_NONE;
-}
-
 void lcd_ui_loop(void)
 {
     if (key_get_cb == NULL) return;
 
-    // 1) 读取按键并派发 (边沿检测: 仅在按键从 0→非 0 时触发一次)
-    //
-    // 背景: pcf8574_scan_buttons() 内部含 30ms 消抖, 主循环周期 50ms,
-    //       单次按键按下会被识别为 3-5 次连续触发, 导致快速来回切页 + 舵机抖动.
-    //       这里加入 "上一次按键状态" 缓存, 只在状态从 NONE 变为某按键时派发,
-    //       实现类似单次脉冲触发 (用户按住按键也只触发一次).
+    /* 1) 读取按键并派发 (边沿检测: 仅在按键从 NONE 变为某按键时触发一次)
+     * 背景: pcf8574_scan_buttons() 内部含 30ms 消抖, 主循环周期 50ms,
+     *       单次按键按下会被识别为 3-5 次连续触发, 导致快速来回切页 + 舵机抖动.
+     *       引入 last_key 缓存, 实现类似单次脉冲触发 (用户按住按键也只触发一次). */
     static ui_key_t last_key = UI_KEY_NONE;
     ui_key_t key = key_get_cb();
 
     if (key != UI_KEY_NONE && key != last_key) {
-        // 找到当前页面并派发
         for (uint8_t i = 0; i < page_count; i++) {
             if (pages[i]->id == current_page && pages[i]->on_key) {
                 pages[i]->on_key(key);
@@ -263,7 +237,7 @@ void lcd_ui_loop(void)
     }
     last_key = key;
 
-    // 2) 周期性刷新当前页面 (实时数据)
+    /* 2) 周期性刷新当前页面 (实时数据) */
     tick_counter++;
     if (tick_counter >= REFRESH_TICKS) {
         tick_counter = 0;

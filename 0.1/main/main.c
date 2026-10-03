@@ -1,6 +1,6 @@
 /**
  * @file main.c
- * @brief ESP32-S3R8N8 平衡轮腿机械狗主程序
+ * @brief ESP32-S3R8R8N8 平衡轮腿机械狗主程序
  * @date 2026-10-01
  */
 
@@ -30,25 +30,22 @@ static const char *TAG = "MAIN";
 
 /* ========== 按键获取回调 (PCF8574 扫描 → UI 按键) ========== */
 /**
- * @brief  把 PCF8574 按键位图转换为 UI 按键
+ * @brief 把 PCF8574 按键位图转换为 UI 按键
  *
- * 优先级: K1 > K3 > K2 (P0/P1/P2)
+ * 优先级: K1 > K3 > K2 > K4
  *   - K1: 进入/确认/退出当前页
  *   - K2: 上/左/减
  *   - K3: 下/右/加
- *   - K4 (P3) 当前不响应
+ *   - K4: 减 (备用, 例如 SERVO 调试页 K4 = -5°)
  *
- * 多键同时按下:
- *   - 只返回优先级最高的那个键, 避免单次按键被误识别为多个键
- *   - 注意: 4.7kΩ 外部上拉 + VCC 滤波电容 + I2C 400kHz 高速通信, 多键同按基本无 VCC 跌落问题
- *
- * @note  本函数仅做 "位图 → UI 键值" 映射, 不做消抖.
- *        消抖由 pcf8574_scan_buttons() 内部状态机 + lcd_ui_loop() 边沿检测共同完成.
+ * 多键同时按下: 只返回优先级最高的那个键
  *
  * 按下电平约定: P0~P7 内部上拉到 VCC (4.7kΩ 外部上拉), 按键按下时拉低 (接地).
- *   因此"按下"对应位 = 0, "松开"对应位 = 1.
- *   例: 按下 K1 (P0) → 读 0xFE, 全松开 0xFF.
- *   ※ 验证日志: 2026-10-02 烧录后实测确认 (key_get: state=0xFE 时 K1 触发切页).
+ *   "按下"对应位 = 0, "松开"对应位 = 1
+ *   例: 按下 K1 (P0) → 读 0xFE, 全松开 0xFF
+ *
+ * @note  本函数仅做 "位图 → UI 键值" 映射, 不做消抖
+ *        消抖由 pcf8574_scan_buttons() 内部状态机 + lcd_ui_loop() 边沿检测共同完成
  */
 static ui_key_t key_get_from_pcf8574(void)
 {
@@ -56,7 +53,6 @@ static ui_key_t key_get_from_pcf8574(void)
     if (pcf8574_scan_buttons(&state) != ESP_OK) {
         return UI_KEY_NONE;
     }
-    // 检测位 = 0 (按下拉低), 多键同时按下按 K1>K3>K2>K4 优先级返回
     if (!(state & (1 << BTN_K1))) return UI_KEY_K1;
     if (!(state & (1 << BTN_K3))) return UI_KEY_K3;
     if (!(state & (1 << BTN_K2))) return UI_KEY_K2;
@@ -80,7 +76,7 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "ESP32-S3R8N8 平衡轮腿机械狗启动...");
 
-    // 初始化 NVS（Non-Volatile Storage）
+    /* 初始化 NVS (Non-Volatile Storage) */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -91,26 +87,29 @@ void app_main(void)
     ESP_LOGI(TAG, "系统初始化完成");
     ESP_LOGI(TAG, "PSRAM: 8MB, Flash: 8MB");
 
-    // 1. 初始化 74HC595 (电机方向/电磁铁控制)
+    /* 1. 初始化 74HC595 (电机方向/电磁铁控制) */
     ESP_ERROR_CHECK(hc595_init());
 
-    // 2. 初始化 TFT 显示屏 (RST 已接 VCC, 依赖内部 POR)
+    /* 2. 初始化 TFT 显示屏 (RST 已接 VCC, 依赖内部 POR) */
     ESP_ERROR_CHECK(tft_display_init());
 
-    // 3. 初始化 SK6812 LED (RMT 直驱, 支持真实调色调光)
+    /* 3. 初始化 SK6812 LED (RMT 直驱, 支持真实调色调光) */
     ESP_ERROR_CHECK(led_init());
 
-    // 4. 初始化舵机
+    /* 4. 初始化舵机 (归位到 SERVO_DEFAULT_ANGLE, 默认舵机2 镜像) */
     ESP_ERROR_CHECK(servo_init());
 
-    // 5. 初始化电机 (制动状态)
+    /* 4.1 启动后台"保持运行"任务: 持续 sync 舵机硬件, 跨页不失力/不跳变 */
+    ESP_ERROR_CHECK(servo_keep_alive_start());
+
+    /* 5. 初始化电机 (制动状态) */
     ESP_ERROR_CHECK(motor_driver_init());
     ESP_ERROR_CHECK(motor_brake_all());
 
-    // 6. 初始化编码器
+    /* 6. 初始化编码器 */
     ESP_ERROR_CHECK(encoder_init());
 
-    // 7. 初始化 MPU9250 (允许失败: 模块可能未接, UI 会显示 "NOT READY")
+    /* 7. 初始化 MPU9250 (允许失败: 模块可能未接, UI 会显示 "NOT READY") */
     esp_err_t mpu_ret = mpu9250_init();
     if (mpu_ret != ESP_OK) {
         ESP_LOGE(TAG, "MPU9250 初始化失败 (模块未接或 I2C 故障), UI 仍可正常工作");
@@ -118,7 +117,7 @@ void app_main(void)
                  MPU9250_SCL_GPIO, MPU9250_SDA_GPIO);
     }
 
-    // 8. 初始化 PCF8574 (按键) - 允许失败: 模块可能未接
+    /* 8. 初始化 PCF8574 (按键) - 允许失败: 模块可能未接 */
     esp_err_t pcf_ret = pcf8574_init();
     if (pcf_ret != ESP_OK) {
         ESP_LOGE(TAG, "PCF8574 初始化失败 (按键模块未接), UI 无法响应按键");
@@ -126,10 +125,10 @@ void app_main(void)
                  PCF8574_SCL_GPIO, PCF8574_SDA_GPIO, PCF8574_INT_GPIO);
     }
 
-    // ========================================================
-    // UI 系统初始化
-    // ========================================================
-    // 注册所有页面 (顺序不影响, 但 HOME 必须先注册)
+    /* ========================================================
+     * UI 系统初始化
+     * ======================================================== */
+    /* 注册所有页面 (顺序不影响, 但 HOME 必须先注册) */
     ESP_ERROR_CHECK(ui_home_register());
     ESP_ERROR_CHECK(ui_menu_register());
     ESP_ERROR_CHECK(ui_servo_register());
@@ -137,17 +136,17 @@ void app_main(void)
     ESP_ERROR_CHECK(ui_mpu9250_register());
     ESP_ERROR_CHECK(ui_wifi_bt_register());
 
-    // 根据 PCF8574 是否就绪, 选择按键回调
-    // - 就绪: 从 PCF8574 读取真实按键
-    // - 未就绪: 用一个 dummy 回调 (返回 NONE, UI 仍然显示但按键无效)
+    /* 根据 PCF8574 是否就绪, 选择按键回调
+     * - 就绪: 从 PCF8574 读取真实按键
+     * - 未就绪: 用 dummy 回调 (返回 NONE, UI 仍然显示但按键无效) */
     ui_key_get_t key_cb = (pcf_ret == ESP_OK) ? key_get_from_pcf8574 : key_get_none;
 
-    // 初始化 UI 系统 (会在主页显示初始画面)
+    /* 初始化 UI 系统 (会在主页显示初始画面) */
     ESP_ERROR_CHECK(lcd_ui_init(key_cb));
 
     ESP_LOGI(TAG, "UI 系统就绪, 进入主循环");
 
-    // 主循环 (按键扫描 + UI 调度 + 页面刷新)
+    /* 主循环 (按键扫描 + UI 调度 + 页面刷新) */
     while (1) {
         lcd_ui_loop();
         vTaskDelay(pdMS_TO_TICKS(50));  // 50ms 周期

@@ -1,7 +1,7 @@
 /**
  * @file motor_driver.c
  * @brief TB6612FNG 双路直流电机驱动实现
- * @note  方向控制引脚由 74HC595 提供, 此处通过调用 hc595 API 控制。
+ * @note  方向控制引脚由 74HC595 提供, 此处通过调用 hc595 API 控制
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */
@@ -15,8 +15,8 @@ static const char *TAG = "MOTOR";
 
 /* 电机 GPIO 与 LEDC 通道映射 */
 static const struct {
-    gpio_num_t gpio;
-    ledc_channel_t channel;
+    gpio_num_t      gpio;
+    ledc_channel_t  channel;
 } motor_map[MOTOR_B + 1] = {
     [MOTOR_A] = { .gpio = MOTOR_PWMA_GPIO, .channel = MOTOR_A_CHANNEL },
     [MOTOR_B] = { .gpio = MOTOR_PWMB_GPIO, .channel = MOTOR_B_CHANNEL },
@@ -41,10 +41,11 @@ static uint32_t motor_speed_to_duty(int8_t speed)
 
 /**
  * @brief 应用方向到 74HC595 (通过直接控制 Q1~Q4 输出)
+ *   电机 A: AIN1=Q1, AIN2=Q2
+ *   电机 B: BIN1=Q3, BIN2=Q4
  */
 static esp_err_t motor_apply_direction(motor_id_t motor, motor_dir_t dir)
 {
-    // 电机 A: AIN1=Q1, AIN2=Q2;  电机 B: BIN1=Q3, BIN2=Q4
     hc595_pin_t in1_pin = (motor == MOTOR_A) ? HC595_Q1 : HC595_Q3;
     hc595_pin_t in2_pin = (motor == MOTOR_A) ? HC595_Q2 : HC595_Q4;
     bool in1 = false, in2 = false;
@@ -78,7 +79,7 @@ static esp_err_t motor_apply_direction(motor_id_t motor, motor_dir_t dir)
  */
 esp_err_t motor_driver_init(void)
 {
-    // 配置 LEDC 定时器
+    /* 配置 LEDC 定时器 */
     ledc_timer_config_t timer_cfg = {
         .duty_resolution = MOTOR_PWM_RES,
         .freq_hz = MOTOR_PWM_FREQ,
@@ -93,14 +94,14 @@ esp_err_t motor_driver_init(void)
         return ret;
     }
 
-    // 配置两个电机的 LEDC 通道
+    /* 配置两个电机的 LEDC 通道 */
     for (int i = 0; i <= MOTOR_B; i++) {
         ledc_channel_config_t ch_cfg = {
-            .channel = motor_map[i].channel,
-            .duty = 0,
-            .gpio_num = motor_map[i].gpio,
+            .channel    = motor_map[i].channel,
+            .duty       = 0,
+            .gpio_num   = motor_map[i].gpio,
             .speed_mode = MOTOR_PWM_MODE,
-            .timer_sel = MOTOR_PWM_TIMER,
+            .timer_sel  = MOTOR_PWM_TIMER,
         };
 
         ret = ledc_channel_config(&ch_cfg);
@@ -110,7 +111,7 @@ esp_err_t motor_driver_init(void)
         }
     }
 
-    // 初始状态: 制动 + 零速
+    /* 初始状态: 制动 + 零速 */
     for (int i = 0; i <= MOTOR_B; i++) {
         motor_apply_direction((motor_id_t)i, MOTOR_DIR_BRAKE);
         motor_set_speed((motor_id_t)i, 0);
@@ -141,7 +142,7 @@ esp_err_t motor_set_speed(motor_id_t motor, int8_t speed)
         return ESP_ERR_INVALID_ARG;
     }
 
-    // 根据速度符号自动调整方向
+    /* 根据速度符号自动调整方向 */
     motor_dir_t target_dir;
     if (speed > 0) {
         target_dir = MOTOR_DIR_FORWARD;
