@@ -32,3 +32,11 @@ __pycache__/
 # Temporary files
 *.tmp
 *.bak
+
+# clangd 索引缓存
+.cache/
+*.idx
+
+# PlatformIO 生成
+compile_commands.json
+skills-lock.json
