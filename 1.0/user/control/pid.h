@@ -14,6 +14,9 @@
  *        newlib 的 <sys/types.h> 已经 typedef 了 pid_t (进程 id, int),
  *        重名会直接编译报错 "conflicting types for 'pid_t'"。
  *
+ * @note  平衡环**不要**用 pid_update() 的误差微分, 要用 pid_update_rate()
+ *        的角速度反馈型 D 项。理由见 pid_update_rate() 的注释。
+ *
  * @author ESP32 机械狗项目
  * @date 2026-10-04
  */
@@ -60,12 +63,50 @@ void pid_config(bal_pid_t *pid, float kp, float ki, float kd,
 void pid_reset(bal_pid_t *pid);
 
 /**
- * @brief 执行一次 PID 运算
+ * @brief 执行一次 PID 运算 (误差微分型)
  * @param pid PID 结构指针
  * @param err 当前误差 (目标值 - 反馈值)
  * @param dt  距上次调用的时间间隔 (秒, 必须 > 0)
  * @return 控制输出 (已按 out_max 限幅)
+ *
+ * @note  ⚠ 平衡环**不要**用这个函数 (见 pid_update_rate)。
+ *        这里的 D 项是"误差变化率", 对平衡环来说是二次微分,
+ *        而且会放大编码器/姿态的量化噪声。
+ *        本函数保留给速度环这类反馈本身干净的场合。
  */
 float pid_update(bal_pid_t *pid, float err, float dt);
+
+/**
+ * @brief 执行一次 PID 运算, D 项用**角速度反馈** (平衡环专用)
+ * @param pid   PID 结构指针
+ * @param err   当前误差 (目标值 - 反馈值)
+ * @param rate  该误差对应方向上的角速度 (°/s), 已按正确符号
+ * @param dt    距上次调用的时间间隔 (秒, 必须 > 0)
+ * @return 控制输出 (已按 out_max 限幅)
+ *
+ * @brief 为什么平衡环必须用这个 (2026-10-05, 参照 WL1)
+ *   平衡环要抑制的是**车体在摆**, 而"摆得多快"直接就是陀螺仪读数。
+ *   所以 D 项应该直接取角速度, 而不是对误差再求一次导:
+ *
+ *     误差微分型: d = (err - prev_err)/dt
+ *                 = 对 (目标 - 姿态) 再求导 = 姿态的二阶导 + 目标的二阶导
+ *                 → 目标阶跃时会产生**尖峰** (微分冲击)
+ *                 → 姿态量化噪声被二次放大
+ *
+ *     角速度反馈型: d = rate
+ *                 = 姿态的一阶导, 正好是我们要阻尼的物理量
+ *                 → 目标阶跃不产生尖峰
+ *                 → 噪声只被放一次
+ *
+ *   这也是 WL1 的做法: `float even_pwm = angle_pid.update(angle_target, angle.Pitch + bias)`
+ *   其内部 D 项写成 `-kd * (measured - prev_actual)`, measured 就是被修正后的姿态角。
+ *
+ * @note  rate 必须是**俯仰方向**的角速度, 且符号已调正 (车前倾为正)。
+ *        符号由 balance.c 的 gyro_sign 参数负责, 本函数不判断方向。
+ *
+ * @note  首次调用 (primed=false) 时跳过 D 项, 避免上电瞬间拿未初始化的
+ *        历史值算出一个假的大阻尼冲量。
+ */
+float pid_update_rate(bal_pid_t *pid, float err, float rate, float dt);
 
 #endif // PID_H

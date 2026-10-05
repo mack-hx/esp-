@@ -70,7 +70,6 @@ th{color:#8b93a3;font-weight:600}
     <span>Pitch <b id="sPitch">-</b></span>
     <span>Gyro <b id="sGyro">-</b></span>
     <span>编码 <b id="sEnc">-</b></span>
-    <span>电机 <b id="sMotor">停止</b></span>
     <span>控制 <b id="sBal">-</b></span>
   </div>
   <div class="bar">
@@ -132,11 +131,20 @@ th{color:#8b93a3;font-weight:600}
       1. 把车<b>固定住</b>（放桌上 / 夹具 / 手扶），全程<b>不要落地</b>。<br>
       2. 车身必须<b>纹丝不动</b>。本工具会自动强制刹车并停掉平衡控制，
       电机不会转，车不会自己动 —— 但你扶车的力要稳住。<br>
-      3. 关键：<b>只让腿动，车身不能动</b>。这样测出的差值才是「腿的贡献」。<br>
-      4. 每录一个点：点「动腿并读取」→ ESP32 读 Pitch → <b>你拿尺子量轮心离地高度</b>
-      填进去 → 点「录入这个点」。<br>
-      5. 建议录 <b>6~8 个点</b>，腿角从 30° 到 100° 均匀铺开。
-      录完点顶部<b>「保存到 NVS」</b>才落盘。
+      3. <b>测的是"电机中心 ↔ 舵机输出轴中心"的直线距离</b>，不是轮心离地高度。
+      这两个点都是机械上的硬位置，尺子一量就是定值，不受车身摆动影响。
+      选这个量的原因：测离地高度时车身稍歪数据就飞，这个不会。<br>
+      4. 现在两路舵机是镜像的，<b>一次只能采一条腿</b>。
+      标定哪一条，就把另一条的连杆<b>物理上固定到中立位</b>不参与，
+      这样读到的 Pitch 变化 = 被标定那一条腿的单独贡献。<br>
+      5. 每录一个点：切到对应腿 Tab → 点「动腿并读取」→ ESP32 读 Pitch →
+      <b>拿尺子量电机中心↔舵机轴心距离</b>填进去 → 点「录入这个点」。<br>
+      6. 建议每条腿录 <b>6~8 个点</b>，腿角从 30° 到 100° 均匀铺开。
+      左右两条都录完，点顶部<b>「保存到 NVS」</b>才落盘。
+    </div>
+    <div class="mgrid" style="grid-template-columns:repeat(2,1fr);margin-top:6px">
+      <button id="tabL" onclick="lmSetLeg('L')" style="background:#2f7d5c">◀ 左腿表 [L]</button>
+      <button id="tabR" onclick="lmSetLeg('R')" style="background:#2b4f7d">▶ 右腿表 [R]</button>
     </div>
     <div class="row">
       <div class="top"><span class="name">腿角</span><span class="val" id="calDeg">80°</span></div>
@@ -145,49 +153,30 @@ th{color:#8b93a3;font-weight:600}
       <div class="hint">腿角范围要拉开，铺满整个工作行程</div>
     </div>
     <div class="row">
-      <div class="top"><span class="name">实测腿高</span><span class="val" id="calH">?</span></div>
-      <input type="number" id="nH" min="20" max="200" step="0.5" value="60"
+      <div class="top"><span class="name">实测直距 (电机中心↔舵机轴心)</span><span class="val" id="calH">?</span></div>
+      <input type="number" id="nH" min="20" max="300" step="0.5" value="60"
              style="width:100%;padding:10px;font-size:16px;font-weight:700;color:#5ad1a0;
                     background:#0d1014;border:1px solid #333a47;border-radius:6px">
-      <div class="hint">轮心离地面的垂直距离（mm）—— <b>这个数只能你量</b>，ESP32 量不了自己</div>
+      <div class="hint">尺子量 <b>电机输出轴中心</b>到<b>舵机输出轴中心</b>的直线距离（mm）
+        —— <b>这个数只能你量</b>，ESP32 量不了自己。两点都是硬位置，录一次能用很久。</div>
     </div>
     <div class="mgrid" style="grid-template-columns:repeat(2,1fr)">
       <button id="btnMove" onclick="lmMove()" style="background:#2b4f7d">动腿并读取<br><span style="font-size:11px">等 1 秒稳定</span></button>
-      <button id="btnAdd" onclick="lmAdd()" style="background:#2f7d5c">录入这个点<br><span style="font-size:11px">存高度+Pitch</span></button>
+      <button id="btnAdd" onclick="lmAdd()" style="background:#2f7d5c">录入这个点<br><span style="font-size:11px">存直距+Pitch</span></button>
     </div>
     <div class="hint" id="calMsg" style="margin:6px 0">
-      还没动腿 —— 先点「动腿并读取」
+      还没动腿 —— 先选一条腿（默认 L），再点「动腿并读取」
     </div>
     <table>
-      <tr><th>#</th><th>腿角</th><th>腿高</th><th>Pitch</th><th></th></tr>
+      <tr><th>#</th><th>腿角</th><th>直距</th><th>Pitch</th><th></th></tr>
       <tbody id="calRows"><tr><td colspan="5" style="text-align:center;color:#7c8494">还没有标定点</td></tr></tbody>
     </table>
-    <div class="mgrid" style="grid-template-columns:repeat(2,1fr)">
-      <button onclick="lmClear()" style="background:#7a4b2f">清空重来</button>
+    <div class="mgrid" style="grid-template-columns:repeat(3,1fr)">
+      <button onclick="lmClearOne()" style="background:#7a4b2f">清空当前腿</button>
+      <button onclick="lmClearAll()" style="background:#6a3030">清空两腿</button>
       <button onclick="lmFitK()" style="background:#5b4a8a">反推线性 Leg K<br><span style="font-size:11px">兜底方案</span></button>
     </div>
     <div class="hint" id="lmVerdict" style="margin-top:6px"></div>
-  </div>
-</section>
-
-<section>
-  <h2 onclick="tog(9)">电机手动测试（调试用，通电前清空车轮）</h2>
-  <div id="g9" class="gbody hide">
-    <div class="mgrid">
-      <button id="mA" onclick="motor(1)">电机 A</button>
-      <button id="mB" onclick="motor(2)">电机 B</button>
-      <button id="mAB" onclick="motor(3)">A + B</button>
-    </div>
-    <div class="row">
-      <div class="top"><span class="name">速度</span><span class="val" id="vSpd">40</span></div>
-      <input type="range" id="rSpd" min="0" max="100" step="1" value="40" oninput="document.getElementById('vSpd').textContent=this.value">
-      <div class="hint">点电机按钮 = 启动，再点同一按钮 = 停；速度用上面滑块调</div>
-    </div>
-    <div class="row">
-      <div class="top"><span class="name">方向</span><span class="val" id="vDir">正转</span></div>
-      <input type="range" id="rDir" min="0" max="1" step="1" value="0" oninput="document.getElementById('vDir').textContent=this.value?'反转':'正转'">
-    </div>
-    <button id="btnStop" onclick="stopAll()">■ 急停（两路刹车）</button>
   </div>
 </section>
 
@@ -197,8 +186,8 @@ th{color:#8b93a3;font-weight:600}
 <script>
 var ITEMS=[], pend={}, sending=0, resend=0;
 var GRPN={0:'平衡环（直立）',1:'速度环（前进后退）',2:'转向环（左右转）',3:'限幅 / 滤波 / 硬件'};
-/* 默认展开的分组 (3 = 限幅组, 8 = 平衡控制, 9 = 电机测试, 10 = 波形, 11 = 标定, 平时用不到, 默认收起) */
-var OPEN={0:1,1:1,2:1,3:0,8:0,9:0,10:0,11:0};
+/* 默认展开的分组 (3 = 限幅组, 8 = 平衡控制, 10 = 波形, 11 = 标定, 平时用不到, 默认收起) */
+var OPEN={0:1,1:1,2:1,3:0,8:0,10:0,11:0};
 
 function toast(t){var e=document.getElementById('toast');e.textContent=t;e.style.opacity=1;
   clearTimeout(e.t);e.t=setTimeout(function(){e.style.opacity=0;},1400);}
@@ -330,12 +319,27 @@ $('btnPause').onclick=function(){
   this.style.background=wavPaused?'#2f7d5c':'#4a5568';
 };
 
-/* ---- 腿高标定 (实测查表) ----
+/* ---- 腿高标定 (实测查表, 左右两路各一张) ----
  *
- * 流程是"半自动"的: ESP32 能读 Pitch, 但**量不了腿高**,
- * 所以每录一个点都要你先动腿、再量高度、再提交。
+ * 流程是"半自动"的: ESP32 能读 Pitch, 但**量不了直距**,
+ * 所以每录一个点都要你先动腿、再量直距、再提交。
+ *
+ * 一次只采一条: 现在两路舵机是镜像的, "动腿"两边都动,
+ * 选择 Tab 决定把这次读到的 (deg, pitch) 写到哪张表 + 哪条数据曲线起作用。
  */
-var lmPts=[], lmCur=null;   /* lmCur = 上次"动腿并读取"拿到的 deg/pitch */
+var lmLeg='L';                 /* 当前正在录的腿: 'L' / 'R' */
+var lmPtsAll={L:[],R:[]};      /* 两张表, 每条 {deg,h,pitch} */
+var lmCur=null;                /* 上次"动腿并读取"拿到的 deg/pitch */
+
+function lmGetPts(){return lmPtsAll[lmLeg];}
+function lmSetLeg(c){
+  if(c!=='L'&&c!=='R')return;
+  lmLeg=c;
+  var tl=$('tabL'),tr=$('tabR');
+  if(tl)tl.style.background=(c==='L')?'#2f7d5c':'#2b4f7d';
+  if(tr)tr.style.background=(c==='R')?'#2f7d5c':'#2b4f7d';
+  lmRender();
+}
 
 function lmPost(body){
   return fetch('/api/legmap',{method:'POST',body:JSON.stringify(body)})
@@ -346,56 +350,58 @@ function lmMsg(t,ok){
   e.innerHTML=t;e.style.color=ok?'#5ad1a0':'#8b93a3';
 }
 
-/* 检查高度是否单调 (四连杆在正常行程内轮心高度必然单调变化) */
-function lmCheckMono(){
-  for(var i=0;i+1<lmPts.length;i++){
-    if(lmPts[i+1].h < lmPts[i].h - 1.0)
-      return '第 '+(i+1)+'→'+(i+2)+' 点腿高反而变小了。四连杆在正常行程内'+
-             '高度必然单调，录错了 → 重新检查这个点的尺子读数';
+/* 检查直距是否单调 (四连杆在正常行程内电机↔舵机轴心直距必然单调变化) */
+function lmCheckMono(pts){
+  for(var i=0;i+1<pts.length;i++){
+    if(pts[i+1].h < pts[i].h - 1.0)
+      return '第 '+(i+1)+'→'+(i+2)+' 点直距反而变小了。四连杆在正常行程内'+
+             '直距必然单调，录错了 → 重新检查这个点的尺子读数';
   }
   return null;
 }
 
 function lmRender(){
-  var b=$('calRows');
-  if(!lmPts.length){
-    b.innerHTML='<tr><td colspan="5" style="text-align:center;color:#7c8494">还没有标定点</td></tr>';
+  var pts=lmGetPts();
+  if(!pts.length){
+    $('calRows').innerHTML='<tr><td colspan="5" style="text-align:center;color:#7c8494">['+
+      lmLeg+'] 还没有标定点</td></tr>';
     return;
   }
   var h='';
-  for(var i=0;i<lmPts.length;i++){
-    h+='<tr><td>'+(i+1)+'</td><td>'+lmPts[i].deg+'°</td><td>'+
-       lmPts[i].h.toFixed(1)+'</td><td>'+lmPts[i].pitch.toFixed(2)+'°</td>'+
+  for(var i=0;i<pts.length;i++){
+    h+='<tr><td>'+(i+1)+'</td><td>'+pts[i].deg+'°</td><td>'+
+       pts[i].h.toFixed(1)+'</td><td>'+pts[i].pitch.toFixed(2)+'°</td>'+
        '<td><a href="#" style="color:#e8b04b" onclick="lmDel('+i+');return false">删</a></td></tr>';
   }
-  b.innerHTML=h;
+  $('calRows').innerHTML=h;
 
-  var mono=lmCheckMono();
-  if(mono){lmMsg('<b style="color:#e8b04b">⚠ '+mono+'</b>');return;}
+  var mono=lmCheckMono(pts);
+  if(mono){lmMsg('['+lmLeg+'] <b style="color:#e8b04b">⚠ '+mono+'</b>');return;}
 
-  if(lmPts.length<2){
-    lmMsg('已录 '+lmPts.length+' 个点，至少要 2 个',false);return;
+  if(pts.length<2){
+    lmMsg('['+lmLeg+'] 已录 '+pts.length+' 个点，至少要 2 个',false);return;
   }
-  var lo=lmPts[0].deg, hi=lo;
-  for(var j=0;j<lmPts.length;j++){
-    if(lmPts[j].deg<lo)lo=lmPts[j].deg;
-    if(lmPts[j].deg>hi)hi=lmPts[j].deg;
+  var lo=pts[0].deg, hi=lo;
+  for(var j=0;j<pts.length;j++){
+    if(pts[j].deg<lo)lo=pts[j].deg;
+    if(pts[j].deg>hi)hi=pts[j].deg;
   }
-  lmMsg('已录 <b>'+lmPts.length+'</b> 个点，腿角跨度 '+(hi-lo).toFixed(0)+
-        '°'+(hi-lo<20?' <b style="color:#e8b04b">（太窄，建议铺满 30~100°）</b>':' ✓')+
-        '<br>建议 6~8 个点铺满整个行程，然后点顶部<b>「保存到 NVS」</b>',true);
+  var span=hi-lo;
+  lmMsg('['+lmLeg+'] 已录 <b>'+pts.length+'</b> 个点，腿角跨度 '+span.toFixed(0)+
+        '°'+(span<20?' <b style="color:#e8b04b">（太窄，建议铺满 30~100°）</b>':' ✓')+
+        '<br>建议 6~8 个点铺满整个行程。左右两腿都录完才能点顶部<b>「保存到 NVS」</b>',true);
 }
 
 /* 按钮①: 动腿到指定角度, 等稳定, 读回 Pitch */
 function lmMove(){
   var d=Number($('rDeg').value);
-  lmMsg('腿在动…等姿态稳定约 1 秒，请扶住车身');
+  lmMsg('腿在动…等姿态稳定约 1 秒，请扶住车身。当前录的是 <b>['+lmLeg+']</b> 腿');
   $('btnMove').disabled=true;$('btnAdd').disabled=true;
-  lmPost({act:'move',deg:d}).then(function(r){
+  lmPost({act:'move',leg:lmLeg,deg:d}).then(function(r){
     if(!r.ok){lmMsg('失败: '+(r.msg||'?'));toast('读取失败');return;}
     lmCur={deg:r.deg,pitch:r.pitch};
-    lmMsg('腿已到 <b>'+r.deg+'°</b>，当前 Pitch <b>'+r.pitch.toFixed(2)+'°</b><br>'+
-          '现在拿尺子量<b>轮心离地高度</b>，填到上面那个框，然后点「录入这个点」',true);
+    lmMsg('腿已到 <b>'+r.deg+'°</b>，当前 Pitch <b>'+r.pitch.toFixed(2)+'°</b> (写入 ['+lmLeg+'] 腿表)<br>'+
+          '现在拿尺子量<b>电机中心↔舵机输出轴中心</b>距离，填到上面那个框，然后点「录入这个点」',true);
     $('nH').focus();
   }).catch(function(){lmMsg('请求失败');})
     .then(function(){
@@ -403,78 +409,99 @@ function lmMove(){
     });
 }
 
-/* 按钮②: 把「刚才读到的 Pitch」+「你量的腿高」一起存进表 */
+/* 按钮②: 把「刚才读到的 Pitch」+「你量的直距」一起存进当前腿的表 */
 function lmAdd(){
   if(!lmCur){lmMsg('请先点「动腿并读取」',false);toast('先点动腿并读取');return;}
   var h=parseFloat($('nH').value);
-  if(!(h>=20&&h<=200)){lmMsg('腿高要填 20~200 之间的数字',false);toast('腿高不合法');return;}
+  if(!(h>=20&&h<=300)){lmMsg('直距要填 20~300 之间的数字',false);toast('直距不合法');return;}
 
-  lmPost({act:'add',deg:lmCur.deg,h:h}).then(function(r){
+  lmPost({act:'add',leg:lmLeg,deg:lmCur.deg,h:h}).then(function(r){
     if(!r.ok){lmMsg('失败: '+(r.msg||'?'));toast('录入失败');return;}
-    /* 重新拉整表, 以服务端排序结果为准 (服务端按腿角升序插的) */
+    /* 重新拉两表, 以服务端排序结果为准 (服务端按腿角升序插的) */
     lmLoad();
-    toast('第 '+r.n+' 个点已录: '+r.deg+'° → '+r.h.toFixed(1)+'mm');
+    toast('['+lmLeg+'] 第 '+r.n+' 个点已录: '+r.deg+'° → '+r.h.toFixed(1)+'mm');
     /* 提示下一个建议腿角, 避免不知道往哪拨 */
-    var next=nextDeg();
+    var next=nextDeg(lmGetPts());
     if(next!==null)$('rDeg').value=next;
   }).catch(function(){lmMsg('请求失败');});
 }
 
-function nextDeg(){
-  if(!lmPts.length)return 30;
-  var target=30+lmPts.length*10;
+function nextDeg(pts){
+  if(!pts.length)return 30;
+  var target=30+pts.length*10;
   if(target>100)return null;
   return target;
 }
 
 function lmDel(i){
-  var d=lmPts[i].deg;
-  lmPts.splice(i,1);
+  var pts=lmGetPts();
+  var d=pts[i].deg;
+  pts.splice(i,1);
   /* 单条删除走 clear+逐条重加太笨, 直接让用户重录该点;
      这里只更新本地显示, 提示如何处理 */
   lmRender();
-  lmMsg('已从列表移除 '+d+'°。ESP32 里那条还在 —— '+
-        '要真删掉请点「清空重来」重录一次',false);
+  lmMsg('已从 ['+lmLeg+'] 列表移除 '+d+'°。ESP32 里那条还在 —— '+
+        '要真删掉请点「清空当前腿」重录一次',false);
 }
 
 function lmLoad(){
   fetch('/api/legmap').then(function(r){return r.json();})
     .then(function(d){
-      lmPts=(d.pts||[]).map(function(p){return {deg:p.deg,h:p.h,pitch:p.pitch};});
+      /* d.legs.L.pts / d.legs.R.pts */
+      function getPts(k){
+        var leg=d.legs&&d.legs[k];
+        return (leg&&leg.pts)?leg.pts.map(function(p){return {deg:p.deg,h:p.h,pitch:p.pitch};}):[];
+      }
+      lmPtsAll.L=getPts('L');
+      lmPtsAll.R=getPts('R');
       lmRender();
+      /* 显示两腿总览 */
+      var nL=lmPtsAll.L.length, nR=lmPtsAll.R.length;
+      var uL=d.legs&&d.legs.L&&d.legs.L.usable;
+      var uR=d.legs&&d.legs.R&&d.legs.R.usable;
       var v=$('lmVerdict');
-      if(d.usable&&d.n>=4){
-        v.innerHTML='<b style="color:#5ad1a0">✓ 标定可用</b>：'+
-          d.n+' 个点，补偿和 Kp 调度都会按表走。记得点「保存到 NVS」。';
-      }else if(d.n<2){
+      if(uL&&uR){
+        v.innerHTML='<b style="color:#5ad1a0">✓ 两腿都可用</b>：L='+nL+' 点, R='+nR+' 点，'+
+          '补偿和 Kp 调度都会按表走。记得点「保存到 NVS」。';
+      }else if(nL>=2||nR>=2){
+        v.innerHTML='<b style="color:#e8b04b">部分腿可用</b>：L='+nL+(uL?' ✓可用':' ✗不可用')+
+          ', R='+nR+(uR?' ✓可用':' ✗不可用')+
+          '。不可用那腿会退回 leg_k 线性。';
+      }else{
         v.innerHTML='标定点不足 2 个，<b>不做任何几何补偿</b>。'+
           '腿改变角度时车会往一个方向偏。';
-      }else{
-        v.innerHTML='<b style="color:#e8b04b">数据有 '+(d.n)+' 个点但判定不可用</b>'+
-          '（多半是高度非单调或腿角跨度不够）→ 补几个点，或点「清空重来」重录。';
       }
-    }).catch(function(){toast('读标定表失败');});
+    });
 }
 
-function lmClear(){
-  if(!confirm('清空所有腿高标定点？'))return;
-  lmPost({act:'clear'}).then(function(){
-    lmPts=[];lmCur=null;lmRender();
-    $('lmVerdict').innerHTML='';
-    toast('已清空');
+function lmClearOne(){
+  if(!confirm('清空当前腿 ['+lmLeg+'] 的标定点?'))return;
+  lmPost({act:'clear',leg:lmLeg}).then(function(){
+    lmPtsAll[lmLeg]=[];lmCur=null;lmRender();
+    toast('已清空 ['+lmLeg+'] 腿表');
   }).catch(function(){toast('请求失败');});
 }
 
-/* 兜底: 用标定点反推线性 leg_k (查表不好用时的临时方案) */
+function lmClearAll(){
+  if(!confirm('清空两腿所有标定点?'))return;
+  lmPost({act:'clear_all'}).then(function(){
+    lmPtsAll={L:[],R:[]};lmCur=null;lmRender();
+    $('lmVerdict').innerHTML='';
+    toast('两腿都已清空');
+  }).catch(function(){toast('请求失败');});
+}
+
+/* 兜底: 用当前腿的标定点反推线性 leg_k (查表不好用时的临时方案) */
 function lmFitK(){
-  if(lmPts.length<2){toast('至少要 2 个点');return;}
-  fetch('/api/legmap_fit_legk',{method:'POST'})
+  var pts=lmGetPts();
+  if(pts.length<2){toast('当前腿至少要 2 个点');return;}
+  fetch('/api/legmap_fit_legk',{method:'POST',body:JSON.stringify({leg:lmLeg})})
     .then(function(r){return r.json();})
     .then(function(r){
       if(!r.ok){toast('算不了: '+(r.msg||'?'));return;}
       var it=get('leg_k');
       if(it){$('r_leg_k').value=r.k;setv('leg_k',r.k);}
-      var msg='线性 Leg K = <b>'+r.k.toFixed(4)+'</b>（'+r.n+' 点拟合）<br>';
+      var msg='['+lmLeg+'] 线性 Leg K = <b>'+r.k.toFixed(4)+'</b>（'+r.n+' 点拟合）<br>';
       if(r.res_ratio>0.35){
         msg+='<b style="color:#e8b04b">残差占变化幅度 '+(r.res_ratio*100).toFixed(0)+
              '%，说明 Pitch~腿角不是直线关系，线性补偿会丢掉很多量。'+
@@ -486,31 +513,6 @@ function lmFitK(){
       toast('Leg K 已算出');
     }).catch(function(){toast('请求失败');});
 }
-
-/* ---- 电机手动测试 ---- */
-var mOn=0;
-function motor(which){
-  mOn=(mOn===which)?0:which;
-  $('mA').className = mOn===1?'on':'';
-  $('mB').className = mOn===2?'on':'';
-  $('mAB').className= mOn===3?'on':'';
-  post_motor(mOn);
-}
-function post_motor(which){
-  var body=JSON.stringify({on:which,
-    speed:Number($('rSpd').value), dir:Number($('rDir').value)});
-  fetch('/api/motor',{method:'POST',body:body}).catch(function(){});
-}
-function stopAll(){
-  mOn=0;$('mA').className='';$('mB').className='';$('mAB').className='';
-  fetch('/api/stop',{method:'POST'}).then(function(){toast('已急停');});
-}
-/* 松手/切后台自动停, 防止网页关了电机还转 */
-window.addEventListener('pointerup',function(){if(mOn)post_motor(mOn);});
-window.addEventListener('beforeunload',function(){
-  if(mOn){navigator.sendBeacon&&navigator.sendBeacon('/api/stop','');
-          fetch&&fetch('/api/stop',{method:'POST',keepalive:true});}
-});
 
 $('btnSave').onclick=function(){
   fetch('/api/save',{method:'POST'}).then(function(r){return r.json();})
@@ -544,8 +546,6 @@ function poll(){
     set('sPitch',s.pitch.toFixed(1)+'°');
     set('sGyro',s.gyro.toFixed(1)+'°/s');
     set('sEnc',s.enc1+' / '+s.enc2);
-    var m=$('sMotor');m.textContent=s.motor;
-    m.className=s.motor==='停止'?'':'warn';
     /* 平衡控制状态 */
     var b=$('sBal');
     b.textContent=s.bal_state+(s.bal_on?'':' (关)');
@@ -557,13 +557,16 @@ function poll(){
     set('bSpd',s.spd_out.toFixed(2)+'°');
     set('bSteer',s.steer_out.toFixed(1)+'%');
     set('bSpeed',s.speed.toFixed(1)+' rpm');
-    set('bLegDeg',s.leg_deg+'°');
+    set('bLegDeg',s.leg_deg_l+'° / '+s.leg_deg_r+'°');
     set('bLegH',s.leg_h>0?s.leg_h.toFixed(1)+'mm':'未标定');
     set('bLegComp',s.leg_comp.toFixed(2)+'°');
     set('bKpEff',s.kp_eff.toFixed(1));
     var lok=$('bLegOk');
-    lok.textContent=s.leg_usable?'可用':'不可用';
-    lok.style.color=s.leg_usable?'#5ad1a0':'#e8b04b';
+    /* 只有两边都认了才算"查表"完全生效; 一边认一边靠 leg_k 算部分生效 */
+    var both=s.leg_usable_l&&s.leg_usable_r;
+    var one =s.leg_usable_l||s.leg_usable_r;
+    lok.textContent=both?'全可用':(one?'半可用':'查表不可用');
+    lok.style.color=both?'#5ad1a0':(one?'#e8b04b':'#e8b04b');
     set('bLegK',s.leg_k.toFixed(3));
     /* 波形: 修正后 = 原始 + 零偏 - 腿角补偿, 反推出原始值显示 */
     var fix=s.pitch, raw=fix+s.leg_comp;

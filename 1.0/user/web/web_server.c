@@ -1,8 +1,6 @@
 /**
  * @file web_server.c
  * @brief 调参网页服务器实现 (esp_http_server)
- * @note  单客户端即可, 所有 handler 都在 httpd 任务里跑, 不额外开任务。
- *        电机控制状态用静态变量存, 上电即停 (s_motor_on 初始为 0)。
  * @author ESP32 机械狗项目
  * @date 2026-10-04
  */
@@ -32,63 +30,6 @@ static const char *TAG = "WEB";
 
 /* httpd 实例 (web_server_stop 用) */
 static httpd_handle_t s_httpd = NULL;
-
-/* ================= 电机手动测试状态 =================
- * 需求: 网页关闭 / 手机断开时电机必须停, 所以这里存"期望状态",
- * 由 watchdog 任务定期把实际输出拉回期望; 长时间没收到网页指令也自动停。 */
-#define MOTOR_IDLE_STOP_MS   4000     /* 4 秒没收到网页请求就自动停 (看门狗兜底) */
-
-/* 当前开启的电机: 0=停 1=电机A 2=电机B 3=A+B */
-static uint8_t  s_motor_on  = 0;
-/* 期望速度 (0~100) */
-static int8_t   s_motor_spd = 0;
-/* 期望方向: 1=正转, 2=反转 */
-static uint8_t  s_motor_dir = 1;
-/* 最后一次收到"网页还在线"证据的时间戳 (ms)
- * ⚠ 网页每 500ms 轮询一次 /api/status, 这就是心跳, 顺带当作电机看门狗的喂狗点。
- *    不能只在 /api/motor 时喂狗: 用户按住速度滑块拖动时不会重复发 /api/motor,
- *    只靠轮询喂狗才能保证拖滑块过程中电机不被误停。 */
-static int64_t  s_motor_t   = 0;
-
-/**
- * @brief 把当前期望状态真正写进电机
- * @note  也会被看门狗任务调用
- */
-static void motor_apply(void)
-{
-    int8_t spd = (s_motor_spd > 100) ? 100 : s_motor_spd;
-    if (s_motor_dir == 2) spd = -spd;         /* 反转取负 */
-    if (spd < MOTOR_SPEED_MIN) spd = MOTOR_SPEED_MIN;
-    if (spd > MOTOR_SPEED_MAX) spd = MOTOR_SPEED_MAX;
-
-    int8_t sa = 0, sb = 0;
-    if (s_motor_on == 1)      { sa = spd; }
-    else if (s_motor_on == 2) { sb = spd; }
-    else if (s_motor_on == 3) { sa = spd; sb = spd; }
-
-    if (sa == 0 && sb == 0) motor_brake_all();
-    else                    motor_set_speed_both(sa, sb);
-}
-
-/**
- * @brief 电机看门狗任务
- * @note  目的: 万一网页崩了 / 浏览器直接被杀掉 / 手机断网,
- *        电机不会一直转下去。超过 MOTOR_IDLE_STOP_MS 没收到请求就自动停。
- */
-static void motor_watchdog_task(void *arg)
-{
-    (void)arg;
-    for (;;) {
-        if (s_motor_on != 0 &&
-            (esp_timer_get_time() / 1000 - s_motor_t) > MOTOR_IDLE_STOP_MS) {
-            ESP_LOGW(TAG, "网页 %lld ms 无请求, 自动停电机",
-                     (long long)MOTOR_IDLE_STOP_MS);
-            s_motor_on = 0;
-            motor_apply();
-        }
-        vTaskDelay(pdMS_TO_TICKS(200));
-    }
-}
 
 /* ================= 通用工具 ================= */
 
@@ -282,7 +223,7 @@ static esp_err_t api_reset(httpd_req_t *req)
 }
 
 /**
- * @brief GET /api/status — 实时状态 (姿态/编码器/WiFi/电机/平衡控制)
+ * @brief GET /api/status — 实时状态 (姿态/编码器/WiFi/平衡控制)
  */
 static esp_err_t api_status(httpd_req_t *req)
 {
@@ -290,9 +231,6 @@ static esp_err_t api_status(httpd_req_t *req)
      * ⚠ snprintf 会静默截断, 截断的 JSON 解析失败会让网页所有实时数据都变 "-",
      *   所以字段变多时要同步加大。 */
     char buf[768];
-
-    /* 轮询本身就是"网页还在线"的心跳, 顺带喂电机看门狗 */
-    s_motor_t = esp_timer_get_time() / 1000;
 
     /* --- 平衡控制 (拿不到就全填 0) --- */
     bal_data_t bal = {0};
@@ -306,76 +244,41 @@ static esp_err_t api_status(httpd_req_t *req)
     wifi_ap_state_t ws = wifi_ap_get_state();
     char ssid[32];
     wifi_ap_get_ssid(ssid, sizeof(ssid));
-    const char *mname = s_motor_on == 0 ? "停止" :
-                        (s_motor_dir == 2 ? "反转" : "正转");
 
     snprintf(buf, sizeof(buf),
              "{\"wifi\":\"%s\",\"clients\":%u,\"ip\":\"%s\",\"ssid\":\"%s\","
              "\"pitch\":%.2f,\"gyro\":%.2f,\"enc1\":%d,\"enc2\":%d,"
-             "\"motor\":\"%s\",\"motor_on\":%u,\"heap\":%u,\"uptime\":%u,"
+             "\"heap\":%u,\"uptime\":%u,"
              /* 平衡控制: 中间量全部透出, 网页可画曲线看响应 */
              "\"bal_state\":\"%s\",\"bal_on\":%s,"
              "\"tgt_pitch\":%.2f,\"bal_out\":%.1f,\"spd_out\":%.2f,"
              "\"steer_out\":%.1f,\"speed\":%.1f,\"mot_a\":%d,\"mot_b\":%d,"
-             /* 腿高标定: leg_h 是实测查表推出的腿高, usable=false 说明还没标定 */
-             "\"leg_deg\":%u,\"leg_comp\":%.3f,\"leg_k\":%.3f,"
-             "\"leg_h\":%.1f,\"leg_usable\":%s,\"kp_eff\":%.1f}",
+             /* 腿高标定: leg_h 是查表推出的直距(mm, 左路), usable=false 说明还没标定 */
+             "\"leg_deg_l\":%u,\"leg_deg_r\":%u,\"leg_comp\":%.3f,\"leg_k\":%.3f,"
+             "\"leg_h\":%.1f,\"leg_usable_l\":%s,\"leg_usable_r\":%s,\"kp_eff\":%.1f,"
+             /* 实测周期 (ms): 正常应≈10。偏大说明控制任务被抢占,
+              * 此时 PID 用的是实测 dt 而不是标称值, 增益会有偏差 */
+             "\"dt_ms\":%.1f,\"arm_ms\":%.0f}",
              wstate[ws], wifi_ap_get_client_count(), WIFI_AP_IP, ssid,
              (double)bal.pitch, (double)bal.gyro_x,
              encoder_get_count(ENCODER_1), encoder_get_count(ENCODER_2),
-             mname, s_motor_on,
              (unsigned)esp_get_free_heap_size(),
              (unsigned)(esp_timer_get_time() / 1000000ULL),
              bstate[st], balance_is_enabled() ? "true" : "false",
              (double)bal.target_pitch, (double)bal.bal_out,
              (double)bal.spd_out, (double)bal.steer_out,
              (double)bal.speed, bal.motor_a, bal.motor_b,
-             servo_get_angle(SERVO_1),
+             servo_get_angle(SERVO_1), servo_get_angle(SERVO_2),
              (double)bal.leg_comp,
              (double)param_get_float(PARAM_LEG_PITCH_K),
              (double)bal.leg_height,
-             legmap_is_usable(2) ? "true" : "false",
-             (double)bal.kp_eff);
+             legmap_is_usable(LEG_LEFT, 2)  ? "true" : "false",
+             legmap_is_usable(LEG_RIGHT, 2) ? "true" : "false",
+             (double)bal.kp_eff,
+             (double)(bal.dt * 1000.0f),
+             (double)balance_get_arm_ms());
 
     return send_json(req, buf);
-}
-
-/**
- * @brief POST /api/motor — 电机手动测试
- * @note  body = {"on":1|2|3|0,"speed":0~100,"dir":1|2}
- */
-static esp_err_t api_motor(httpd_req_t *req)
-{
-    char body[128];
-    if (read_body(req, body, sizeof(body)) < 0) {
-        return send_json(req, "{\"ok\":false,\"msg\":\"body too large\"}");
-    }
-
-    float v;
-    if (json_num(body, "speed", &v)) {
-        s_motor_spd = (int8_t)(v < 0 ? 0 : (v > 100 ? 100 : v));
-    }
-    if (json_num(body, "dir", &v)) {
-        s_motor_dir = (uint8_t)(v < 1.5f ? 1 : 2);
-    }
-    if (json_num(body, "on", &v)) {
-        s_motor_on = (uint8_t)(v < 0.5f ? 0 : (v > 3 ? 3 : v));
-    }
-
-    s_motor_t = esp_timer_get_time() / 1000;   /* 喂看门狗 */
-    motor_apply();
-    return send_json(req, "{\"ok\":true}");
-}
-
-/**
- * @brief POST /api/stop — 急停
- * @note  浏览器关页/断网时用 sendBeacon 打这个接口
- */
-static esp_err_t api_stop(httpd_req_t *req)
-{
-    s_motor_on = 0;
-    motor_apply();
-    return send_json(req, "{\"ok\":true}");
 }
 
 /**
@@ -401,11 +304,16 @@ static esp_err_t api_servo_center(httpd_req_t *req)
     return send_json(req, "{\"ok\":true}");
 }
 
-/* ================= 腿高标定工具 (实测查表) =================
+/* ================= 腿高标定工具 (实测查表, 左右腿各一份) =================
  *
  * @brief 标定的物理含义
- *   MPU 装在车身上, 车身相对轮轴的角度由**腿弯曲多少**决定。
- *   我们要建立的是一张实测表: 每个舵机角 → { 轮心高度, 车身 Pitch }。
+ *   MPU 装在车身上, 车身相对轮轴的角度由左右两腿弯曲**共同**决定。
+ *   要建立的是两张实测表: 每条腿一份 { 舵机角, 电机中心↔舵机轴心直距, Pitch }。
+ *
+ * @brief 为什么"电机中心↔舵机轴心"而不用"轮心离地高度"
+ *   离地高度在车摆动时会跟着变, 测一次一个数, 数据不稳。
+ *   这两个点都是打印件/金属件上的硬位置, 尺子一量就是定值,
+ *   不受车身姿态/MPU 漂移/弹簧回弹的影响, 录一次能用很久。
  *
  * @brief 为什么实测而不是四连杆运动学
  *   解析运动学要靠 4 根杆长 + 铰接点坐标反推机构姿态, 但杆长测量有误差,
@@ -413,15 +321,15 @@ static esp_err_t api_servo_center(httpd_req_t *req)
  *   实测量的是真实世界, 把这些误差全都包含进去了。配平用途实测远优于推算。
  *
  * @brief 怎么测才安全且准
- *   关键: **车身固定不动, 只让腿动**。
+ *   关键: **标定哪一条腿, 就只动哪一条, 另一条固定到中立位**。
+ *   - 现在两路舵机硬件是镜像的, 一次"动腿"两条都动
+ *   - 标定流程: 第一次标左腿 (右腿物理上拆开放到中立位), 第二次再换过来标右腿
  *   - 电机全程刹车, 平衡控制必须处于关闭状态 (接口会强制)
- *   - 车身扶住 / 夹具固定 / 放平桌上, 保证 Pitch 不随腿动而变
- *   - 这样测出来的差值纯粹是"腿动的贡献", 混不进地面不平、轮子打滑的干扰
- *   - 全程车一动不动, 不存在摔倒风险
+ *   - 车身扶住 / 夹具固定 / 放平桌上, 保证 Pitch 变化纯粹来自被标定那条腿
  *
- * @brief 高度是用户量的, ESP32 量不了自己
+ * @brief 直距是用户量的, ESP32 量不了自己
  *   流程: 网页让你把腿拨到某个角度并等姿态稳定 → 网页读 Pitch →
- *         你拿尺子量轮心离地高度填进去 → 提交。
+ *         你拿尺子量"电机中心↔舵机输出轴中心"距离填进去 → 提交。
  */
 
 /* 标定参数: 停留稳定时间 / Pitch 采样次数 / 采样间隔 */
@@ -458,31 +366,43 @@ static esp_err_t cal_settle_and_read(float deg, float *pitch_out)
 }
 
 /**
- * @brief GET /api/legmap — 取整张标定表
+ * @brief GET /api/legmap — 取左/右两腿的标定表
+ * @note  返回结构: { ok, legs: { L: { n, usable, pts:[...] }, R: { n, usable, pts:[...] } } }
  */
 static esp_err_t api_legmap_get(httpd_req_t *req)
 {
-    const legmap_t *m = legmap_get();
-    int n = snprintf(NULL, 0, "{\"ok\":true,\"n\":%u,\"usable\":%s,\"pts\":[",
-                     m->count, legmap_is_usable(2) ? "true" : "false");
-    if (n < 0) return send_json(req, "{\"ok\":false}");
+    const legmap_all_t *all = legmap_get();
 
-    int cap = 128 + m->count * 72;
+    /* 算容量: 头 ~128B + 两个表 * count * 72B/条, 留余量 */
+    int cap = 256;
+    for (int k = 0; k < LEG_COUNT; k++) cap += all->legs[k].count * 80;
     char *buf = malloc((size_t)cap);
     if (buf == NULL) return send_json(req, "{\"ok\":false,\"msg\":\"no mem\"}");
 
-    int w = snprintf(buf, (size_t)cap, "{\"ok\":true,\"n\":%u,\"usable\":%s,\"pts\":[",
-                     m->count, legmap_is_usable(2) ? "true" : "false");
-    for (uint8_t i = 0; i < m->count && w > 0 && (size_t)w < (size_t)cap; i++) {
+    int w = snprintf(buf, (size_t)cap,
+                     "{\"ok\":true,\"legs\":{");
+    for (int k = 0; k < LEG_COUNT && w > 0 && (size_t)w < (size_t)cap; k++) {
+        const legmap_t *m = &all->legs[k];
         w += snprintf(buf + w, (size_t)cap - (size_t)w,
-                      "%s{\"deg\":%.1f,\"h\":%.1f,\"pitch\":%.3f}",
-                      i ? "," : "",
-                      (double)m->pts[i].servo_deg,
-                      (double)m->pts[i].height_mm,
-                      (double)m->pts[i].pitch_deg);
+                      "%s\"%c\":{\"n\":%u,\"usable\":%s,\"pts\":[",
+                      k ? "," : "",
+                      legmap_leg_char((leg_id_t)k),
+                      m->count,
+                      legmap_is_usable((leg_id_t)k, 2) ? "true" : "false");
+        for (uint8_t i = 0; i < m->count && w > 0 && (size_t)w < (size_t)cap; i++) {
+            w += snprintf(buf + w, (size_t)cap - (size_t)w,
+                          "%s{\"deg\":%.1f,\"h\":%.1f,\"pitch\":%.3f}",
+                          i ? "," : "",
+                          (double)m->pts[i].servo_deg,
+                          (double)m->pts[i].height_mm,
+                          (double)m->pts[i].pitch_deg);
+        }
+        if (w > 0 && (size_t)w + 4 < (size_t)cap) {
+            w += snprintf(buf + w, (size_t)cap - (size_t)w, "]}");
+        }
     }
     if (w > 0 && (size_t)w + 3 < (size_t)cap) {
-        w += snprintf(buf + w, (size_t)cap - (size_t)w, "]}");
+        w += snprintf(buf + w, (size_t)cap - (size_t)w, "}}");
     }
     esp_err_t r = send_json(req, buf);
     free(buf);
@@ -490,17 +410,22 @@ static esp_err_t api_legmap_get(httpd_req_t *req)
 }
 
 /**
- * @brief POST /api/legmap — 录入/清空标定点
- * @note  body = {"act":"clear"}
- *              {"act":"add","deg":80,"h":61.5}      高度由用户量, Pitch 自动读
- *              {"act":"move","deg":80}              只动腿不录入
- *              {"act":"read"}                        只回读当前姿态 Pitch (预览用)
+ * @brief POST /api/legmap — 录入/清空/动腿/读取 (按 leg 字段)
+ * @note  body = {"act":"clear",          "leg":"L"|"R"}   缺省 leg=清两路
+ *              {"act":"clear_all"}
+ *              {"act":"move",  "leg":"L", "deg":80}       动腿 + 读 Pitch (不录入)
+ *              {"act":"read",  "leg":"L"}                  只读当前 Pitch
+ *              {"act":"add",   "leg":"L", "deg":80, "h":81.5}
+ *                                                     录一个点 (直距由用户量)
  *
  * ⚠ 安全闸门: 标定期间绝不能让电机转。每次调用都强制刹车 + 停平衡控制。
+ *
+ * 标定那一条腿要保证: **另一条腿在物理上不参与** (现在两路镜像同动,
+ * 所以每次只能采一行, 左/右各采一次)。leg 字段决定往哪张表里写。
  */
 static esp_err_t api_legmap_post(httpd_req_t *req)
 {
-    char body[128];
+    char body[160];
     if (read_body(req, body, sizeof(body)) < 0) {
         return send_json(req, "{\"ok\":false,\"msg\":\"body too large\"}");
     }
@@ -510,17 +435,29 @@ static esp_err_t api_legmap_post(httpd_req_t *req)
         return send_json(req, "{\"ok\":false,\"msg\":\"missing act\"}");
     }
 
+    /* leg 字段: 可选, 缺省清空动作作用到两路, 其他动作作用于 L 路 */
+    leg_id_t leg = LEG_LEFT;
+    char leg_str[8] = {0};
+    if (json_str(body, "leg", leg_str, sizeof(leg_str))) {
+        if (legmap_parse_leg(leg_str, &leg) != ESP_OK) {
+            return send_json(req, "{\"ok\":false,\"msg\":\"bad leg, want L/R\"}");
+        }
+
+    }
+
     /* 放在解析完 act 之后、任何动作之前, 保证每个子动作都受保护 */
     if (balance_is_enabled()) {
         balance_emergency_stop();
     }
-    s_motor_on = 0;
-    motor_apply();
+    /* 强制刹车, 标定期间绝不能让电机转 */
+    motor_brake_all();
 
     if (strcmp(act, "clear") == 0) {
-        legmap_clear();
-        return send_json(req, "{\"ok\":true,\"n\":0}");
-
+        legmap_clear(leg);
+        return send_json(req, "{\"ok\":true}");
+    } else if (strcmp(act, "clear_all") == 0) {
+        legmap_clear_all();
+        return send_json(req, "{\"ok\":true}");
     } else if (strcmp(act, "move") == 0 || strcmp(act, "read") == 0) {
         float deg;
         if (!json_num(body, "deg", &deg)) {
@@ -530,9 +467,10 @@ static esp_err_t api_legmap_post(httpd_req_t *req)
         esp_err_t r = cal_settle_and_read(deg, &pitch);
         if (r != ESP_OK) return send_json(req, "{\"ok\":false,\"msg\":\"MPU 读失败\"}");
 
-        char out[128];
-        snprintf(out, sizeof(out), "{\"ok\":true,\"deg\":%.1f,\"pitch\":%.3f}",
-                 (double)deg, (double)pitch);
+        char out[160];
+        snprintf(out, sizeof(out),
+                 "{\"ok\":true,\"leg\":\"%c\",\"deg\":%.1f,\"pitch\":%.3f}",
+                 legmap_leg_char(leg), (double)deg, (double)pitch);
         return send_json(req, out);
 
     } else if (strcmp(act, "add") == 0) {
@@ -540,29 +478,30 @@ static esp_err_t api_legmap_post(httpd_req_t *req)
         if (!json_num(body, "deg", &deg) || !json_num(body, "h", &h)) {
             return send_json(req, "{\"ok\":false,\"msg\":\"missing deg or h\"}");
         }
-        /* 高度必须由用户提供 —— ESP32 量不了自己 */
+        /* 直距必须由用户提供 —— ESP32 量不了自己 */
         float pitch = 0.0f;
         esp_err_t r = cal_settle_and_read(deg, &pitch);
         if (r != ESP_OK) return send_json(req, "{\"ok\":false,\"msg\":\"MPU 读失败\"}");
 
-        esp_err_t ur = legmap_upsert_point(deg, h, pitch);
+        esp_err_t ur = legmap_upsert_point(leg, deg, h, pitch);
         if (ur != ESP_OK) {
-            const char *msg = (ur == ESP_ERR_NO_MEM) ? "点数已满" : "高度超出合理范围";
-            char out[96];
+            const char *msg = (ur == ESP_ERR_NO_MEM) ? "点数已满" : "直距超出合理范围";
+            char out[128];
             snprintf(out, sizeof(out), "{\"ok\":false,\"msg\":\"%s\"}", msg);
             return send_json(req, out);
         }
 
-        const legmap_t *m = legmap_get();
-        ESP_LOGI(TAG, "录入腿高点: %.0f° -> %.1fmm, pitch=%.2f° (共 %u 点)",
-                 (double)deg, (double)h, (double)pitch, m->count);
+        const legmap_t *m = legmap_get_one(leg);
+        ESP_LOGI(TAG, "录入腿高[%c]: %.0f° -> %.1fmm, pitch=%.2f° (共 %u 点)",
+                 legmap_leg_char(leg), (double)deg, (double)h, (double)pitch, m->count);
 
-        char out[192];
+        char out[224];
         snprintf(out, sizeof(out),
-                 "{\"ok\":true,\"n\":%u,\"deg\":%.1f,\"h\":%.1f,\"pitch\":%.3f,"
-                 "\"usable\":%s}",
-                 m->count, (double)deg, (double)h, (double)pitch,
-                 legmap_is_usable(2) ? "true" : "false");
+                 "{\"ok\":true,\"leg\":\"%c\",\"n\":%u,\"deg\":%.1f,"
+                 "\"h\":%.1f,\"pitch\":%.3f,\"usable\":%s}",
+                 legmap_leg_char(leg), m->count,
+                 (double)deg, (double)h, (double)pitch,
+                 legmap_is_usable(leg, 2) ? "true" : "false");
         return send_json(req, out);
     }
 
@@ -574,12 +513,30 @@ static esp_err_t api_legmap_post(httpd_req_t *req)
  * @note  查表可用时不需要这个。留着是因为: 标定点不够 (比如只有 2 个)
  *        或用户只想快速试一个值时, 可以走线性补偿。
  *
+ *        body = {"leg":"L"|"R"}  缺省用 L
+ *
  * ⚠ 线性只能近似。实测的 pitch~腿角 关系常常是 U 型,
  *   直线拟合会丢掉近一半补偿量。所以优先用查表。
  */
 static esp_err_t api_legmap_fit_legk(httpd_req_t *req)
 {
-    const legmap_t *m = legmap_get();
+    char body[64];
+    if (read_body(req, body, sizeof(body)) < 0) {
+        return send_json(req, "{\"ok\":false,\"msg\":\"body too large\"}");
+    }
+
+    leg_id_t leg = LEG_LEFT;
+    char leg_str[8] = {0};
+    if (json_str(body, "leg", leg_str, sizeof(leg_str))) {
+        if (legmap_parse_leg(leg_str, &leg) != ESP_OK) {
+            return send_json(req, "{\"ok\":false,\"msg\":\"bad leg\"}");
+        }
+    }
+
+    const legmap_t *m = legmap_get_one(leg);
+    if (m == NULL) {
+        return send_json(req, "{\"ok\":false,\"msg\":\"bad leg\"}");
+    }
     if (m->count < 2) {
         return send_json(req, "{\"ok\":false,\"msg\":\"至少要 2 个标定点\"}");
     }
@@ -594,10 +551,10 @@ static esp_err_t api_legmap_fit_legk(httpd_req_t *req)
         if (m->pts[i].servo_deg > xmax) xmax = m->pts[i].servo_deg;
     }
     if (xmax - xmin < 20.0f) {
-        char out[128];
+        char out[160];
         snprintf(out, sizeof(out),
-                 "{\"ok\":false,\"msg\":\"腿角跨度只 %.0f°, 至少要 20°\"}",
-                 (double)(xmax - xmin));
+                 "{\"ok\":false,\"msg\":\"[%c] 腿角跨度只 %.0f°, 至少要 20°\"}",
+                 legmap_leg_char(leg), (double)(xmax - xmin));
         return send_json(req, out);
     }
 
@@ -631,13 +588,15 @@ static esp_err_t api_legmap_fit_legk(httpd_req_t *req)
 
     param_set_float(PARAM_LEG_PITCH_K, k);
 
-    char out[224];
+    char out[256];
     snprintf(out, sizeof(out),
-             "{\"ok\":true,\"k\":%.4f,\"n\":%u,\"max_res\":%.3f,\"span\":%.3f,"
-             "\"res_ratio\":%.3f}",
+             "{\"ok\":true,\"leg\":\"%c\",\"k\":%.4f,\"n\":%u,"
+             "\"max_res\":%.3f,\"span\":%.3f,\"res_ratio\":%.3f}",
+             legmap_leg_char(leg),
              (double)k, m->count, (double)max_res, (double)span,
              (span > 0.01f) ? (double)(max_res / span) : 0.0);
-    ESP_LOGI(TAG, "反推 leg_k=%.4f (%u 点, 残差<=%.3f, 变化幅度 %.3f)",
+    ESP_LOGI(TAG, "反推 leg_k[%c]=%.4f (%u 点, 残差<=%.3f, 变化幅度 %.3f)",
+             legmap_leg_char(leg),
              (double)k, m->count, (double)max_res, (double)span);
     return send_json(req, out);
 }
@@ -672,7 +631,7 @@ esp_err_t web_server_start(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn   = httpd_uri_match_wildcard;
-    /* ⚠ 路由数必须 ≥ 实际注册数 (主页1 + 参数4 + 状态/执行6 + 平衡3 + 腿高3 = 17),
+    /* ⚠ 路由数必须 ≥ 实际注册数 (主页1 + 参数4 + 状态1 + 舵机1 + 重启1 + 平衡3 + 腿高3 = 14),
      *    不够的话 httpd_register_uri_handler 会静默失败, 表现是"某个接口 404 但没报错" */
     cfg.max_uri_handlers = 20;
     cfg.lru_purge_enable = true;          /* 浏览器刷新多, 及时回收缓存 */
@@ -698,15 +657,11 @@ esp_err_t web_server_start(void)
     httpd_register_uri_handler(s_httpd, &u_sv);
     httpd_register_uri_handler(s_httpd, &u_rs);
 
-    /* 状态与执行 */
+    /* 状态与其他 */
     httpd_uri_t u_st = { .uri = "/api/status", .method = HTTP_GET,  .handler = api_status       };
-    httpd_uri_t u_mt = { .uri = "/api/motor",  .method = HTTP_POST, .handler = api_motor        };
-    httpd_uri_t u_sp = { .uri = "/api/stop",   .method = HTTP_POST, .handler = api_stop         };
     httpd_uri_t u_svc= { .uri = "/api/servo",  .method = HTTP_POST, .handler = api_servo_center };
     httpd_uri_t u_rb = { .uri = "/api/reboot", .method = HTTP_POST, .handler = api_reboot       };
     httpd_register_uri_handler(s_httpd, &u_st);
-    httpd_register_uri_handler(s_httpd, &u_mt);
-    httpd_register_uri_handler(s_httpd, &u_sp);
     httpd_register_uri_handler(s_httpd, &u_svc);
     httpd_register_uri_handler(s_httpd, &u_rb);
 
@@ -729,12 +684,6 @@ esp_err_t web_server_start(void)
     /* 兜底 404 */
     httpd_register_err_handler(s_httpd, HTTPD_404_NOT_FOUND, not_found);
 
-    /* 电机看门狗 (首次创建, 保证电路上电电机一定是停的) */
-    motor_apply();
-    if (xTaskGetHandle("mwdt") == NULL) {
-        xTaskCreate(motor_watchdog_task, "mwdt", 2560, NULL, 4, NULL);
-    }
-
     ESP_LOGI(TAG, "网页服务器已启动, 打开 http://" WIFI_AP_IP);
     return ESP_OK;
 }
@@ -742,8 +691,6 @@ esp_err_t web_server_start(void)
 esp_err_t web_server_stop(void)
 {
     if (s_httpd == NULL) return ESP_OK;
-    s_motor_on = 0;
-    motor_apply();
     esp_err_t ret = httpd_stop(s_httpd);
     s_httpd = NULL;
     return ret;

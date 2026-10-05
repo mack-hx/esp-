@@ -60,3 +60,27 @@ float pid_update(bal_pid_t *pid, float err, float dt)
     float out = pid->kp * err + pid->ki * pid->i + pid->kd * d;
     return clamp_sym(out, pid->out_max);
 }
+
+
+/**
+ * @brief D 项用角速度反馈的 PID (平衡环专用)
+ * @note  与 pid_update() 的唯一区别: D 项直接取 rate, 不对误差求导。
+ *        详细理由见 pid.h 里 pid_update_rate() 的文档。
+ */
+float pid_update_rate(bal_pid_t *pid, float err, float rate, float dt)
+{
+    if (dt <= 0.0f) return 0.0f;
+
+    /* D 项 = 角速度本身。首次调用跳过, 防止上电瞬间的假阻尼冲量。 */
+    float d = pid->primed ? rate : 0.0f;
+
+    pid->prev_err = err;
+    pid->primed   = true;
+
+    pid->i = clamp_sym(pid->i + err * dt, pid->i_max);
+
+    /* 阻尼是**减速**作用: 车在往前摆 (rate>0) 时电机要往回收一把力。
+     * 所以 D 项取负号 —— 与 rate 同号会变成正反馈, 把车推倒。 */
+    float out = pid->kp * err + pid->ki * pid->i - pid->kd * d;
+    return clamp_sym(out, pid->out_max);
+}

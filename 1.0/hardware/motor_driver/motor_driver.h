@@ -40,6 +40,10 @@
 #define MOTOR_SPEED_MIN     -100    // 反转最大速度
 #define MOTOR_SPEED_MAX     100     // 正转最大速度
 
+/* ========== 起动死区补偿 ========== */
+/* 最小启动占空比的上限 (%), 超过这个值"抬到死区"就变成满速了, 没意义 */
+#define MOTOR_DEADBAND_MAX  30
+
 /* ========== 电机 ID 定义 ========== */
 typedef enum {
     MOTOR_A = 0,    // 电机 A
@@ -98,5 +102,22 @@ esp_err_t motor_brake(motor_id_t motor);
  * @return ESP_OK 成功, 其他值失败
  */
 esp_err_t motor_brake_all(void);
+
+/**
+ * @brief 设置电机起动死区补偿值
+ * @param deadzone 最小启动占空比 (0~MOTOR_DEADBAND_MAX, 单位 %; 0=不补偿)
+ * @return ESP_OK 成功
+ * @note  直流电机在极小占空比下转不动, 对平衡车表现为"慢慢爬行 + 突跳"。
+ *        本函数把**非零**输出抬到至少 deadzone, 消除该现象。
+ * @note  0 输出与制动**不受影响** (停车必须真的停)。
+ * @note  超范围自动夹到 [0, MOTOR_DEADBAND_MAX]。
+ */
+esp_err_t motor_set_deadband(int8_t deadzone);
+
+/**
+ * @brief 读取当前死区设置 (%)
+ * @return 死区值 (0~MOTOR_DEADBAND_MAX)
+ */
+int8_t motor_get_deadband(void);
 
 #endif // MOTOR_DRIVER_H

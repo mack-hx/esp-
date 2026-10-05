@@ -40,7 +40,6 @@ typedef enum {
     UI_PAGE_ENCODER,             // 编码电机调试
     UI_PAGE_MPU9250,             // MPU9250 参数调试
     UI_PAGE_WIFI,                // WiFi 热点 / 网页调参入口
-    UI_PAGE_HC595_TEST,          // 74HC595 临时测试 (诊断电机 AIN1/AIN2 实际接在哪个 Qx)
     UI_PAGE_MAX                  // 哨兵
 } ui_page_id_t;
 

@@ -19,9 +19,12 @@ static const char *TAG = "PARAM";
 #define NVS_NAMESPACE   "param"
 #define NVS_KEY_VALUES  "v"         /* 存所有 float 的 blob */
 #define NVS_KEY_VERSION "ver"       /* 表结构版本, 表变了就忽略旧数据 */
-#define PARAM_DATA_VERSION  3       /* 每次改 g_param_items 的数量/含义就 +1
+#define PARAM_DATA_VERSION  5       /* 每次改 g_param_items 的数量/含义就 +1
                                       * v2: 插入 PARAM_LEG_PITCH_K
                                       * v3: 再插入 Kp 调度两项
+                                      * v4: 插入 PARAM_BAL_SIGN
+                                      * v5: 插入 gyro_sign / motor_deadband /
+                                      *     启动门控三项
                                       *     NVS blob 布局变了, 旧数据必须作废 */
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
@@ -52,8 +55,8 @@ const param_item_t g_param_items[] = {
     { PARAM_PID_STEER_KD,"steer_kd","Steer Kd",    "",   1.0f,   0.0f,   30.0f,  0.1f, 1, PARAM_GRP_STEER,
       "转向阻尼" },
     /* ---------- 限幅 / 死区 / 滤波 ---------- */
-    { PARAM_MOTOR_OUT_MAX, "motor_max", "Motor Out Max", "%", 100.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
-      "电机总输出上限, 调试时先压低防止打飞" },
+    { PARAM_MOTOR_OUT_MAX, "motor_max", "Motor Out Max", "%", 30.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "电机总输出上限。默认只给 30% 是故意的: 调试时宁小勿大, 调好了再往上加" },
     { PARAM_SPEED_OUT_MAX, "spdout_max","Speed Out Max","",  40.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
       "速度环输出映射到倾角目标的角度上限 (°)" },
     { PARAM_ANGLE_LIMIT,   "ang_limit",  "Angle Limit", "°",  25.0f,  5.0f,   60.0f, 1.0f, 0, PARAM_GRP_LIMIT,
@@ -79,6 +82,24 @@ const param_item_t g_param_items[] = {
       "舵机摆动幅度 (围绕中心角左右各多少度)" },
     { PARAM_MOTOR_PWM_MAX, "pwm_max",   "Motor PWM Max","%", 100.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
       "电机 PWM 硬件上限" },
+    /* ⚠ step 必须让 -1/+1 都落在格点上, 否则 snap_to_step() 会把 -1 吸到 0
+     *   (0 会被 balance.c 当成"没设置", 强制按 +1 处理, 参数就形同虚设) */
+    { PARAM_BAL_SIGN,      "bal_sign",  "Bal Sign",     "",    1.0f,  -1.0f,    1.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "平衡输出符号 +1/-1。车往一个方向倒、电机却往反方向跑时改成 -1, 不用重烧固件" },
+
+    /* ---------- 2026-10-05 参照 WL1 新增 ---------- */
+    /* ⚠ 同样必须 step=1.0 且 min=-1: 让 -1/+1 都落在格点上,
+     *   否则滑块可能给出 0, 而 0 会被当成"没设置"强制按 +1 处理 */
+    { PARAM_GYRO_SIGN,     "gyro_sign", "Gyro Sign",     "",    1.0f,  -1.0f,    1.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "俯仰角速度符号 +1/-1。抬轮子前后晃一下, 网页角速度应与 Pitch 同向; 反了就改成 -1" },
+    { PARAM_MOTOR_DEADBAND,"deadzone",  "Motor Deadband","%",   8.0f,   0.0f,   30.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "电机最小启动 PWM 死区补偿。太小电机转不动, 太大车会一顿一顿。默认 0=不补偿" },
+    { PARAM_ARM_PITCH,     "arm_pitch", "Arm Pitch",     "°",   8.0f,   1.0f,   30.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "启动门控: 车倾角小于这个值才允许进入平衡。防止歪着启动直接摔倒" },
+    { PARAM_ARM_RATE,      "arm_rate",  "Arm Rate",      "°/s", 20.0f,   2.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "启动门控: 角速度小于这个值才允许进入平衡。防止推着车启动" },
+    { PARAM_ARM_TIME,      "arm_time",  "Arm Time",      "ms", 500.0f,   0.0f,  3000.0f,100.0f, 0, PARAM_GRP_LIMIT,
+      "启动门控: 需要连续稳定这么久才真正输出。0=不等(立刻输出, 不推荐)" },
 };
 
 /**

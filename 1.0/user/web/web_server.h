@@ -6,17 +6,15 @@
  * @note  接口一览:
  *   GET  /            调参主页 (滑块界面, HTML 内嵌在 web_page.c)
  *   GET  /api/params  取全部参数 (含名称/范围/默认值/当前值)
- *   GET  /api/status  取实时状态 (陀螺仪/编码器/WiFi/电机/平衡控制)
+ *   GET  /api/status  取实时状态 (陀螺仪/编码器/WiFi/平衡控制)
  *   POST /api/params  批量设置参数, body = {"bal_kp":12.5,...}
  *   POST /api/save    保存参数到 NVS
  *   POST /api/reset   恢复默认参数 (仅内存)
- *   POST /api/motor   电机控制, body = {"on":1,"speed":40,"dir":1}  (1=A 2=B 3=双)
- *   POST /api/stop    急停 (两个电机立即刹车)
  *   POST /api/servo   舵机回中
  *   POST /api/balance 启停平衡控制, body = {"on":1|0}
- *   GET  /api/legmap  取腿高标定表 (实测查表, 含每个点的 舵机角/腿高/Pitch)
- *   POST /api/legmap  录入腿高点, body = {"act":"clear|move|read|add","deg":80,"h":61.5}
- *   POST /api/legmap_fit_legk  用标定点反推线性 leg_k (查表不可用时的兜底)
+ *   GET  /api/legmap  取左右两腿的标定表
+ *   POST /api/legmap  录入/动腿/读取, body={"act":"clear|clear_all|move|read|add","leg":"L|R","deg":80,"h":81.5}
+ *   POST /api/legmap_fit_legk  用标定点反推线性 leg_k (查表不可用时的兜底), body={"leg":"L|R"}
  * @author ESP32 机械狗项目
  * @date 2026-10-04
  */

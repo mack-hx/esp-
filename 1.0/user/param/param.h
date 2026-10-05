@@ -61,6 +61,14 @@ typedef enum {
     PARAM_SERVO_CENTER,      // 舵机中心角 (°)
     PARAM_SERVO_LIMIT,       // 舵机摆动幅度 (°)
     PARAM_MOTOR_PWM_MAX,     // 电机 PWM 上限 (%)
+    PARAM_BAL_SIGN,          // 平衡输出符号 (+1/-1), 方向错了改这里不用重烧
+    /* --- 2026-10-05 参照 WL1 新增 --- */
+    PARAM_GYRO_SIGN,         // 俯仰角速度符号 (+1/-1), 陀螺仪轴选对后仍反向时改这里
+    PARAM_MOTOR_DEADBAND,    // 电机最小启动 PWM (%) 死区补偿
+    /* --- 安全门控 (参照 WL1 BalanceStartupGate) --- */
+    PARAM_ARM_PITCH,         // 启动门控: 允许的最大倾角 (°)
+    PARAM_ARM_RATE,          // 启动门控: 允许的最大角速度 (°/s)
+    PARAM_ARM_TIME,          // 启动门控: 需要连续稳定的时长 (ms)
     PARAM_MAX                 // 哨兵
 } param_id_t;
 

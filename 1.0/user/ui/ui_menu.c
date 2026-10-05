@@ -27,7 +27,6 @@ static const menu_item_t menu_items[] = {
     { UI_PAGE_ENCODER,  "3. Encoder & Motor"},
     { UI_PAGE_MPU9250,  "4. MPU9250"        },
     { UI_PAGE_WIFI,     "5. Web Tuner"      },
-    { UI_PAGE_HC595_TEST, "6. HC595 Test"   },
 };
 #define MENU_ITEM_COUNT  (sizeof(menu_items) / sizeof(menu_items[0]))
 /* "Back to Home" 特殊 id 标识 */

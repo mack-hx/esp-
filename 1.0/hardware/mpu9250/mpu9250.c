@@ -9,7 +9,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/portmacro.h"
+#include "freertos/semphr.h"
 #include <string.h>
 #include <math.h>
 
@@ -35,13 +35,21 @@ static float gyro_scale = 131.0f;     // ±250°/s
 static euler_angle_t current_angle = {0, 0, 0};
 static const float alpha = 0.98f;  // 互补滤波系数
 
-/* I2C 互斥锁
- * ⚠ 必须加: mpu9250_read_data() / mpu9250_read_gyro() 是对外独立接口,
- *   控制任务和 UI 页可能同时调用, 两条 i2c_master_* 同时操作同一总线
- *   会拿到互相穿插的数据。互补滤波还要求 accel/gyro 严格同一时刻,
- *   所以必须在最底层加锁。
- *   代价: 临界区只有一次 14 字节 I2C 读 (400kHz 下约 0.4ms), 可以接受。 */
-static portMUX_TYPE s_i2c_mux = portMUX_INITIALIZER_UNLOCKED;
+/* I2C 总线互斥锁
+ *
+ * ⚠ 必须加: 控制任务 (10ms 周期) 和 UI 任务 (50ms 周期) 都会调
+ *   mpu9250_read_data(), 两条 i2c_master_* 同时操作同一总线会拿到
+ *   互相穿插的数据。互补滤波还要求 accel/gyro 严格同一时刻。
+ *   虽然 I2C0 上只有 MPU9250 一个器件 (PCF8574 在 I2C1), 但**并发调用者**
+ *   存在, 所以锁不能省。
+ *
+ * ⚠⚠ 必须是**互斥锁(semaphore)**, 不能用 taskENTER_CRITICAL():
+ *   临界区会关中断, 而 i2c_master_cmd_begin() 等硬件应答是靠中断推进的。
+ *   中断一关, I2C 永远等不到完成 → 中断看门狗超时 → 整机重启。
+ *   (实测: 进 MPU 调试页必崩, panic = "Interrupt wdt timeout on CPU0")
+ *
+ *   互斥锁只阻止任务切换, 不关中断, I2C 中断照常工作, 两个需求都满足。 */
+static SemaphoreHandle_t s_i2c_mutex = NULL;
 
 /* 上次调用互补滤波的时刻 (esp_timer 微秒), 首次为 0
  * ⚠ 以前 dt 硬编码 0.01f, 控制周期一改陀螺仪积分就错且无任何提示。
@@ -49,8 +57,31 @@ static portMUX_TYPE s_i2c_mux = portMUX_INITIALIZER_UNLOCKED;
 static int64_t s_filt_last_us = 0;
 
 /**
+ * @brief 获取 I2C 总线锁
+ * @note  所有走 I2C 的入口 (init / read_data / calibrate / reset) 都要先调它
+ */
+static void mpu9250_lock(void)
+{
+    /* 锁没建好时不能等, 否则会永久阻塞。
+     * 只在 init 之前的窗口期可能出现 (那时还不该有并发读)。 */
+    if (s_i2c_mutex != NULL) {
+        xSemaphoreTake(s_i2c_mutex, portMAX_DELAY);
+    }
+}
+
+/**
+ * @brief 释放 I2C 总线锁
+ */
+static void mpu9250_unlock(void)
+{
+    if (s_i2c_mutex != NULL) {
+        xSemaphoreGive(s_i2c_mutex);
+    }
+}
+
+/**
  * @brief 写入寄存器
- * @note  调用方必须已持有 s_i2c_mux
+ * @note  调用方必须已持有 I2C 锁 (见 mpu9250_lock)
  */
 static esp_err_t mpu9250_write_reg(uint8_t reg, uint8_t data)
 {
@@ -61,7 +92,7 @@ static esp_err_t mpu9250_write_reg(uint8_t reg, uint8_t data)
 
 /**
  * @brief 读取寄存器
- * @note  调用方必须已持有 s_i2c_mux
+ * @note  调用方必须已持有 I2C 锁 (见 mpu9250_lock)
  */
 static esp_err_t mpu9250_read_reg(uint8_t reg, uint8_t *data, size_t len)
 {
@@ -105,27 +136,51 @@ static esp_err_t mpu9250_i2c_init(void)
 esp_err_t mpu9250_init(void)
 {
     esp_err_t ret;
-    
+
+    /* 先建 I2C 锁再碰总线: 后面所有 read_reg/write_reg 都假定锁已就绪。
+     * 放最前面保证"init 中途失败"也不会留下半初始化状态让上层误用。 */
+    if (s_i2c_mutex == NULL) {
+        s_i2c_mutex = xSemaphoreCreateMutex();
+        if (s_i2c_mutex == NULL) {
+            ESP_LOGE(TAG, "创建 I2C 互斥锁失败 (内存不足)");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     // 初始化 I2C
     ret = mpu9250_i2c_init();
     if (ret != ESP_OK) {
         return ret;
     }
-    
+
     // 检查器件 ID
+    // ⚠ 不只是 MPU9250: MPU6500 的 WHO_AM_I = 0x70, 寄存器完全兼容 MPU9250
+    //   的加速度/陀螺部分 (MPU9250 实际就是 MPU6500 + 一颗 AK8963 磁力计),
+    //   我们代码也没用到磁力计, 所以一并接受。三种 ID 对应的启用结果:
+    //     0x71 = MPU9250 (标准 9-axis)
+    //     0x73 = MPU9250 (某些批次, 同上)
+    //     0x70 = MPU6500 (6-axis, 加速度+陀螺同 9250, 没磁力计 → 我们用不到)
+    //   如果是 0x68/0x98 之类的值说明器件 ID 寄存器读到的根本不是 IMU,
+    //   这通常是 AD0 接错 / I2C 地址冲突 / SDA/SCL 接反。
     uint8_t who_am_i;
     ret = mpu9250_read_reg(MPU9250_WHO_AM_I, &who_am_i, 1);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "读取 WHO_AM_I 失败");
         return ret;
     }
-    
-    if (who_am_i != 0x71 && who_am_i != 0x73) {
-        ESP_LOGE(TAG, "WHO_AM_I 错误: 0x%02X (期望 0x71 或 0x73)", who_am_i);
+
+    if (who_am_i != 0x71 && who_am_i != 0x73 && who_am_i != 0x70) {
+        ESP_LOGE(TAG, "WHO_AM_I 错误: 0x%02X (期望 0x70/0x71/0x73)", who_am_i);
+        ESP_LOGE(TAG, "如为 0x98 之类 → AD0/SDA/SCL 接错或地址冲突; 模块可能没真接好");
         return ESP_FAIL;
     }
-    
-    ESP_LOGI(TAG, "MPU9250 检测成功, WHO_AM_I=0x%02X", who_am_i);
+
+    /* 0x70 = MPU6500 (6-axis),  0x71/0x73 = MPU9250 (9-axis)
+     * 后面所有寄存器操作两种芯片一样, 不再分支 */
+    if (who_am_i == 0x70) {
+        ESP_LOGW(TAG, "检测到 MPU6500 (WHO_AM_I=0x70), 加速度+陀螺与 MPU9250 兼容, 不支持磁力计");
+    }
+    ESP_LOGI(TAG, "IMU 检测成功, WHO_AM_I=0x%02X", who_am_i);
     
     // 复位设备
     ret = mpu9250_write_reg(MPU9250_PWR_MGMT_1, 0x80);
@@ -152,7 +207,7 @@ esp_err_t mpu9250_init(void)
     ret = mpu9250_write_reg(MPU9250_ACCEL_CONFIG2, 0x03);
     if (ret != ESP_OK) return ret;
     
-    ESP_LOGI(TAG, "MPU9250 初始化完成");
+    ESP_LOGI(TAG, "IMU 初始化完成 (加速度+陀螺配置就绪)");
     s_ready = true;
     
     // 校准陀螺仪
@@ -215,9 +270,9 @@ esp_err_t mpu9250_read_data(mpu9250_data_t *data)
 {
     uint8_t raw_data[14];
 
-    taskENTER_CRITICAL(&s_i2c_mux);
+    mpu9250_lock();
     esp_err_t ret = mpu9250_read_reg(MPU9250_ACCEL_XOUT_H, raw_data, 14);
-    taskEXIT_CRITICAL(&s_i2c_mux);
+    mpu9250_unlock();
     if (ret != ESP_OK) {
         return ret;
     }
@@ -398,10 +453,13 @@ void mpu9250_get_gyro_offset(mpu9250_axis_t *offset)
 
 /**
  * @brief 软件复位 MPU9250
+ * @note  UI 页 K3 会调, 与控制任务可能并发, 所以要持锁
  */
 esp_err_t mpu9250_reset(void)
 {
+    mpu9250_lock();
     esp_err_t ret = mpu9250_write_reg(MPU9250_PWR_MGMT_1, 0x80);
+    mpu9250_unlock();
     vTaskDelay(pdMS_TO_TICKS(100));
     return ret;
 }
