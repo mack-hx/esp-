@@ -14,7 +14,9 @@
  *   POST /api/stop    急停 (两个电机立即刹车)
  *   POST /api/servo   舵机回中
  *   POST /api/balance 启停平衡控制, body = {"on":1|0}
- *   POST /api/legcal  腿角→俯仰角标定, body = {"act":"reset|move|sample|fit","deg":80}
+ *   GET  /api/legmap  取腿高标定表 (实测查表, 含每个点的 舵机角/腿高/Pitch)
+ *   POST /api/legmap  录入腿高点, body = {"act":"clear|move|read|add","deg":80,"h":61.5}
+ *   POST /api/legmap_fit_legk  用标定点反推线性 leg_k (查表不可用时的兜底)
  * @author ESP32 机械狗项目
  * @date 2026-10-04
  */

@@ -15,6 +15,7 @@
 
 #include "balance.h"
 #include "param.h"
+#include "legmap.h"
 #include "mpu9250.h"
 #include "encoder.h"
 #include "motor_driver.h"
@@ -60,34 +61,43 @@ static bool  s_lpf_primed = false;
  *
  * @brief 这是什么问题
  *   MPU 装在**车身**上, 它报的是"车身相对铅垂线"的角度。但车站在地上时
- *   轮轴被地面强制水平, 真正决定会不会倒的是"**车身相对轮轴**"的角度。
- *   车身相对轮轴的角度 = 轮轴角(≈0) + 车身相对轮轴角,
+ *   轮轴被地面强制水平, 真正决定会不会倒的是"**车身相对轮轴**"的角度,
  *   而后者完全由**腿弯曲多少**决定 —— 腿一弯, 车身就跟着歪。
  *
- *   所以 leg_angle ≠ φ_home 时, MPU 读数里天然混了一个"腿的角度",
- *   而控制器把"车身 pitch=0"当成站立目标 → 腿弯多少, 目标就偏多少。
- *   现有 PARAM_ANGLE_ZERO 是个常量, 只能配准**一个**腿的角度。
+ *   控制器把"车身 pitch=0"当成站立目标, 但真实的站立目标是
+ *   "车身相对轮轴 = 某个随腿弯曲而变的角度"。腿一弯, 目标就偏了。
  *
- * @brief 怎么修
- *   在信号侧减掉腿带来的这部分 (而不是加在目标值上):
- *       pitch_修正 = pitch_原始 + ang_zero - leg_k * (φ - φ_home)
- *   φ = 当前舵机逻辑角, φ_home = PARAM_SERVO_CENTER (舵机中心角, 复用不新增参数)
+ * @brief 两级方案 (优先用查表, 没有才退回线性)
  *
- * @brief 为什么放信号侧而不是目标值
+ *   【方案1】查表 (user/legmap) —— 首选
+ *     用户实测每个舵机角下的: 轮心高度(mm) 和 车身 Pitch(°),
+ *     存在 legmap 里做插值。补偿 = pitch(当前角) - pitch(参考角)。
+ *     优点: 直接量真实世界, 含杆长误差/销孔间隙/装配偏差/打印形变,
+ *           不依赖任何模型精度; 且补偿曲线可以是任意形状 (实测是 U 型,
+ *           用一次斜率近似会丢掉近一半补偿量)。
+ *
+ *   【方案2】线性 leg_k (param) —— 查表不可用时的兜底
+ *     pitch_修正 = pitch_原始 + ang_zero - leg_k * (φ - φ_center)
+ *     优点: 不需要量尺, 拨几个腿角读 Pitch 就能定; 缺点: 只能拟合直线。
+ *
+ *   两级都不可用 (legmap 空 + leg_k=0) → 不补偿, 与最初版本行为一致。
+ *
+ * @brief 为什么放信号侧而不是加在目标倾角上
  *   1) 摔倒判定 balance_check_fallen() 判的是 |pitch|, 修正后它也跟着对,
  *      否则腿弯多了会误判摔倒。放目标值上则判定不会跟着变。
  *   2) 目标倾角就干干净净只剩"想让它倾斜多少"(速度环输出), 语义清晰。
  *
  * @brief 局限 (务必知道)
  *   舵机是**开环**的 (servo_set_angle 只写 PWM, 没有位置回读),
- *   拿到的 φ 是"指令角"不是"实际角", 腿受力变形会造成误差。
- *   但这只是个前馈平移量, 常值误差由平衡环 Ki 自己吃掉, 不需要精确模型。
- *
- * @brief 标定
- *   leg_k 用网页标定工具测: 车身扶住不动, 腿拨到几个角度读 Pitch, 拟合直线。
- *   详见 user/web/web_server.c 的 api_legcal_collect()。
+ *   查表的横轴 φ 是"指令角"不是"实际角", 腿受力变形会造成误差。
+ *   查表方案因为纵轴也是实测的, 这部分误差已在标定数据里部分体现;
+ *   但常值残差仍需平衡环的 Ki 兜住。
  */
-static float s_leg_comp = 0.0f;   /* 本周期的腿角补偿量 (°), 只写不读, 供 UI/网页观察 */
+
+/* 本周期的中间量, 供 UI / 网页观察补偿是否在工作 */
+static float s_leg_comp   = 0.0f;   /* 姿态补偿量 (°) */
+static float s_leg_height = 0.0f;   /* 推算腿高 (mm) */
+static float s_kp_eff     = 0.0f;   /* 实际生效的平衡环 Kp */
 
 
 /* ================= 内部辅助 ================= */
@@ -136,26 +146,73 @@ static void balance_reset_pid(void)
 }
 
 /**
- * @brief 算本周期要减掉的"腿角带来的俯仰角" (°)
- * @return 补偿量 (°), 已在 s_leg_comp 里留档
- * @note  leg_k = 0 (默认) 时直接返回 0, 行为与加补偿之前完全一致,
- *        所以不标定也能安全跑。
+ * @brief 查表 + 线性兜底, 算本周期要减掉的"腿弯曲带来的俯仰角" (°)
+ * @return 补偿量 (°), 已写入 s_leg_comp / s_leg_height
+ * @note  优先级: legmap 查表 (>=2 点且单调) > leg_k 线性 > 都不补偿
+ *        任何一级都拿不到数据时返回 0, 行为退回到最初版本, 不会误动作。
  */
 static float balance_leg_compensation(void)
 {
+    /* 两路舵机是镜像的 (视觉对称), 共用一个"逻辑角", 所以只有一个腿角自由度。
+     * 取 SERVO_1 的逻辑角: 它是内部维护的逻辑量, 不受物理镜像映射影响。 */
+    float phi = (float)servo_get_angle(SERVO_1);
+
+    /* --- 方案1: 查表 (首选) --- */
+    if (legmap_is_usable(2)) {
+        /* 参考角取舵机中心角。查表里没有精确这个角也没关系,
+         * legmap_pitch_comp() 内部会做插值。
+         * 为什么要减掉参考角的 Pitch: 因为 ang_zero 只配平了"中心角这一档",
+         * 其他腿角相对中心角的差值就是腿带来的额外部分。 */
+        float comp = legmap_pitch_comp(phi, param_get_float(PARAM_SERVO_CENTER));
+
+        float h = legmap_height(phi);
+        s_leg_height = (h == LEGMAP_HEIGHT_UNKNOWN) ? 0.0f : h;
+        s_leg_comp   = comp;
+        return comp;
+    }
+
+    /* --- 方案2: 线性 leg_k 兜底 --- */
+    s_leg_height = 0.0f;   /* 没查表就推不出腿高, Kp 调度自动失效 */
     float k = param_get_float(PARAM_LEG_PITCH_K);
     if (k == 0.0f) {
         s_leg_comp = 0.0f;
         return 0.0f;
     }
-
-    /* 两路舵机是镜像的 (视觉对称), 共用一个"逻辑角", 所以只有一个腿角自由度。
-     * 取 SERVO_1 的逻辑角: 它是内部维护的逻辑量, 不受物理镜像映射影响。 */
-    float phi      = (float)servo_get_angle(SERVO_1);
-    float phi_home = param_get_float(PARAM_SERVO_CENTER);
-
-    s_leg_comp = k * (phi - phi_home);
+    s_leg_comp = k * (phi - param_get_float(PARAM_SERVO_CENTER));
     return s_leg_comp;
+}
+
+/**
+ * @brief 按当前腿高算出平衡环实际生效的 Kp
+ * @param base_kp 基础 Kp (param 里的 bal_kp)
+ * @return 调度后的 Kp
+ * @note  物理依据: 腿长 → 重心高 → 绕轮的转动惯量大。
+ *        同样的 Kp 在高腿位下阻尼不足, 车会发软、振荡;
+ *        低腿位下 Kp 太高又容易抖。所以 Kp 要随腿高线性升降。
+ *
+ * ⚠ 斜率必须自己试车标定, 没有通用值。
+ *   调法: 站不起来的那个腿高, 把 Kp 加到不晃为止, 记下; 换腿高再记一次,
+ *   两次差值除以高度差 = kp_hslope。方向反了就取负。
+ */
+static float balance_effective_kp(float base_kp)
+{
+    float slope = param_get_float(PARAM_KP_HEIGHT_SLOPE);
+    if (slope == 0.0f || s_leg_height <= 0.0f) {
+        s_kp_eff = base_kp;
+        return base_kp;
+    }
+
+    float ref  = param_get_float(PARAM_KP_HEIGHT_REF);
+    float kp   = base_kp + slope * (s_leg_height - ref);
+
+    /* 限幅: 调度出来的 Kp 必须落在合理区间, 否则腿高跳变时会直接把车搞飞。
+     * 上限用滑块允许的最大 Kp, 下限为 0 (不做负 Kp, 那等于反作用力)。 */
+    float kp_max = 200.0f;
+    if (kp > kp_max) kp = kp_max;
+    if (kp < 0.0f)   kp = 0.0f;
+
+    s_kp_eff = kp;
+    return kp;
 }
 
 /**
@@ -174,12 +231,14 @@ static void balance_read_sensors(void)
 
         if (mpu9250_get_pose(&euler, &gyro) == ESP_OK) {
             /* 姿态修正链:
-             *   1) 减掉 MPU 焊歪的固定角 (ang_zero, 配平值)
-             *   2) 减掉腿弯曲带来的那部分 (leg_k, 几何补偿)  */
+             *   1) 加零偏 (ang_zero), 配平"参考腿角"这一档的固定歪角
+             *   2) 减腿弯曲带来的部分 (查表优先, 退回 leg_k 线性) */
             s_data.pitch = euler.pitch
                          + param_get_float(PARAM_ANGLE_ZERO)
                          - balance_leg_compensation();
-            s_data.leg_comp = s_leg_comp;   /* 留档, 供 UI/网页观察补偿量 */
+            /* 留档, 供 UI/网页观察补偿与腿高是否在动 */
+            s_data.leg_comp   = s_leg_comp;
+            s_data.leg_height = s_leg_height;
 
             /* 一阶低通滤掉高频噪声, 系数越小越平滑但延迟越大 */
             float a = param_get_float(PARAM_GYRO_LPF);
@@ -192,9 +251,10 @@ static void balance_read_sensors(void)
             s_data.gyro_x = s_gyro_lpf;
         }
     } else {
-        s_data.pitch    = 0.0f;
-        s_data.gyro_x   = 0.0f;
-        s_data.leg_comp = 0.0f;
+        s_data.pitch      = 0.0f;
+        s_data.gyro_x     = 0.0f;
+        s_data.leg_comp   = 0.0f;
+        s_data.leg_height = 0.0f;
     }
 
     /* --- 编码器: 两轮平均轮速 (去掉减速比, 得到轮子真实转速) --- */
@@ -281,9 +341,15 @@ static void balance_control_step(float dt)
     /* --- 内环: 平衡环 → 电机差速 ---
      * 误差 = 车实际倾角 - 目标倾角
      * 车往前倒 (pitch > 0) 时误差为正, 输出为正 → 电机往"追着倒的方向"转,
-     * 把重心拉回来。符号约定下一步真机试车时再确认。 */
+     * 把重心拉回来。符号约定下一步真机试车时再确认。
+     *
+     * ⚠ Kp 按当前腿高动态调度 (见 balance_effective_kp 的物理依据)。
+     *   必须放在误差计算之前, 因为误差要先乘 Kp。 */
+    s_pid_bal.kp = balance_effective_kp(param_get_float(PARAM_PID_BAL_KP));
+
     float bal_err = s_data.pitch - s_data.target_pitch;
     s_data.bal_out = pid_update(&s_pid_bal, bal_err, dt);
+    s_data.kp_eff  = s_kp_eff;
 
     /* --- 转向环: 本版没有转向目标, 输出恒为 0 --- */
     s_data.steer_out = 0.0f;
@@ -357,12 +423,26 @@ esp_err_t balance_init(void)
     balance_load_params();
     balance_reset_pid();
 
+    /* 载入腿高标定表 (没有就退回 leg_k 线性, 都没有则不补偿) */
+    legmap_init();
+
     s_state  = BAL_STATE_IDLE;
     s_enabled = false;
     s_mpu_ready = mpu9250_is_ready();
 
     if (!s_mpu_ready) {
         ESP_LOGW(TAG, "MPU9250 不可用, 平衡控制无法工作 (请先接好 IMU)");
+    }
+
+    const legmap_t *lm = legmap_get();
+    if (legmap_is_usable(2)) {
+        ESP_LOGI(TAG, "腿高标定: %u 个点, 补偿与 Kp 调度生效", lm->count);
+    } else if (param_get_float(PARAM_LEG_PITCH_K) != 0.0f) {
+        ESP_LOGI(TAG, "腿高未标定, 退回 leg_k 线性补偿 (%.3f)",
+                 (double)param_get_float(PARAM_LEG_PITCH_K));
+    } else {
+        ESP_LOGW(TAG, "腿角未标定 (leg_k=0), 不做几何补偿 —— "
+                     "腿改变角度时车会往一个方向偏");
     }
 
     if (xTaskGetHandle("bal") != NULL) {

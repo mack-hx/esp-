@@ -16,6 +16,7 @@
 #include "mpu9250.h"
 #include "servo.h"
 #include "balance.h"
+#include "legmap.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_system.h"
@@ -24,6 +25,7 @@
 #include "freertos/task.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 
 static const char *TAG = "WEB";
@@ -257,13 +259,16 @@ static esp_err_t api_balance_reload(httpd_req_t *req)
 
 /**
  * @brief POST /api/save — 参数落盘
+ * @note  腿高标定表也一起存, 否则标定数据重启就丢
  */
 static esp_err_t api_save(httpd_req_t *req)
 {
     esp_err_t ret = param_save();
+    /* 两个都存: 参数失败也要把标定表试一下, 免得一个失败导致另一个没存 */
+    esp_err_t lm  = legmap_save();
     char out[96];
     snprintf(out, sizeof(out), "{\"ok\":%s}",
-             (ret == ESP_OK) ? "true" : "false");
+             (ret == ESP_OK && lm == ESP_OK) ? "true" : "false");
     return send_json(req, out);
 }
 
@@ -281,7 +286,10 @@ static esp_err_t api_reset(httpd_req_t *req)
  */
 static esp_err_t api_status(httpd_req_t *req)
 {
-    char buf[512];
+    /* 768 字节: 现有字段约 500, 加腿高/Kp 后余量充足。
+     * ⚠ snprintf 会静默截断, 截断的 JSON 解析失败会让网页所有实时数据都变 "-",
+     *   所以字段变多时要同步加大。 */
+    char buf[768];
 
     /* 轮询本身就是"网页还在线"的心跳, 顺带喂电机看门狗 */
     s_motor_t = esp_timer_get_time() / 1000;
@@ -309,8 +317,9 @@ static esp_err_t api_status(httpd_req_t *req)
              "\"bal_state\":\"%s\",\"bal_on\":%s,"
              "\"tgt_pitch\":%.2f,\"bal_out\":%.1f,\"spd_out\":%.2f,"
              "\"steer_out\":%.1f,\"speed\":%.1f,\"mot_a\":%d,\"mot_b\":%d,"
-             /* 腿角几何补偿: leg_comp 是本周期实际减掉的量, 看它是否随腿角变化 */
-             "\"leg_deg\":%u,\"leg_comp\":%.3f,\"leg_k\":%.3f}",
+             /* 腿高标定: leg_h 是实测查表推出的腿高, usable=false 说明还没标定 */
+             "\"leg_deg\":%u,\"leg_comp\":%.3f,\"leg_k\":%.3f,"
+             "\"leg_h\":%.1f,\"leg_usable\":%s,\"kp_eff\":%.1f}",
              wstate[ws], wifi_ap_get_client_count(), WIFI_AP_IP, ssid,
              (double)bal.pitch, (double)bal.gyro_x,
              encoder_get_count(ENCODER_1), encoder_get_count(ENCODER_2),
@@ -323,7 +332,10 @@ static esp_err_t api_status(httpd_req_t *req)
              (double)bal.speed, bal.motor_a, bal.motor_b,
              servo_get_angle(SERVO_1),
              (double)bal.leg_comp,
-             (double)param_get_float(PARAM_LEG_PITCH_K));
+             (double)param_get_float(PARAM_LEG_PITCH_K),
+             (double)bal.leg_height,
+             legmap_is_usable(2) ? "true" : "false",
+             (double)bal.kp_eff);
 
     return send_json(req, buf);
 }
@@ -389,11 +401,16 @@ static esp_err_t api_servo_center(httpd_req_t *req)
     return send_json(req, "{\"ok\":true}");
 }
 
-/* ================= 腿角 → 俯仰角 标定工具 =================
+/* ================= 腿高标定工具 (实测查表) =================
  *
  * @brief 标定的物理含义
  *   MPU 装在车身上, 车身相对轮轴的角度由**腿弯曲多少**决定。
- *   我们要测的是"腿转 1° 时, MPU 读到的 Pitch 变多少度" = leg_k。
+ *   我们要建立的是一张实测表: 每个舵机角 → { 轮心高度, 车身 Pitch }。
+ *
+ * @brief 为什么实测而不是四连杆运动学
+ *   解析运动学要靠 4 根杆长 + 铰接点坐标反推机构姿态, 但杆长测量有误差,
+ *   打印件有形变, 销孔有间隙 —— 在死点附近误差会被放大。
+ *   实测量的是真实世界, 把这些误差全都包含进去了。配平用途实测远优于推算。
  *
  * @brief 怎么测才安全且准
  *   关键: **车身固定不动, 只让腿动**。
@@ -402,56 +419,88 @@ static esp_err_t api_servo_center(httpd_req_t *req)
  *   - 这样测出来的差值纯粹是"腿动的贡献", 混不进地面不平、轮子打滑的干扰
  *   - 全程车一动不动, 不存在摔倒风险
  *
- * @brief 采样策略
- *   每个腿角停留 CAL_SETTLE_MS 让姿态稳定, 再连采 CAL_SAMPLES 次求平均。
- *   平均能压掉互补滤波的残余抖动和 MPU 噪声。
- *
- * @brief 为什么要多个点拟合直线
- *   真实连杆有间隙/形变, 单点差值会带噪声。两个点算斜率误差大,
- *   4~5 个点做最小二乘拟合, 既能压噪又能检出"读数不随腿变"的情况
- *   (斜率≈0 说明 MPU 装的位置不受腿影响, 那就不需要补偿)。
+ * @brief 高度是用户量的, ESP32 量不了自己
+ *   流程: 网页让你把腿拨到某个角度并等姿态稳定 → 网页读 Pitch →
+ *         你拿尺子量轮心离地高度填进去 → 提交。
  */
 
-/* 标定参数: 停留稳定时间 / 每个点采样次数 / 采样间隔 */
+/* 标定参数: 停留稳定时间 / Pitch 采样次数 / 采样间隔 */
 #define CAL_SETTLE_MS    300
 #define CAL_SAMPLES      30
 #define CAL_SAMPLE_MS    10
 
-/* 一次标定最多收几个点 (线性回归只需 2 个, 但多点拟合抗噪) */
-#define CAL_MAX_POINTS   6
-
-typedef struct {
-    float phi;      /* 腿角 (°) */
-    float pitch;    /* 该腿角下 Pitch 平均值 (°) */
-} cal_point_t;
-
-static cal_point_t s_cal_pts[CAL_MAX_POINTS];
-static uint8_t     s_cal_cnt = 0;
-
 /**
- * @brief 清空已收集的标定点
+ * @brief 让腿到指定角度并等姿态稳定, 返回该姿态的平均 Pitch
+ * @param deg 目标舵机角 (°)
+ * @param pitch_out [出参] 平均 Pitch (°)
+ * @return ESP_OK 成功
+ * @note  停留 300ms 让互补滤波收敛, 再连采 30 次求平均压噪声
  */
-static void cal_reset(void)
+static esp_err_t cal_settle_and_read(float deg, float *pitch_out)
 {
-    s_cal_cnt = 0;
-    memset(s_cal_pts, 0, sizeof(s_cal_pts));
+    servo_set_both((uint8_t)deg);
+    vTaskDelay(pdMS_TO_TICKS(CAL_SETTLE_MS));
+
+    float sum = 0.0f;
+    int got = 0;
+    for (int k = 0; k < CAL_SAMPLES; k++) {
+        euler_angle_t e = {0};
+        if (mpu9250_get_pose(&e, NULL) == ESP_OK) {
+            sum += e.pitch;
+            got++;
+        }
+        vTaskDelay(pdMS_TO_TICKS(CAL_SAMPLE_MS));
+    }
+    if (got == 0) return ESP_FAIL;
+
+    *pitch_out = sum / (float)got;
+    return ESP_OK;
 }
 
 /**
- * @brief POST /api/legcal — 腿角标定
- * @note  body = {"act":"reset"}
- *              {"act":"move","deg":80}
- *              {"act":"sample","deg":80}
- *              {"act":"fit"}
- *
- *   - reset : 清空已收的点
- *   - move  : 把腿设到 deg 度 (不采样), 让你先手动把车扶稳
- *   - sample: 把腿设到 deg 度, 等稳定后采 CAL_SAMPLES 次求平均, 存一个点
- *   - fit   : 对已收的点做最小二乘拟合, 算出 leg_k 写进 param (不落盘)
+ * @brief GET /api/legmap — 取整张标定表
  */
-static esp_err_t api_legcal(httpd_req_t *req)
+static esp_err_t api_legmap_get(httpd_req_t *req)
 {
-    char body[96];
+    const legmap_t *m = legmap_get();
+    int n = snprintf(NULL, 0, "{\"ok\":true,\"n\":%u,\"usable\":%s,\"pts\":[",
+                     m->count, legmap_is_usable(2) ? "true" : "false");
+    if (n < 0) return send_json(req, "{\"ok\":false}");
+
+    int cap = 128 + m->count * 72;
+    char *buf = malloc((size_t)cap);
+    if (buf == NULL) return send_json(req, "{\"ok\":false,\"msg\":\"no mem\"}");
+
+    int w = snprintf(buf, (size_t)cap, "{\"ok\":true,\"n\":%u,\"usable\":%s,\"pts\":[",
+                     m->count, legmap_is_usable(2) ? "true" : "false");
+    for (uint8_t i = 0; i < m->count && w > 0 && (size_t)w < (size_t)cap; i++) {
+        w += snprintf(buf + w, (size_t)cap - (size_t)w,
+                      "%s{\"deg\":%.1f,\"h\":%.1f,\"pitch\":%.3f}",
+                      i ? "," : "",
+                      (double)m->pts[i].servo_deg,
+                      (double)m->pts[i].height_mm,
+                      (double)m->pts[i].pitch_deg);
+    }
+    if (w > 0 && (size_t)w + 3 < (size_t)cap) {
+        w += snprintf(buf + w, (size_t)cap - (size_t)w, "]}");
+    }
+    esp_err_t r = send_json(req, buf);
+    free(buf);
+    return r;
+}
+
+/**
+ * @brief POST /api/legmap — 录入/清空标定点
+ * @note  body = {"act":"clear"}
+ *              {"act":"add","deg":80,"h":61.5}      高度由用户量, Pitch 自动读
+ *              {"act":"move","deg":80}              只动腿不录入
+ *              {"act":"read"}                        只回读当前姿态 Pitch (预览用)
+ *
+ * ⚠ 安全闸门: 标定期间绝不能让电机转。每次调用都强制刹车 + 停平衡控制。
+ */
+static esp_err_t api_legmap_post(httpd_req_t *req)
+{
+    char body[128];
     if (read_body(req, body, sizeof(body)) < 0) {
         return send_json(req, "{\"ok\":false,\"msg\":\"body too large\"}");
     }
@@ -461,128 +510,136 @@ static esp_err_t api_legcal(httpd_req_t *req)
         return send_json(req, "{\"ok\":false,\"msg\":\"missing act\"}");
     }
 
-    /* ⚠ 安全闸门: 标定期间绝不能让电机转。
-     *   标定要靠车"不动"才准, 电机一转, Pitch 变化里就混进了车体运动,
-     *   测出来的 leg_k 是错的。所以这里强制刹车 + 停平衡控制。
-     *   放在解析完 act 之后、任何动作之前, 保证四个子动作都受保护。 */
+    /* 放在解析完 act 之后、任何动作之前, 保证每个子动作都受保护 */
     if (balance_is_enabled()) {
         balance_emergency_stop();
     }
     s_motor_on = 0;
     motor_apply();
 
-    if (strcmp(act, "reset") == 0) {
-        cal_reset();
+    if (strcmp(act, "clear") == 0) {
+        legmap_clear();
         return send_json(req, "{\"ok\":true,\"n\":0}");
 
-    } else if (strcmp(act, "move") == 0) {
-        float v;
-        if (!json_num(body, "deg", &v)) {
+    } else if (strcmp(act, "move") == 0 || strcmp(act, "read") == 0) {
+        float deg;
+        if (!json_num(body, "deg", &deg)) {
             return send_json(req, "{\"ok\":false,\"msg\":\"missing deg\"}");
         }
-        servo_set_both((uint8_t)v);
-        return send_json(req, "{\"ok\":true}");
+        float pitch = 0.0f;
+        esp_err_t r = cal_settle_and_read(deg, &pitch);
+        if (r != ESP_OK) return send_json(req, "{\"ok\":false,\"msg\":\"MPU 读失败\"}");
 
-    } else if (strcmp(act, "sample") == 0) {
-        float v;
-        if (!json_num(body, "deg", &v)) {
-            return send_json(req, "{\"ok\":false,\"msg\":\"missing deg\"}");
-        }
-        if (s_cal_cnt >= CAL_MAX_POINTS) {
-            return send_json(req, "{\"ok\":false,\"msg\":\"点太多了, 先 fit 或 reset\"}");
-        }
-
-        servo_set_both((uint8_t)v);
-        vTaskDelay(pdMS_TO_TICKS(CAL_SETTLE_MS));      /* 等姿态稳下来 */
-
-        /* 采多次求平均, 压掉互补滤波残余抖动 */
-        float sum = 0.0f;
-        int got = 0;
-        for (int k = 0; k < CAL_SAMPLES; k++) {
-            euler_angle_t e = {0};
-            if (mpu9250_get_pose(&e, NULL) == ESP_OK) {
-                sum += e.pitch;
-                got++;
-            }
-            vTaskDelay(pdMS_TO_TICKS(CAL_SAMPLE_MS));
-        }
-        if (got == 0) {
-            return send_json(req, "{\"ok\":false,\"msg\":\"MPU 读失败\"}");
-        }
-
-        s_cal_pts[s_cal_cnt].phi   = v;
-        s_cal_pts[s_cal_cnt].pitch = sum / (float)got;
-        s_cal_cnt++;
-
-        char out[160];
-        snprintf(out, sizeof(out),
-                 "{\"ok\":true,\"n\":%u,\"deg\":%.1f,\"pitch\":%.3f,\"got\":%d}",
-                 s_cal_cnt, (double)v, (double)(sum / (float)got), got);
+        char out[128];
+        snprintf(out, sizeof(out), "{\"ok\":true,\"deg\":%.1f,\"pitch\":%.3f}",
+                 (double)deg, (double)pitch);
         return send_json(req, out);
 
-    } else if (strcmp(act, "fit") == 0) {
-        if (s_cal_cnt < 2) {
-            return send_json(req, "{\"ok\":false,\"msg\":\"至少要 2 个点\"}");
+    } else if (strcmp(act, "add") == 0) {
+        float deg, h;
+        if (!json_num(body, "deg", &deg) || !json_num(body, "h", &h)) {
+            return send_json(req, "{\"ok\":false,\"msg\":\"missing deg or h\"}");
         }
+        /* 高度必须由用户提供 —— ESP32 量不了自己 */
+        float pitch = 0.0f;
+        esp_err_t r = cal_settle_and_read(deg, &pitch);
+        if (r != ESP_OK) return send_json(req, "{\"ok\":false,\"msg\":\"MPU 读失败\"}");
 
-        /* 最小二乘拟合 pitch = k * phi + b, k 就是 leg_k
-         *
-         * ⚠ 退化检查的正确做法是看**腿角跨度**, 不是看分母 den:
-         *   den = n·Σx² − (Σx)² 是平方和量级, 就算 5 个点全挤在 80° 附近
-         *   (跨度只有 1°), den 也还是几万, fabs(den)<1e-6 永远不成立,
-         *   反而会算出 k = 噪声/1° 这种巨大的假斜率。
-         *   所以直接要求: 腿角最大跨度至少要 20°, 否则拒绝。
-         *
-         * ⚠ 另外算出 k 之后要判断它是不是"噪声":
-         *   |k| 很小 → MPU 位置几乎不受腿影响, 补偿没必要 (网页会提示)
-         *   残差大   → 采样时车在动, 或腿角拉得不够开 (网页会提示重采) */
-        float xmin = s_cal_pts[0].phi, xmax = xmin;
-        for (uint8_t j = 1; j < s_cal_cnt; j++) {
-            if (s_cal_pts[j].phi < xmin) xmin = s_cal_pts[j].phi;
-            if (s_cal_pts[j].phi > xmax) xmax = s_cal_pts[j].phi;
-        }
-        if (xmax - xmin < 20.0f) {
-            char out[128];
-            snprintf(out, sizeof(out),
-                     "{\"ok\":false,\"msg\":\"腿角跨度只 %.0f°, 至少要 20°\"}",
-                     (double)(xmax - xmin));
+        esp_err_t ur = legmap_upsert_point(deg, h, pitch);
+        if (ur != ESP_OK) {
+            const char *msg = (ur == ESP_ERR_NO_MEM) ? "点数已满" : "高度超出合理范围";
+            char out[96];
+            snprintf(out, sizeof(out), "{\"ok\":false,\"msg\":\"%s\"}", msg);
             return send_json(req, out);
         }
-        float sx = 0, sy = 0, sxx = 0, sxy = 0;
-        for (uint8_t j = 0; j < s_cal_cnt; j++) {
-            float x = s_cal_pts[j].phi, y = s_cal_pts[j].pitch;
-            sx += x; sy += y; sxx += x * x; sxy += x * y;
-        }
-        float n  = (float)s_cal_cnt;
-        float den = n * sxx - sx * sx;
-        /* 跨度检查已保证 den ≠ 0, 这里只做除零兜底 */
-        if (fabsf(den) < 1e-6f) {
-            return send_json(req, "{\"ok\":false,\"msg\":\"腿角太接近, 拉不开\"}");
-        }
-        float k   = (n * sxy - sx * sy) / den;
-        float b   = (sy - k * sx) / n;
 
-        /* 拟合优度: 各点残差的最大值, 太大说明读数不稳或中间有磕碰 */
-        float max_res = 0.0f;
-        for (uint8_t j = 0; j < s_cal_cnt; j++) {
-            float res = fabsf(s_cal_pts[j].pitch - (k * s_cal_pts[j].phi + b));
-            if (res > max_res) max_res = res;
-        }
+        const legmap_t *m = legmap_get();
+        ESP_LOGI(TAG, "录入腿高点: %.0f° -> %.1fmm, pitch=%.2f° (共 %u 点)",
+                 (double)deg, (double)h, (double)pitch, m->count);
 
-        /* 写进 param (只改内存, 要点"保存到 NVS"才落盘) */
-        param_set_float(PARAM_LEG_PITCH_K, k);
-
-        char out[224];
+        char out[192];
         snprintf(out, sizeof(out),
-                 "{\"ok\":true,\"k\":%.4f,\"b\":%.3f,\"n\":%u,\"max_res\":%.3f}",
-                 (double)k, (double)b, s_cal_cnt, (double)max_res);
-        ESP_LOGI(TAG, "腿角标定: leg_k=%.4f (拟合 pitch=%.4f*phi%+.3f), %u 点, 残差<=%.3f",
-                 (double)k, (double)k, (double)b, s_cal_cnt, (double)max_res);
+                 "{\"ok\":true,\"n\":%u,\"deg\":%.1f,\"h\":%.1f,\"pitch\":%.3f,"
+                 "\"usable\":%s}",
+                 m->count, (double)deg, (double)h, (double)pitch,
+                 legmap_is_usable(2) ? "true" : "false");
         return send_json(req, out);
     }
 
-    /* act 拼错时走到这: 正常只有 move/sample/fit/reset 四个 */
     return send_json(req, "{\"ok\":false,\"msg\":\"unknown act\"}");
+}
+
+/**
+ * @brief POST /api/legmap_fit_legk — 用现有标定点反推线性 leg_k (兜底方案)
+ * @note  查表可用时不需要这个。留着是因为: 标定点不够 (比如只有 2 个)
+ *        或用户只想快速试一个值时, 可以走线性补偿。
+ *
+ * ⚠ 线性只能近似。实测的 pitch~腿角 关系常常是 U 型,
+ *   直线拟合会丢掉近一半补偿量。所以优先用查表。
+ */
+static esp_err_t api_legmap_fit_legk(httpd_req_t *req)
+{
+    const legmap_t *m = legmap_get();
+    if (m->count < 2) {
+        return send_json(req, "{\"ok\":false,\"msg\":\"至少要 2 个标定点\"}");
+    }
+
+    /* ⚠ 退化检查看**腿角跨度**, 不看分母:
+     *   den = n·Σx² − (Σx)² 是平方和量级, 就算点全挤在 80° 附近(跨度 1°),
+     *   den 也还是几万, fabs(den)<1e-6 永远不成立, 反而会算出 k=噪声/1°。
+     */
+    float xmin = m->pts[0].servo_deg, xmax = xmin;
+    for (uint8_t i = 1; i < m->count; i++) {
+        if (m->pts[i].servo_deg < xmin) xmin = m->pts[i].servo_deg;
+        if (m->pts[i].servo_deg > xmax) xmax = m->pts[i].servo_deg;
+    }
+    if (xmax - xmin < 20.0f) {
+        char out[128];
+        snprintf(out, sizeof(out),
+                 "{\"ok\":false,\"msg\":\"腿角跨度只 %.0f°, 至少要 20°\"}",
+                 (double)(xmax - xmin));
+        return send_json(req, out);
+    }
+
+    /* 最小二乘拟合 pitch = k * deg + b, 扣除参考角后 k 就是 leg_k */
+    float sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (uint8_t i = 0; i < m->count; i++) {
+        float x = m->pts[i].servo_deg, y = m->pts[i].pitch_deg;
+        sx += x; sy += y; sxx += x * x; sxy += x * y;
+    }
+    float n   = (float)m->count;
+    float den = n * sxx - sx * sx;
+    if (fabsf(den) < 1e-6f) {
+        return send_json(req, "{\"ok\":false,\"msg\":\"腿角太接近, 拉不开\"}");
+    }
+    float k = (n * sxy - sx * sy) / den;
+    float b = (sy - k * sx) / n;
+
+    /* 残差: 线性模型解释不了多少变化 → 说明曲线不是直线, 别用 leg_k */
+    float max_res = 0.0f, span = 0.0f;
+    for (uint8_t i = 0; i < m->count; i++) {
+        float fit = k * m->pts[i].servo_deg + b;
+        float res = fabsf(m->pts[i].pitch_deg - fit);
+        if (res > max_res) max_res = res;
+    }
+    float pmin = m->pts[0].pitch_deg, pmax = pmin;
+    for (uint8_t i = 1; i < m->count; i++) {
+        if (m->pts[i].pitch_deg < pmin) pmin = m->pts[i].pitch_deg;
+        if (m->pts[i].pitch_deg > pmax) pmax = m->pts[i].pitch_deg;
+    }
+    span = pmax - pmin;
+
+    param_set_float(PARAM_LEG_PITCH_K, k);
+
+    char out[224];
+    snprintf(out, sizeof(out),
+             "{\"ok\":true,\"k\":%.4f,\"n\":%u,\"max_res\":%.3f,\"span\":%.3f,"
+             "\"res_ratio\":%.3f}",
+             (double)k, m->count, (double)max_res, (double)span,
+             (span > 0.01f) ? (double)(max_res / span) : 0.0);
+    ESP_LOGI(TAG, "反推 leg_k=%.4f (%u 点, 残差<=%.3f, 变化幅度 %.3f)",
+             (double)k, m->count, (double)max_res, (double)span);
+    return send_json(req, out);
 }
 
 /**
@@ -615,9 +672,9 @@ esp_err_t web_server_start(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn   = httpd_uri_match_wildcard;
-    /* ⚠ 路由数必须 ≥ 实际注册数 (主页1 + 参数4 + 状态/执行6 + 平衡3 + 标定1 = 15),
+    /* ⚠ 路由数必须 ≥ 实际注册数 (主页1 + 参数4 + 状态/执行6 + 平衡3 + 腿高3 = 17),
      *    不够的话 httpd_register_uri_handler 会静默失败, 表现是"某个接口 404 但没报错" */
-    cfg.max_uri_handlers = 18;
+    cfg.max_uri_handlers = 20;
     cfg.lru_purge_enable = true;          /* 浏览器刷新多, 及时回收缓存 */
 
     esp_err_t ret = httpd_start(&s_httpd, &cfg);
@@ -661,9 +718,13 @@ esp_err_t web_server_start(void)
     httpd_register_uri_handler(s_httpd, &u_bs);
     httpd_register_uri_handler(s_httpd, &u_br);
 
-    /* 腿角标定工具 */
-    httpd_uri_t u_lc = { .uri = "/api/legcal", .method = HTTP_POST, .handler = api_legcal };
-    httpd_register_uri_handler(s_httpd, &u_lc);
+    /* 腿高标定工具 */
+    httpd_uri_t u_lmg = { .uri = "/api/legmap", .method = HTTP_GET,  .handler = api_legmap_get     };
+    httpd_uri_t u_lmp = { .uri = "/api/legmap", .method = HTTP_POST, .handler = api_legmap_post    };
+    httpd_uri_t u_lmf = { .uri = "/api/legmap_fit_legk", .method = HTTP_POST, .handler = api_legmap_fit_legk };
+    httpd_register_uri_handler(s_httpd, &u_lmg);
+    httpd_register_uri_handler(s_httpd, &u_lmp);
+    httpd_register_uri_handler(s_httpd, &u_lmf);
 
     /* 兜底 404 */
     httpd_register_err_handler(s_httpd, HTTPD_404_NOT_FOUND, not_found);

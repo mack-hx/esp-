@@ -19,8 +19,9 @@ static const char *TAG = "PARAM";
 #define NVS_NAMESPACE   "param"
 #define NVS_KEY_VALUES  "v"         /* 存所有 float 的 blob */
 #define NVS_KEY_VERSION "ver"       /* 表结构版本, 表变了就忽略旧数据 */
-#define PARAM_DATA_VERSION  2       /* 每次改 g_param_items 的数量/含义就 +1
-                                      * v2: 中间插入 PARAM_LEG_PITCH_K,
+#define PARAM_DATA_VERSION  3       /* 每次改 g_param_items 的数量/含义就 +1
+                                      * v2: 插入 PARAM_LEG_PITCH_K
+                                      * v3: 再插入 Kp 调度两项
                                       *     NVS blob 布局变了, 旧数据必须作废 */
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
@@ -60,7 +61,11 @@ const param_item_t g_param_items[] = {
     { PARAM_ANGLE_ZERO,    "ang_zero",   "Angle Zero",  "°",   0.0f, -20.0f,   20.0f, 0.5f, 1, PARAM_GRP_LIMIT,
       "机械零点偏置, 车静止调它让 Pitch 显示 0" },
     { PARAM_LEG_PITCH_K,   "leg_k",      "Leg Pitch K", "°/°", 0.0f,  -2.0f,    2.0f, 0.01f,2, PARAM_GRP_LIMIT,
-      "腿转 1° 时 Pitch 变化多少度, 网页标定工具自动算, 0=不补偿" },
+      "腿角→俯仰角斜率, 没标定腿高表时的线性兜底方案, 0=不补偿" },
+    { PARAM_KP_HEIGHT_SLOPE,"kp_hslope", "Kp Height Slope","%/mm", 0.0f, -5.0f,    5.0f, 0.05f,2, PARAM_GRP_LIMIT,
+      "Kp 随腿高的调度斜率, 0=不调度(固定 Kp)" },
+    { PARAM_KP_HEIGHT_REF,  "kp_href",    "Kp Height Ref","mm",  60.0f, 20.0f,   150.0f, 1.0f, 1, PARAM_GRP_LIMIT,
+      "Kp 调度的参考腿高, 此高度下 Kp 不变" },
     { PARAM_GYRO_LPF,      "gyro_lpf",   "Gyro LPF",    "",    0.2f,  0.0f,    1.0f, 0.01f,2, PARAM_GRP_LIMIT,
       "陀螺仪低通系数, 越小越平滑但延迟越大" },
     { PARAM_SPEED_DEADBAND,"deadband",   "Speed Deadband","",  1.0f,  0.0f,   20.0f, 0.5f, 1, PARAM_GRP_LIMIT,

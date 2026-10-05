@@ -51,7 +51,9 @@ typedef enum {
     PARAM_SPEED_OUT_MAX,     // 速度环输出限幅 (%)
     PARAM_ANGLE_LIMIT,       // 倾角保护阈值 (°), 超过判定摔倒
     PARAM_ANGLE_ZERO,        // 机械零点偏置 (°), 配平用
-    PARAM_LEG_PITCH_K,       // 腿角→俯仰角斜率 (°/°), 腿弯了 MPU 读数的修正量
+    PARAM_LEG_PITCH_K,       // 腿角→俯仰角斜率 (°/°), 查表前的线性兼容方案
+    PARAM_KP_HEIGHT_SLOPE,   // Kp 随腿高的调度斜率 (%/mm)
+    PARAM_KP_HEIGHT_REF,     // Kp 调度的参考腿高 (mm)
     PARAM_GYRO_LPF,          // 陀螺仪低通滤波系数 (0~1, 越小越平滑)
     PARAM_SPEED_DEADBAND,    // 速度死区 (编码器计数/采样周期), 抑制原地抖动
     PARAM_ENCODER_GEAR,      // 减速比 (电机转速/轮转速)

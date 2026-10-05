@@ -58,12 +58,14 @@ typedef struct {
     float gyro_x;       /* 俯仰方向角速度 (°/s) */
     float speed;        /* 两轮平均轮速 (rpm), 正值=前进 */
     float leg_comp;     /* 本周期腿角补偿量 (°), 观察补偿是否在工作 */
+    float leg_height;   /* 推算腿高 (mm), 0=无查表数据(推不出来) */
 
     /* --- 控制器中间量 --- */
     float target_pitch; /* 速度环算出的目标倾角 (°) */
     float bal_out;      /* 平衡环输出 (电机差速 %) */
     float spd_out;      /* 速度环输出 (目标倾角 °) */
     float steer_out;    /* 转向环输出 (左右差速修正 %) */
+    float kp_eff;       /* 腿高调度后实际生效的平衡环 Kp */
 
     /* --- 实际执行输出 --- */
     int8_t motor_a;     /* 电机 A 实际输出 (-100~100) */
