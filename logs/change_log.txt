@@ -2,38 +2,33 @@
 变更日志 - ESP32 平衡轮腿机械狗 1.4
 ================================================================================
 
+## 2026-10-20 功能更新
+
+### 主页显示WiFi状态和MPU俯仰角
+- 第3行: 显示WiFi连接状态 (SSID名称/AP模式/Disconnected)
+- 第4行: 显示MPU俯仰角 (实时刷新)
+- WiFi状态颜色: 绿色=已连接, 黄色=AP配网模式, 红色=未连接
+
+### 代码整理
+- 清理代码结构，优化注释
+- 编译: RAM 11.0%, Flash 27.4%
+
 ## 2026-10-19 问题修复
 
 ### 问题1：系统莫名自动重启
-**根本原因**：
-- 任务堆栈不足：balance_task (4096字节) 和 onenet_pub (4096字节) 在高负载时可能溢出
-- 任务看门狗(TWDT)超时：INT_WDT 超时仅 300ms，长时间 I2C 操作可能触发重启
+**根本原因**：任务堆栈不足 + 看门狗超时
 
 **修复方案**：
-1. hardware/encoder/encoder.c
-   - balance_task 栈: 4096 → 8192 字节
-2. user/onenet_client/onenet_client.c
-   - onenet_pub 栈: 4096 → 8192 字节
-   - onenet_desired 栈: 2048 → 4096 字节
-3. sdkconfig.esp32-s3-devkitc-1
-   - INT_WDT 超时: 300ms → 1000ms
+1. balance_task 栈: 4096 → 8192 字节
+2. onenet_pub 栈: 4096 → 8192 字节
+3. onenet_desired 栈: 2048 → 4096 字节
+4. INT_WDT 超时: 300ms → 1000ms
 
 ### 问题2：连接家庭网络后无法获取IP
-**根本原因**：
-1. WiFi 事件处理使用魔数 4 代替 WIFI_EVENT_STA_CONNECTED，可能不兼容所有 ESP-IDF 版本
-2. WiFi 模式设置顺序错误：esp_wifi_start() 在 esp_wifi_set_mode() 之前调用，导致驱动以默认AP模式启动
-3. WiFi 重连次数太少（5次），不足以完成 DHCP 获取 IP
+**根本原因**：WiFi事件处理错误 + 初始化顺序错误 + 重试次数不足
 
 **修复方案**：
-1. hardware/wifi_sta/wifi_sta.c
-   - wifi_event_handler: 使用 WIFI_EVENT_STA_CONNECTED 替代魔数 4
-   - wifi_sta_start: 调整顺序，先设置 WiFi 模式，再调用 esp_wifi_start()
-   - start_sta_mode: 简化代码，移除不必要的 netif 销毁/重建
-   - 新增 WIFI_STA_MAX_RETRY=15 宏定义
-2. hardware/wifi_sta/wifi_sta.h
-   - WIFI_STA_MAX_RETRY: 5 → 15
-
-### 编译验证
-- 编译成功
-- RAM: 11.0% (35996/327680 bytes)
-- Flash: 27.3% (1003645/3670016 bytes)
+1. wifi_event_handler: 使用 WIFI_EVENT_STA_CONNECTED 替代魔数 4
+2. wifi_sta_start: 调整顺序，先设置WiFi模式再启动
+3. start_sta_mode: 简化代码，移除不必要的netif操作
+4. 重试次数: 5 → 15 次

@@ -487,16 +487,16 @@ esp_err_t wifi_sta_start(void)
     char ssid[33] = {0}, pass[65] = {0};
     if (load_credentials_from_nvs(ssid, sizeof(ssid), pass, sizeof(pass))) {
         /* 已有 WiFi 配置 → STA 模式
-         * 注意: 先设置模式, 再启动 */
+         * 顺序: 先创建netif, 再设置模式, 最后启动 */
+        ret = start_sta_mode(ssid, pass);
+        if (ret != ESP_OK) return ret;
         ret = esp_wifi_set_mode(WIFI_MODE_STA);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "esp_wifi_set_mode(STA) 失败: %s", esp_err_to_name(ret));
             return ret;
         }
-        ret = start_sta_mode(ssid, pass);
     } else {
-        /* 首次使用或被清空 → AP 配网模式
-         * AP 模式需要先创建 netif, 所以 start_ap_mode 会处理 set_mode */
+        /* 首次使用或被清空 → AP 配网模式 */
         ret = start_ap_mode();
     }
     if (ret != ESP_OK) {
