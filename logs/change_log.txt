@@ -81,5 +81,33 @@
 - 将 HOME_L_VAL_X 从 20 改为 52，确保数值显示在标签之后
 
 ### 修改文件
-- `user/onenet_client/onenet_client.c` - MQTT 地址改为 mqtt.heclouds.com:6002
+- `user/onenet_client/ononet_client.c` - MQTT 地址改为 mqtt.heclouds.com:6002
 - `user/ui/ui_home.c` - 坐标修正和擦除宽度调整
+
+================================================================================
+## 2026-10-20 OneNET Studio MQTT 连接修复
+
+### 问题：Connection refused, bad username or password
+**根本原因**：
+1. Token 时间戳格式错误：使用动态时间戳而非 OneNET Studio 要求的固定时间戳
+2. sign base64 中的 `=` 字符未进行 URL 编码
+
+**修复方案**：
+1. 时间戳 et 改为固定值 `1924833600`（2030-12-30 12:00:00 UTC）
+2. 添加 `url_encode_sign()` 函数对 sign 中的 `=` 进行 URL 编码
+
+### OneNET Studio 配置
+- Broker: `mqtt://studio-mqtt.heclouds.com:1883`
+- Client ID: `balancing_dog`
+- Username: `6YlUqr9lue`（产品ID）
+- Password: 动态生成的 token
+
+### 代码修改
+- `user/onenet_client/onenet_client.c` - Token 生成逻辑修复
+- 添加 OneNET SDK 到 `components/onenet_sdk`
+
+### 新增组件
+- `components/onenet_sdk/` - OneNET MQTT SDK（来自官方下载的 mqttsv5_onejson_soc）
+
+### 版本更新
+- 发布 v1.6: 修复 OneNET Studio 连接问题
