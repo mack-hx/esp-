@@ -34,6 +34,22 @@
 
 static const char *TAG = "ONENET";
 
+/* ========== URL 编码辅助 ========== */
+static void url_encode_sign(const char *src, char *dst, size_t dst_size)
+{
+    size_t j = 0;
+    for (size_t i = 0; src[i] && j < dst_size - 4; i++) {
+        switch (src[i]) {
+            case '+':  strcpy(dst + j, "%2B");  j += 3; break;
+            case '/':  strcpy(dst + j, "%2F");  j += 3; break;
+            case '=':  strcpy(dst + j, "%3D");  j += 3; break;
+            case '%':  strcpy(dst + j, "%25");  j += 3; break;
+            default:   dst[j++] = src[i];           break;
+        }
+    }
+    dst[j] = '\0';
+}
+
 /* ========== 物模型 topic 拼接 ========== */
 #define TOPIC_PROPERTY_POST        "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/post"
 #define TOPIC_EVENT_POST           "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/event/post"
@@ -111,30 +127,31 @@ static int compute_token(char *out, size_t out_size)
         return -1;
     }
 
-    /* 2. et = 当前 unix + ttl */
-    time_t now = time(NULL);
-    if (now < 1700000000) now = 1700000000;  /* 兜底: 系统时间还没校时 */
-    long et = (long)(now + ONENET_TOKEN_TTL);
+    /* 2. et = 过期时间 (使用固定时间戳 2030.12.31, SDK 推荐值) */
+    long et = 1924833600;  // 2030-12-30 12:00:00 UTC
 
     /* 3. res = products/{pid}/devices/{dev} */
     char res[128];
     snprintf(res, sizeof(res), "products/%s/devices/%s", ONENET_PRODUCT_ID, ONENET_DEVICE_NAME);
 
-    /* 4. StringForSignature = "{et}\nsha1\n{res}\n2018-10-31" */
+    /* 4. StringForSignature = "{et}\n{method}\n{res}\n{version}" */
+    /* 注意：version 必须放在最后！ */
     char str_for_sig[256];
     snprintf(str_for_sig, sizeof(str_for_sig), "%ld\nsha1\n%s\n2018-10-31", et, res);
 
-    /* 5. sign = base64(hmac_sha1) */
+    /* 5. sign = base64(hmac_sha1), 需要 URL 编码 */
     char sign_b64[64];
     if (hmac_sha1_base64(key_bin, key_len, str_for_sig, sign_b64, sizeof(sign_b64)) != 0) {
+        ESP_LOGE(TAG, "HMAC-SHA1 计算失败");
         return -1;
     }
 
-    /* 6. 拼 token, value 部分 URL 编码 (=/& 等) */
-    /*    res 里有 /, 必须编码; sign base64 里有 =/+ 也得编 */
+    /* 6. 拼 token, sign 中的 = 等需要 URL 编码 */
+    char sign_encoded[128];
+    url_encode_sign(sign_b64, sign_encoded, sizeof(sign_encoded));
     snprintf(out, out_size,
              "version=2018-10-31&res=products%%2F%s%%2Fdevices%%2F%s&et=%ld&method=sha1&sign=%s",
-             ONENET_PRODUCT_ID, ONENET_DEVICE_NAME, et, sign_b64);
+             ONENET_PRODUCT_ID, ONENET_DEVICE_NAME, et, sign_encoded);
     return 0;
 }
 
@@ -397,7 +414,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         esp_mqtt_client_subscribe(s_client, TOPIC_SERVICE_INVOKE_PRE "param_save/invoke", 0);
         break;
     case MQTT_EVENT_DISCONNECTED:
-        ESP_LOGW(TAG, "MQTT 断开, 5s 后自动重连 (esp-mqtt 自带)");
+        ESP_LOGI(TAG, "MQTT 断开, 5s 后自动重连 (esp-mqtt 自带)");
         s_connected = false;
         break;
     case MQTT_EVENT_DATA: {
@@ -413,12 +430,12 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         } else if (strstr(topic, "/thing/service/") && strstr(topic, "/invoke") && !strstr(topic, "/reply")) {
             handle_service_invoke(topic, tlen, event->data, event->data_len);
         } else {
-            ESP_LOGD(TAG, "忽略 topic: %s (len=%d)", topic, event->data_len);
+            ESP_LOGI(TAG, "忽略 topic: %s (len=%d)", topic, event->data_len);
         }
         break;
     }
     case MQTT_EVENT_ERROR:
-        ESP_LOGE(TAG, "MQTT 错误");
+        ESP_LOGI(TAG, "MQTT 错误");
         break;
     default:
         break;
@@ -434,16 +451,16 @@ esp_err_t mqtt_client_start(void)
     /* 1. 算 token (在 mqtt 启动前算好) */
     char token[256];
     if (compute_token(token, sizeof(token)) != 0) {
-        ESP_LOGE(TAG, "token 计算失败, mqtt 客户端不启动");
+        ESP_LOGI(TAG, "token 计算失败, mqtt 客户端不启动");
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "token 算出: %.50s...", token);
+    ESP_LOGI(TAG, "token 算出");
 
-    /* 2. 配 esp-mqtt 客户端 */
+    /* OneNET Studio MQTT Broker: studio-mqtt.heclouds.com:1883 (非加密) */
     esp_mqtt_client_config_t cfg = {
         .broker = {
             .address = {
-                .uri = "mqtts://mqtts.heclouds.com:1883",
+                .uri = "mqtt://studio-mqtt.heclouds.com",
                 .port = 1883,
             },
         },
@@ -468,7 +485,7 @@ esp_err_t mqtt_client_start(void)
     esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_err_t err = esp_mqtt_client_start(s_client);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_mqtt_client_start 失败: %s", esp_err_to_name(err));
+        ESP_LOGI(TAG, "esp_mqtt_client_start 失败: %s", esp_err_to_name(err));
         return err;
     }
 

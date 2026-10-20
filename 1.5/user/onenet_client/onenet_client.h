@@ -35,7 +35,7 @@
 #define ONENET_PRODUCT_ID    "6YlUqr9lue"
 #define ONENET_DEVICE_NAME   "balancing_dog"
 /** 设备级 AccessKey (Base64 字符串), 跟 App 端 onenet.js 里写的一致 */
-#define ONENET_DEVICE_AK     "y1uJyXF9uU8jo9Wl21tRdeHX69eNx6Gti21Z85udgZk="
+#define ONENET_DEVICE_AK     "YlpFVXlONlMzTUNnMHRocTRXSG04SkZMbmVrdEdmQTI="
 /** Token 有效期 (秒), 跟 App 端 tokenExpireSec 一致 */
 #define ONENET_TOKEN_TTL     (86400)
 
