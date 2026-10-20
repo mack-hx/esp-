@@ -24,6 +24,7 @@
 #include "param.h"
 #include "web_server.h"
 #include "balance.h"
+#include "onenet_client.h"
 #include "ui_home.h"
 #include "ui_menu.h"
 #include "ui_balance.h"
@@ -133,6 +134,14 @@ void app_main(void)
     esp_err_t bal_ret = balance_init();
     if (bal_ret != ESP_OK) {
         ESP_LOGE(TAG, "平衡控制初始化失败 (%s)", esp_err_to_name(bal_ret));
+    }
+
+    /* 8.1 启动 OneNet MQTT 客户端 (走物模型 topic, 跟 App 端 onenet.js 对齐)
+     * 依赖: 已经在 sdkconfig.defaults 里开了 CONFIG_MQTT_PROTOCOL_311=y
+     * 失败: 只是没法用 App 远程, 屏上按键调试照常 */
+    esp_err_t mqtt_ret = mqtt_client_start();
+    if (mqtt_ret != ESP_OK) {
+        ESP_LOGE(TAG, "OneNet MQTT 启动失败 (%s), App 远程不可用", esp_err_to_name(mqtt_ret));
     }
 
     /* 9. 启动 WiFi 热点 + 调参网页

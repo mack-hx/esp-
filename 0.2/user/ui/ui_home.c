@@ -21,8 +21,12 @@
 #define HOME_TITLE_Y     1       // 标题文字 Y
 #define HOME_SERVO_Y     14      // 舵机行 Y 起点
 #define HOME_ENC_Y       24      // 编码器行 Y 起点
-#define HOME_ENC_X       18      // 数字值 X 起点 (与 "E1:" 后对齐)
-#define HOME_ENC_W       48      // 数字值区域宽度 (每路)
+/* 两路各占左半 / 右半: 标签 X + 数值 X, 两路对称 */
+#define HOME_L_LBL_X     2       // 左路标签 "S1:" / "E1:" X
+#define HOME_L_VAL_X     20      // 左路数值 X
+#define HOME_R_LBL_X     66      // 右路标签 "S2:" / "E2:" X
+#define HOME_R_VAL_X     84      // 右路数值 X
+#define HOME_VAL_W       42      // 数值擦除宽度 (84+42=126, 留 2px 右边距) */
 
 /**
  * @brief 绘制主页内容 (标题栏 + 舵机行 + 编码器行)
@@ -39,22 +43,22 @@ static void ui_home_draw(void)
                    TFT_COLOR_BLACK, TFT_COLOR_WHITE);
 
     /* 第 1 行: S1 / S2 当前角度 */
-    ui_draw_string(2, HOME_SERVO_Y, "S1:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_L_LBL_X, HOME_SERVO_Y, "S1:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
     snprintf(buf, sizeof(buf), "%3u", (unsigned)servo_get_angle(SERVO_1));
-    ui_draw_string(20, HOME_SERVO_Y, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_L_VAL_X, HOME_SERVO_Y, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
 
-    ui_draw_string(66, HOME_SERVO_Y, "S2:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_R_LBL_X, HOME_SERVO_Y, "S2:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
     snprintf(buf, sizeof(buf), "%3u", (unsigned)servo_get_angle(SERVO_2));
-    ui_draw_string(84, HOME_SERVO_Y, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_R_VAL_X, HOME_SERVO_Y, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
 
     /* 第 2 行: E1 / E2 编码值 */
-    ui_draw_string(2, HOME_ENC_Y, "E1:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_L_LBL_X, HOME_ENC_Y, "E1:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
     snprintf(buf, sizeof(buf), "%5d", encoder_get_count(ENCODER_1));
-    ui_draw_string(20, HOME_ENC_Y, buf, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_L_VAL_X, HOME_ENC_Y, buf, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
 
-    ui_draw_string(66, HOME_ENC_Y, "E2:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_R_LBL_X, HOME_ENC_Y, "E2:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
     snprintf(buf, sizeof(buf), "%5d", encoder_get_count(ENCODER_2));
-    ui_draw_string(84, HOME_ENC_Y, buf, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_R_VAL_X, HOME_ENC_Y, buf, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
 
     /* 其余区域留空 (下方不画任何内容) */
 }
@@ -86,14 +90,14 @@ static void page_refresh(void)
     char buf[16];
 
     /* E1 */
-    ui_fill_rect(HOME_ENC_X, HOME_ENC_Y, HOME_ENC_W, UI_FONT_H, TFT_COLOR_BLACK);
+    ui_fill_rect(HOME_L_VAL_X, HOME_ENC_Y, HOME_VAL_W, UI_FONT_H, TFT_COLOR_BLACK);
     snprintf(buf, sizeof(buf), "%5d", encoder_get_count(ENCODER_1));
-    ui_draw_string(HOME_ENC_X, HOME_ENC_Y, buf, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_L_VAL_X, HOME_ENC_Y, buf, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
 
     /* E2 */
-    ui_fill_rect(84, HOME_ENC_Y, HOME_ENC_W, UI_FONT_H, TFT_COLOR_BLACK);
+    ui_fill_rect(HOME_R_VAL_X, HOME_ENC_Y, HOME_VAL_W, UI_FONT_H, TFT_COLOR_BLACK);
     snprintf(buf, sizeof(buf), "%5d", encoder_get_count(ENCODER_2));
-    ui_draw_string(84, HOME_ENC_Y, buf, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_R_VAL_X, HOME_ENC_Y, buf, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
 }
 
 /* ========== 页面注册 ========== */

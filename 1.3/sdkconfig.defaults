@@ -42,5 +42,11 @@ CONFIG_LWIP_LOCAL_HOSTNAME="balance-robot"
 # CONFIG_BT_BLUEDROID_ENABLED is not set
 # CONFIG_BT_NIMBLE_ENABLED is not set
 # CONFIG_BT_BLE_50_FEATURES_SUPPORTED is not set
-# CONFIG_BT_BTU_TASK_STACK_SIZE is not set
+# CONFIG_BTU_TASK_STACK_SIZE is not set
 # CONFIG_BT_GATTS_ENABLE is not set
+
+# ---- MQTT: OneNet 物模型客户端 (mqtt_client.c) ----
+# 走标准 MQTT 3.1.1, 不走 WebSocket (ESP32 直接 TCP 即可)
+CONFIG_MQTT_PROTOCOL_311=y
+# 关闭 WebSocket, 减少未用代码体积
+CONFIG_MQTT_TRANSPORT_WEBSOCKET_DISABLED=y

@@ -23,6 +23,7 @@ set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/user/param"
     "${CMAKE_CURRENT_SOURCE_DIR}/user/trim"
     "${CMAKE_CURRENT_SOURCE_DIR}/user/control"
+    "${CMAKE_CURRENT_SOURCE_DIR}/user/onenet_client"
     "${CMAKE_CURRENT_SOURCE_DIR}/user/web"
     "${CMAKE_CURRENT_SOURCE_DIR}/user/ui"
 )

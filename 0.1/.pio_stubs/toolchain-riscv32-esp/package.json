@@ -1,0 +1,7 @@
+{
+  "name": "toolchain-riscv32-esp",
+  "version": "12.2.0+20230208",
+  "description": "Stub package for RISC-V toolchain (not needed for ESP32-S3 Xtensa builds)",
+  "keywords": ["toolchain"],
+  "systemDependencies": []
+}

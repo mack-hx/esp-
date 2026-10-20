@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
 static const char *TAG = "ENCODER";
 
 /* PCNT 单元分配 (ESP32-S3 上 PCNT_UNIT_0~3 独立存在, 不要混用!) */
@@ -135,6 +136,9 @@ esp_err_t encoder_clear(encoder_id_t id)
 
 /**
  * @brief 计算转速 (RPM)
+ * @note  周期由内部 tick 快照自动推导 (对比上次调用),
+ *        所以调用间隔最好固定 (UI 里是 150ms);
+ *        interval_ms 仅用于校验间隔是否明显偏离, 偏离时返回 0 避免算出错误的瞬时值
  */
 float encoder_get_rpm(encoder_id_t id, uint32_t interval_ms)
 {
@@ -153,10 +157,16 @@ float encoder_get_rpm(encoder_id_t id, uint32_t interval_ms)
 
     if (elapsed_sec <= 0.0f) return 0.0f;
 
+    /* 调用间隔与预期差太多时, 这次不参与计算 (避免把长间隔的速度当瞬时速度) */
+    uint32_t expect_tick = pdMS_TO_TICKS(interval_ms);
+    if (expect_tick > 0 && (elapsed < expect_tick / 2 || elapsed > expect_tick * 2)) {
+        return 0.0f;
+    }
+
     int delta = cur_cnt - last_cnt;
-    // 转数 = 脉冲数 / 每转脉冲数
+    /* 转数 = 脉冲数 / 每转脉冲数, 再换算成每分钟 */
     float revs = (float)delta / ENCODER_PULSES_PER_REV;
-    return revs * 60.0f / elapsed_sec;   // RPM
+    return revs * 60.0f / elapsed_sec;
 }
 
 /**

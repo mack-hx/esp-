@@ -327,7 +327,8 @@ static esp_err_t cal_settle_and_read(float deg, float *pitch_out, float *rate_ou
         mpu9250_axis_t g = {0};
         if (mpu9250_get_pose(&e, &g) == ESP_OK) {
             sum_p += e.pitch;
-            sum_r += g.y;
+            sum_r += g.x;   /* 俯仰角速度 = 绕 MPU 的 X 轴, 不是 Y
+                              * (Y 是车体左右轴, 对前后倾是噪声, 会永远提示"在晃") */
             got++;
         }
         vTaskDelay(pdMS_TO_TICKS(CAL_SAMPLE_MS));

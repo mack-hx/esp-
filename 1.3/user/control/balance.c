@@ -27,6 +27,7 @@
 #include "servo.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "onenet_client.h"
 #include "freertos/task.h"
 #include <math.h>
 
@@ -254,13 +255,25 @@ static void balance_state_machine(float dt)
                 float need = param_get_float(PARAM_ARM_TIME);
                 if (need <= 0.0f) {
                     s_state = BAL_STATE_BALANCING;     /* 配置为 0 = 不等待 */
-                    ESP_LOGI(TAG, "姿态正常 (门控已跳过), 进入平衡状态");
+                        ESP_LOGI(TAG, "姿态正常 (门控已跳过), 进入平衡状态");
+                        if (mqtt_client_is_connected()) {
+                            char params[64];
+                            int n = snprintf(params, sizeof(params),
+                                "{\"time\":{\"value\":%lld}}", (long long)(xTaskGetTickCount() * 1000ULL / configTICK_RATE_HZ));
+                            if (n > 0) mqtt_client_post_event("armed", params);
+                        }
                 } else {
                     s_arm_hold_ms += dt * 1000.0f;
                     if (s_arm_hold_ms >= need) {
                         s_state = BAL_STATE_BALANCING;
                         ESP_LOGI(TAG, "连续稳定 %.0fms, 进入平衡状态",
                                  (double)s_arm_hold_ms);
+                        if (mqtt_client_is_connected()) {
+                            char params[64];
+                            int n = snprintf(params, sizeof(params),
+                                "{\"time\":{\"value\":%lld}}", (long long)(xTaskGetTickCount() * 1000ULL / configTICK_RATE_HZ));
+                            if (n > 0) mqtt_client_post_event("armed", params);
+                        }
                     }
                 }
             } else {
@@ -278,6 +291,14 @@ static void balance_state_machine(float dt)
                  * 摔倒只需要刹车 + 清积分。 */
                 balance_reset_pid();
                 motor_brake_all();
+                if (mqtt_client_is_connected()) {
+                    char params[128];
+                    int n = snprintf(params, sizeof(params),
+                        "{\"pitch\":{\"value\":%g},\"time\":{\"value\":%lld}}",
+                        (double)s_data.pitch,
+                        (long long)(xTaskGetTickCount() * 1000ULL / configTICK_RATE_HZ));
+                    if (n > 0) mqtt_client_post_event("fallen", params);
+                }
             }
             break;
 

@@ -2,7 +2,8 @@
  * @file servo.c
  * @brief 舵机控制驱动实现 (标准 PWM 舵机, 50Hz, 1-2ms 脉宽)
  * @note  - 双路独立目标角度 (用户操作的"逻辑角度")
- *        - 舵机2 物理反向安装: 实际硬件角度 = 180 - 逻辑角度
+ *        - 物理安装不对称: GPIO13 反向装, GPIO14 正向装, 靠 servo_logic_to_phys() 补偿
+ *          使两路调同一逻辑角度时机械上朝同一方向转 (视觉对称)
  *        - 后台任务 servo_keep_alive_task 每 SERVO_KEEP_ALIVE_MS ms
  *          自动重新同步硬件, 跨页不失力/不跳变
  * @author ESP32 机械狗项目
@@ -38,7 +39,7 @@ static uint8_t s_angle[SERVO_2 + 1] = {
  *        - GPIO13 那个舵机 = 反向安装 (调 80° 实际转 100°)
  *        - GPIO14 那个舵机 = 正向安装 (调 80° 实际转 80°)
  *        编号 (2026-10-04 修正后): SERVO_1 = GPIO14, SERVO_2 = GPIO13
- *        为保持两股舵机视觉对称 (与改前一致), 物理角度:
+ *        为保持两路视觉对称, 物理角度:
  *        - SERVO_1 (正向舵机) → 走 180-逻辑
  *        - SERVO_2 (反向舵机) → 不映射
  *        调 80° → S1 实际转 100°, S2 实际转 100°, 视觉对称
@@ -222,18 +223,4 @@ esp_err_t servo_keep_alive_start(void)
     }
     ESP_LOGI(TAG, "后台舵机保持任务已启动 (周期 %dms)", SERVO_KEEP_ALIVE_MS);
     return ESP_OK;
-}
-
-/**
- * @brief 设置舵机脉宽 (直接控制物理输出, 不走限位)
- */
-esp_err_t servo_set_pulse(servo_id_t id, uint16_t pulse_us)
-{
-    if (id > SERVO_2) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    uint32_t duty = servo_pulse_to_duty(pulse_us);
-    esp_err_t ret = ledc_set_duty(SERVO_PWM_MODE, servo_map[id].channel, duty);
-    if (ret != ESP_OK) return ret;
-    return ledc_update_duty(SERVO_PWM_MODE, servo_map[id].channel);
 }

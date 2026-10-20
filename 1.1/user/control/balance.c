@@ -166,19 +166,19 @@ static void balance_read_sensors(void)
             s_data.pitch     = euler.pitch + param_get_float(PARAM_ANGLE_ZERO) - comp;
             s_data.trim_comp = comp;
 
-            /* ⚠⚠ 俯仰方向的角速度必须取 **gyro.y**, 不是 gyro.x
+            /* ⚠⚠ 俯仰方向的角速度必须取 **gyro.x**
              *
-             * gyro.x 是历史遗留的字段名, 实际取的是 Y 轴:
-             *   - mpu9250.c 融合 pitch 时积分的就是 gyro.y (所以姿态角是对的)
-             *   - 但平衡环的阻尼项曾经取 gyro.x —— 轴不一致, 阻尼项在
-             *     "车前后摆"这个自由度上取的是 roll 方向角速度,
-             *     对两轮前后走的平衡车来说那基本是**纯噪声**。
-             *     表现: Kd 怎么调都不对, 车发软、抖、参数毫无规律。
+             * 车体轴向与 MPU 轴向差一个 90° 置换 (详见 mpu9250.c 的
+             * mpu9250_fuse_euler 注释): 俯仰是绕 MPU 的 X 轴。
+             * 取 gyro.y 拿到的是车体**左右轴**角速度, 对两轮前后走的
+             * 平衡车来说在"车前后摆"这个自由度上基本是纯噪声 ——
+             * 表现就是 Kd 怎么调都不对, 车发软、抖、参数毫无规律。
              *
-             * gyro_sign: 即便轴选对了, 陀螺仪读数方向仍可能与 pitch 符号相反
-             * (取决于 MPU 装配朝向)。这个无法从代码判断, 必须真机测:
-             * 手推车头向前倾, 网页上 Pitch 与 Gyro 应同向; 反了就改成 -1。 */
-            float rate = gyro.y * get_sign_param(PARAM_GYRO_SIGN, "gyro_sign");
+             * gyro_sign: 即便轴选对了, 读数方向仍可能与 pitch 符号相反
+             * (取决于 MPU 具体装配朝向), 无法从代码判断, 必须真机测:
+             * 手推车头向前倾, 网页上 Pitch 与 Gyro 应同向; 反了就改成 -1。
+             * 本机实测前倾 gx 为正, 默认 +1 即正确。 */
+            float rate = gyro.x * get_sign_param(PARAM_GYRO_SIGN, "gyro_sign");
 
             /* 一阶低通滤高频噪声。系数越小越平滑但延迟越大,
              * 延迟大了阻尼会变弱 —— 这是个权衡, gyro_lpf 滑块就是调它 */

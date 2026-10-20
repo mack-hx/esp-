@@ -35,6 +35,21 @@ static float gyro_scale = 131.0f;     // ±250°/s
 static euler_angle_t current_angle = {0, 0, 0};
 static const float alpha = 0.98f;  // 互补滤波系数
 
+/* ========== 俯仰角零点基准 (°) ==========
+ *
+ * 俯仰角定义为"相对配平姿态往前倾多少度", 所以配平位的自然读数应该
+ * 换算成 0°, 否则整条控制链要额外背 30 多度的固定偏置。
+ *
+ * 基准值由平衡位实测 (ax=0.03 ay=-0.85 az=0.57) 算出:
+ *     atan2(az, -ay) = atan2(0.57, 0.85) = 33.85°
+ *
+ * ⚠ 换 MPU 或改了安装方向, 这个数就得重算。
+ *   重算方法: 车扶到平衡姿态, 读 MPU 调试页的 ay / az,
+ *   代入 atan2(az, -ay) 就是本常数。
+ *
+ * 实测标定日期: 2026-10-05 */
+#define PITCH_ZERO_REF   33.85f
+
 /* I2C 总线互斥锁
  *
  * ⚠ 必须加: 控制任务 (10ms 周期) 和 UI 任务 (50ms 周期) 都会调
@@ -351,10 +366,30 @@ esp_err_t mpu9250_read_temperature(float *temp)
  */
 static void mpu9250_fuse_euler(const mpu9250_data_t *data, euler_angle_t *out)
 {
-    /* 从加速度计计算角度 (只能当参考, 车一动加速度就混进了重力以外的干扰) */
-    float accel_roll = atan2f(data->accel.y, data->accel.z) * 180.0f / M_PI;
-    float accel_pitch = atan2f(-data->accel.x, sqrtf(data->accel.y * data->accel.y +
-                               data->accel.z * data->accel.z)) * 180.0f / M_PI;
+    /* ---------- ⚠⚠ 本机 MPU 轴向定义 (2026-10-05 真机实测标定) ----------
+     *
+     * MPU 是**平装**在车体上的, 但车在平衡位是**立着的**, 所以
+     * "车的上方向" 对应的是 MPU 的 **Y 轴**, 不是 Z 轴。
+     * 实测 (平衡位, 舵机 80°):  ax=0.03  ay=-0.85  az=0.57  (单位 g)
+     *   ay 绝对值最大 -> 重力主要在 Y 轴上 -> MPU 的 Y 轴 ≈ 车的"上"
+     *   前后倾时重力在 Y↔Z 之间转移 -> 俯仰旋转轴 = MPU 的 **X 轴**
+     *   实测前倾时 gx 为**正**、后仰时为**负**
+     *
+     * 由此得到车体坐标系与 MPU 坐标系的对应:
+     *     车的上方向  = MPU 的  Y 轴
+     *     车体前后轴  = MPU 的  Z 轴
+     *     车体左右轴  = MPU 的  X 轴
+     *
+     * ⚠ 以前这里写的是 atan2(-accel.x, sqrt(ay²+az²)), 也就是假设
+     *   "车的上 = MPU 的 Z 轴"。在那个错误假设下, 车前后倾时 ax 恒为 0,
+     *   accel_pitch 恒等于 0, 完全跟踪不到倾斜 —— 这就是曾经"车转 30°
+     *   读数只动 2~3°"的原因 (那 2~3° 是陀螺零偏漂移出来的假象)。
+     */
+    float accel_pitch = atan2f(data->accel.z, -data->accel.y) * 180.0f / M_PI
+                       - PITCH_ZERO_REF;   /* 前倾为正 */
+    /* roll 是左右倾 (绕车体前后轴 = MPU 的 Z 轴), 本车不控制, 保留一个
+     * 粗略值仅供观察: 左右倾时重力在 X↔Y 之间转移 */
+    float accel_roll  = atan2f(data->accel.x, -data->accel.y) * 180.0f / M_PI;
 
     /* 陀螺仪积分: dt 用两次调用之间的真实间隔
      * ⚠ 跨设备复位 / 长时间空档时 dt 会异常大, 积分会炸, 这里夹住上限 */
@@ -369,9 +404,17 @@ static void mpu9250_fuse_euler(const mpu9250_data_t *data, euler_angle_t *out)
     }
     s_filt_last_us = now_us;
 
-    current_angle.roll  += data->gyro.x * dt;
-    current_angle.pitch += data->gyro.y * dt;
-    current_angle.yaw   += data->gyro.z * dt;
+    /* 陀螺仪积分: 俯仰是绕 MPU 的 X 轴, 所以 pitch 积分 **gyro.x**
+     * (不是 gyro.y —— 那是车体左右轴, 对两轮前后走的平衡车是纯噪声)
+     * 实测: 车头前倾 gx 为正, 与 accel_pitch 增大同号, 所以不取负。
+     *
+     * roll 绕 MPU 的 Z 轴 (车体前后轴), yaw 绕 MPU 的 Y 轴 (车体竖直轴)。
+     * roll/yaw 本车不使用, 积分只为了数值连续, 不参与控制。
+     * ⚠ 陀螺零偏会被 1/(1-alpha) ≈ 49 倍放大, 所以零偏校准必须做,
+     *   且 accel 通道是唯一的长期纠偏来源。 */
+    current_angle.roll  += data->gyro.z * dt;
+    current_angle.pitch += data->gyro.x * dt;
+    current_angle.yaw   += data->gyro.y * dt;
 
     /* 互补滤波融合: 陀螺仪负责短时响应, 加速度计负责长期拉回真实水平 */
     current_angle.roll  = alpha * current_angle.roll  + (1 - alpha) * accel_roll;

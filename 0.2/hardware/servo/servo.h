@@ -3,10 +3,7 @@
  * @brief 舵机控制驱动 (标准 PWM 舵机, 50Hz, 1-2ms 脉宽)
  * @note  架构:
  *        - 内部维护两路独立目标角度 s_angle[id] (用户操作的"逻辑角度")
- *        - 实物: GPIO13 舵机反向安装, GPIO14 舵机正向安装
- *        - 编号: SERVO_1 = GPIO14, SERVO_2 = GPIO13 (物理左=1, 物理右=2)
- *        - 物理映射: SERVO_1 → 180-逻辑, SERVO_2 → 不映射 (反向舵机自反, 净结果 = 180-逻辑)
- *        - 两股舵机调同一角度都转同一方向, 视觉对称
+ *        - 物理安装不对称, 靠 servo_logic_to_phys() 补偿, 调同一逻辑角度时机械上朝同一方向转
  *        - UI 显示的"servo_get_angle()"返回的是逻辑角度
  *        - main.c 启动后台任务 servo_keep_alive_task, 周期把两路角度写到硬件
  *        - 切页 / 状态变化时舵机不会失力或跳变, 一直保持当前角度
@@ -51,7 +48,6 @@
 #define SERVO_PERIOD_MS     20      // 周期 20ms (1/50Hz)
 #define SERVO_MIN_PULSE_US  1000    // 最小脉宽 (0°)   1ms
 #define SERVO_MAX_PULSE_US  2000    // 最大脉宽 (180°) 2ms
-#define SERVO_MID_PULSE_US  1500    // 中位脉宽 (90°)  1.5ms
 
 #define SERVO_MIN_ANGLE     0
 #define SERVO_MAX_ANGLE     180
@@ -116,14 +112,6 @@ esp_err_t servo_apply_both(void);
  * @return ESP_OK 成功
  */
 esp_err_t servo_keep_alive_start(void);
-
-/**
- * @brief 设置舵机脉宽 (微秒) - 直接控制物理输出, 不走限位
- * @param id 舵机 ID
- * @param pulse_us 脉宽 (500-2500us, 典型 1000-2000us)
- * @return ESP_OK 成功
- */
-esp_err_t servo_set_pulse(servo_id_t id, uint16_t pulse_us);
 
 /**
  * @brief 将角度转换为占空比值

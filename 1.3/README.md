@@ -210,3 +210,15 @@ pio run -t clean     # 清理
 7. **全程扶着车，随时准备断电**
 
 详见 `../logs/2026-10-07.md`。
+
+## 配套 App（`app/` 子工程）
+
+`1.3/app/` 下挂了一个 **uniapp 项目**，用来给车配手机/小程序遥控端。
+
+- **通信方式**：MQTT（共用一个 broker，topic 区分设备）
+- **功能**：连接配置、遥控（前后左右/急停/起立/配平）、参数表读写、状态监控
+- **状态**：✅ 前端 4 个页面写完，⏳ ESP32 端的 MQTT 客户端待写（`user/mqtt_client/`）
+- **详情**：`app/README.md`
+
+> App 的 topic 字符串定义在 `app/common/topic.js`，等 ESP32 端 mqtt_client 写完时
+> 1:1 翻译成 C 字符串即可，两边对得上就能通。

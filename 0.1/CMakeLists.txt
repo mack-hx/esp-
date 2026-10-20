@@ -17,8 +17,9 @@ set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/hardware/encoder"
     "${CMAKE_CURRENT_SOURCE_DIR}/hardware/led"
     "${CMAKE_CURRENT_SOURCE_DIR}/hardware/magnet"
-    "${CMAKE_CURRENT_SOURCE_DIR}/hardware/lcd_ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hardware/lcd"
     "${CMAKE_CURRENT_SOURCE_DIR}/hardware/i2c_scanner"
+    "${CMAKE_CURRENT_SOURCE_DIR}/user/ui"
 )
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
