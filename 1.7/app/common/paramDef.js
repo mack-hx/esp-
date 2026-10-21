@@ -3,7 +3,7 @@
  * @brief 1:1 镜像 ESP32 端 param.c 的参数定义 (16 项)
  * @date 2026-10-09
  *
- * 数据来源: 1.3/user/param/param.c (PARAM_DATA_VERSION 7)
+ * 数据来源: 1.7/user/param/param.c (PARAM_DATA_VERSION 7)
  * 改了 param.c 就要同步这个文件, 否则 App 显示的滑块范围/默认值会跟车端对不上.
  */
 
@@ -39,18 +39,18 @@ export const PARAM_DEFS = [
     hint: '超过这个倾角判定摔倒, 立刻停电机' },
   { id: 9,  key: 'gyro_lpf',    label: 'Gyro LPF',      unit: '',  def: 0.2, min: 0, max: 1,  step: 0.01, dec: 2, grp: 2,
     hint: '陀螺仪低通滤波' },
-  { id: 10, key: 'encoder_gear',label: 'Encoder Gear',  unit: '',  def: 30,  min: 1, max: 200, step: 1,  dec: 0, grp: 2,
-    hint: '电机转速/轮转速减速比' },
-  { id: 11, key: 'motor_db',    label: 'Motor Deadband',unit: '%', def: 5,   min: 0, max: 30,  step: 0.5, dec: 1, grp: 2,
-    hint: '电机最小启动 PWM' },
-  { id: 12, key: 'arm_pitch',   label: 'Arm Pitch',     unit: '°', def: 5,   min: 1, max: 30,  step: 0.5, dec: 1, grp: 2,
-    hint: '允许的最大倾角' },
-  { id: 13, key: 'arm_rate',    label: 'Arm Rate',      unit: '°/s',def: 30, min: 5, max: 200, step: 1,  dec: 0, grp: 2,
-    hint: '允许的最大角速度' },
-  { id: 14, key: 'arm_time',    label: 'Arm Time',      unit: 'ms',def: 500, min: 100, max: 5000, step: 50, dec: 0, grp: 2,
-    hint: '需要连续稳定的时长' },
-  { id: 15, key: 'servo_ctr',   label: 'Servo Center',  unit: '°', def: 90,  min: 0, max: 180, step: 1, dec: 0, grp: 2,
-    hint: '舵机中心角' }
+  { id: 10, key: 'gear',        label: 'Gear Ratio',    unit: '',  def: 1.0, min: 0.1, max: 50,  step: 0.1,  dec: 1, grp: 2,
+    hint: '电机转速 / 轮转速。带减速箱的填 >1' },
+  { id: 11, key: 'deadzone',    label: 'Motor Deadband',unit: '%', def: 8,   min: 0, max: 30,   step: 1,    dec: 0, grp: 2,
+    hint: '电机最小启动 PWM。太小转不动, 太大会一顿一顿' },
+  { id: 12, key: 'arm_pitch',   label: 'Arm Pitch',     unit: '°', def: 8,   min: 1, max: 30,   step: 1,    dec: 0, grp: 2,
+    hint: '启动门控: 倾角小于这个值才允许输出' },
+  { id: 13, key: 'arm_rate',    label: 'Arm Rate',      unit: '°/s',def: 20, min: 2, max: 100,  step: 1,    dec: 0, grp: 2,
+    hint: '启动门控: 角速度小于这个值才允许输出' },
+  { id: 14, key: 'arm_time',    label: 'Arm Time',      unit: 'ms',def: 500, min: 0, max: 3000, step: 100,  dec: 0, grp: 2,
+    hint: '启动门控: 需要连续稳定这么久才真正输出' },
+  { id: 15, key: 'servo_c',     label: 'Servo Center',  unit: '°', def: 80,  min: 30, max: 120, step: 1,    dec: 0, grp: 2,
+    hint: '舵机中心角。也是配平表的参考角' }
 ]
 
 /** 用 key 找 def */

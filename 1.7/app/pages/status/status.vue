@@ -6,7 +6,7 @@
         <text class="dot"></text>
         <text>{{ connText }}</text>
       </view>
-      <text class="last-seen" v-if="lastSeen">心跳: {{ lastSeen }}s</text>
+      <text class="last-seen" v-if="lastSeen !== null">心跳: {{ lastSeen }}s</text>
       <text class="last-seen" v-else>无数据</text>
     </view>
 
@@ -21,42 +21,15 @@
       </view>
     </view>
 
-    <!-- PID 参数调节 -->
+    <!-- 参数入口 (调参统一到"参数"页, 那边跟车上的参数表是一一对应的) -->
     <view class="card">
-      <view class="card-title">PID 参数 (实时调节)</view>
+      <view class="card-title">参数调节</view>
       <view class="pid-item">
-        <text class="pid-label">bal_kp</text>
-        <text class="pid-value">{{ pidParams.bal_kp }}</text>
+        <text class="pid-label">PID / 限幅 / 舵机中位…</text>
       </view>
-      <slider :value="pidParams.bal_kp" min="0" max="200" step="0.1" show-value active-color="#1aad19" @change="e => onPidChange('bal_kp', e.detail.value)" />
-
-      <view class="pid-item">
-        <text class="pid-label">bal_ki</text>
-        <text class="pid-value">{{ pidParams.bal_ki }}</text>
-      </view>
-      <slider :value="pidParams.bal_ki" min="0" max="50" step="0.01" show-value active-color="#44aa44" @change="e => onPidChange('bal_ki', e.detail.value)" />
-
-      <view class="pid-item">
-        <text class="pid-label">bal_kd</text>
-        <text class="pid-value">{{ pidParams.bal_kd }}</text>
-      </view>
-      <slider :value="pidParams.bal_kd" min="0" max="100" step="0.1" show-value active-color="#4444ff" @change="e => onPidChange('bal_kd', e.detail.value)" />
-
-      <view class="pid-item">
-        <text class="pid-label">vel_kp</text>
-        <text class="pid-value">{{ pidParams.vel_kp }}</text>
-      </view>
-      <slider :value="pidParams.vel_kp" min="0" max="100" step="0.1" show-value active-color="#ff8844" @change="e => onPidChange('vel_kp', e.detail.value)" />
-
-      <view class="pid-item">
-        <text class="pid-label">turn_kp</text>
-        <text class="pid-value">{{ pidParams.turn_kp }}</text>
-      </view>
-      <slider :value="pidParams.turn_kp" min="0" max="100" step="0.1" show-value active-color="#ff44ff" @change="e => onPidChange('turn_kp', e.detail.value)" />
-
+      <text class="pid-value">共 16 项, 改完记得点"保存"才会下发到车</text>
       <view class="action-row">
-        <button class="btn btn-primary" :loading="savingPid" @click="onSavePid">保存参数</button>
-        <button class="btn btn-ghost" @click="onReloadPid">重新读取</button>
+        <button class="btn btn-primary" @click="goParams">去调参</button>
       </view>
     </view>
 
@@ -131,7 +104,6 @@
 import { oneApi } from '../../common/oneapi.js'
 import { queryDeviceProperty } from '../../common/onenet.js'
 import { getConfig } from '../../common/config.js'
-import { controller } from '../../utils/control.js'
 
 const MAX_POINTS = 100  // 最多显示100个点
 const PITCH_RANGE = 30  // 显示范围 ±30°
@@ -153,12 +125,6 @@ export default {
       canvasWidth: 0,
       canvasHeight: 0,
       isDrawing: false,
-      // PID 参数
-      pidParams: {
-        bal_kp: 40, bal_ki: 0, bal_kd: 10,
-        vel_kp: 20, turn_kp: 15
-      },
-      savingPid: false,
       _pollTick: null,
       _animationId: null
     }
@@ -375,28 +341,9 @@ export default {
       this.isDrawing = false
     },
 
-    onPidChange(key, value) {
-      this.pidParams[key] = Number(value)
-    },
 
-    async onSavePid() {
-      this.savingPid = true
-      try {
-        const ok = await controller.setParams(this.pidParams)
-        uni.showToast({ title: ok ? '参数已保存' : '保存失败', icon: ok ? 'success' : 'none' })
-      } finally {
-        this.savingPid = false
-      }
-    },
-
-    async onReloadPid() {
-      const params = await controller.getParams()
-      if (params) {
-        this.pidParams = { ...this.pidParams, ...params }
-        uni.showToast({ title: '参数已读取', icon: 'success' })
-      } else {
-        uni.showToast({ title: '读取失败', icon: 'none' })
-      }
+    goParams() {
+      uni.navigateTo({ url: '/pages/params/params' })
     }
   }
 }

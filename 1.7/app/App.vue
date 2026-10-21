@@ -1,7 +1,8 @@
 <script>
 // App.vue 是 uni-app 的根组件
 // 启动时从本地存储恢复 OneNet 连接配置
-import { initConfig } from './common/config.js'
+import { initConfig, hasConfig } from './common/config.js'
+import { oneApi } from './common/oneapi.js'
 
 export default {
   onLaunch: function() {
@@ -9,6 +10,14 @@ export default {
     // 恢复本地 OneNet 配置 (productId / deviceName / deviceAccessKey)
     initConfig()
     console.log('[App] OneNet 配置已恢复')
+    /* 有配置就自动验一次连通性: 不然浏览器一刷新, 连接状态回到 idle,
+     * 各页面的按钮都会提示"未连接 OneNet", 必须手动去连接页点一次验证。
+     * ensureReady() 会真的拉一次设备属性, 通了才置为 ready。 */
+    if (hasConfig()) {
+      oneApi.ensureReady().then(ok => {
+        console.log('[App] 自动连通性检查:', ok ? '已就绪' : '失败')
+      })
+    }
   },
   onShow: function() {
     console.log('[App] onShow')

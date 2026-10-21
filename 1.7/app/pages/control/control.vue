@@ -232,7 +232,18 @@ export default {
       // 微动开关状态
       switchState: { sw1: false, sw2: false },
       // 舵机 (范围 30-120° 与 ESP32 servo.h 同步: SERVO_LIMIT_MIN=30, SERVO_LIMIT_MAX=120)
-      servoAngle: 100
+      servoAngle: 100,
+      /**
+       * App 最近一次下发给设备的值 + 下发时刻。
+       * 用途: 轮询到设备上报的值时, 只有"跟 App 下发的值不一样"才认为是
+       * 外部 (物理开关/其它会话) 改的, 这时用设备的值覆盖界面;
+       * 刚下发过的那几秒内不覆盖, 免得把用户正在拖的滑块弹回去。
+       */
+      _sent: {
+        magnet_on: null, led_on: null, led_color: null,
+        led_brightness: null, servo1_angle: null
+      },
+      _sentAt: {}
     }
   },
   computed: {
@@ -338,11 +349,49 @@ export default {
     _sendLed() {
       const { r, g, b, brightness, on } = this.ledState
       const colorVal = (r << 16) | (g << 8) | b
+      this._markSent({ led_on: on ? 1 : 0, led_color: colorVal, led_brightness: brightness })
       return controller.sendLed({ led_on: on ? 1 : 0, led_color: colorVal, led_brightness: brightness })
+    },
+
+    /**
+     * @brief 记下"App 刚下发了什么值"
+     * @param {Object} values 形如 { led_on: 1 }
+     */
+    _markSent(values) {
+      const now = Date.now()
+      Object.keys(values).forEach(k => {
+        this._sent[k] = values[k]
+        this._sentAt[k] = now
+      })
+    },
+
+    /**
+     * @brief 用设备上报的值同步界面
+     * @param {string} key  标识符
+     * @param {number} val  设备上的值
+     * @note  刚下发过 (2.5s 内) 不覆盖, 防止把用户正在拖的滑块弹回去
+     */
+    _syncFromDevice(key, val) {
+      const now = Date.now()
+      if (now - (this._sentAt[key] || 0) < 2500) return
+      if (Number(this._sent[key]) === Number(val)) return
+      this._sent[key] = val
+      this._sentAt[key] = now
+      if (key === 'magnet_on') this.magnetState.on = !!Number(val)
+      if (key === 'led_on') this.ledState.on = !!Number(val)
+      if (key === 'led_brightness') this.ledState.brightness = Number(val)
+      if (key === 'led_color') {
+        const rgb = Number(val)
+        this.ledState.r = (rgb >> 16) & 0xFF
+        this.ledState.g = (rgb >> 8) & 0xFF
+        this.ledState.b = rgb & 0xFF
+      }
+      if (key === 'servo1_angle') this.servoAngle = Number(val)
     },
 
     onToggleMagnet() {
       this.magnetState.on = !this.magnetState.on
+      this._markSent({ magnet_on: this.magnetState.on ? 1 : 0 })
       controller.sendMagnet({ magnet_on: this.magnetState.on ? 1 : 0 })
         .then(() => this._showTip(this.magnetState.on ? '执行对接' : '取消对接'))
         .catch(e => controller.reportError(e))
@@ -362,6 +411,14 @@ export default {
           res.data.forEach(item => { props[item.identifier] = item.value })
           this.switchState.sw1 = !!Number(props.sw1)
           this.switchState.sw2 = !!Number(props.sw2)
+
+          /* 执行器状态以**车上的实际值**为准:
+           * 电磁铁/灯可能被物理开关或上一轮会话改过,
+           * App 瞎猜的话按钮显示的状态跟车上对不上。 */
+          const SYNC_KEYS = ['magnet_on', 'led_on', 'led_brightness', 'led_color', 'servo1_angle']
+          SYNC_KEYS.forEach(k => {
+            if (props[k] !== undefined) this._syncFromDevice(k, props[k])
+          })
         }
       } catch (e) {
         // 忽略查询错误
@@ -391,6 +448,7 @@ export default {
       if (which === 'servo1_angle' || which === 'both') payload.servo1_angle = this.servoAngle
       if (which === 'servo2_angle' || which === 'both') payload.servo2_angle = this.servoAngle
       const label = which === 'servo1_angle' ? '左' : which === 'servo2_angle' ? '右' : '双'
+      this._markSent(payload)
       controller.sendServo(payload)
         .then(() => this._showTip(`舵机 ${label} 已设为 ${this.servoAngle}°`))
         .catch(e => controller.reportError(e))

@@ -57,6 +57,16 @@ export function getConfig() {
   return _config
 }
 
+/**
+ * @brief 本地是否已经配过 OneNet (产品ID/设备名/AccessKey 都填了)
+ * @return {boolean} 配全了返回 true
+ * @note  用来决定 App 启动后要不要自动做一次连通性检查
+ */
+export function hasConfig() {
+  const c = getConfig()
+  return !!(c.productId && c.deviceName && c.deviceAccessKey)
+}
+
 export function saveConfig(patch) {
   if (!_config) initConfig()
   Object.assign(_config, patch)

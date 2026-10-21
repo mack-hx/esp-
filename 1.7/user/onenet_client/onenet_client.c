@@ -641,6 +641,8 @@ static void publish_task(void *arg)
     static char ibody[512];   /* 整数帧 */
     static char sbody[128];   /* 字符串帧 */
     static char swbody[128];  /* 对接开关帧 */
+    static char actbody[512]; /* 执行器状态帧 (灯/电磁铁) */
+    static char svbody[256];  /* 舵机角度帧 */
 
     while (1) {
         if (s_connected) {
@@ -705,6 +707,28 @@ static void publish_task(void *arg)
                         "sw2", (long long)(sw2 ? 1 : 0));
                     if (n3 > 0) {
                         esp_mqtt_client_publish(s_client, TOPIC_PROPERTY_POST, swbody, n3, 0, 0);
+                    }
+
+                    /* --- 6. 执行器状态 (灯 / 电磁铁), 1s 一帧 ---
+                     * 这几个属性 App 只是下发, 设备把当前状态报回去,
+                     * App 才能显示真实状态 (而不是自己瞎猜)。 */
+                    led_color_t lc = led_get_color(LED_1);
+                    int32_t led_rgb = ((int32_t)lc.r << 16) | ((int32_t)lc.g << 8) | lc.b;
+                    int n4 = build_property_post_i(actbody, sizeof(actbody), ts, 4,
+                        "led_on",         (long long)(led_get_on(LED_1) ? 1 : 0),
+                        "led_color",      (long long)led_rgb,
+                        "led_brightness", (long long)led_get_brightness(LED_1),
+                        "magnet_on",      (long long)(magnet_get(MAGNET_1) ? 1 : 0));
+                    if (n4 > 0) {
+                        esp_mqtt_client_publish(s_client, TOPIC_PROPERTY_POST, actbody, n4, 0, 0);
+                    }
+
+                    /* --- 7. 舵机角度 (float, step 1), 1s 一帧 --- */
+                    int n5 = build_property_post_f(svbody, sizeof(svbody), ts, 2, 0,
+                        "servo1_angle", (double)servo_get_angle(SERVO_1),
+                        "servo2_angle", (double)servo_get_angle(SERVO_2));
+                    if (n5 > 0) {
+                        esp_mqtt_client_publish(s_client, TOPIC_PROPERTY_POST, svbody, n5, 0, 0);
                     }
                 }
             }
@@ -987,9 +1011,13 @@ static void handle_service_invoke(const char *topic, int topic_len, const char *
                 ESP_LOGW(TAG, "param_set: 没找到 values 参数");
             }
         }
-        char data_json[32];
-        snprintf(data_json, sizeof(data_json), "{\"ok\":%s}", ok ? "true" : "false");
-        service_reply(name, req_id, data_json);
+        /* ⚠ 物模型里 param_set 的**输出参数是空的** (其它 5 个服务都有 ok)。
+         * 平台会校验应答里的标识符: 多一个它不认识的字段就报
+         * "10415 response invalid", 所以这里只能回空对象。
+         * 如果之后给 param_set 补上输出参数 ok (bool), 把下面这行
+         * 改成 "{\"ok\":%s}" 即可 (ok ? "true" : "false")。 */
+        (void)ok;
+        service_reply(name, req_id, "{}");
     } else if (strcmp(name, "param_save") == 0) {
         esp_err_t ret = param_save();
         char data_json[32];
