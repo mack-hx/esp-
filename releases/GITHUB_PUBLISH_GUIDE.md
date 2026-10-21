@@ -1,72 +1,95 @@
 # GitHub 发布指南
 
-## 已完成的工作
-- ✅ 所有代码已提交到本地Git
-- ✅ 已创建7个版本的压缩包 (releases/)
-- ✅ 已创建发布说明 (releases/RELEASE_NOTES.md)
+> 仓库: https://github.com/mack-hx/esp-
 
-## 手动推送到GitHub
+## 当前状态
 
-SSH连接有问题，请选择以下方式之一：
+- ✅ 代码已提交到本地 git
+- ✅ 只保留最新两版: `0.17` (上一个版本) 和 `0.2` (当前版本)
+- ✅ 压缩包已打好 (`releases/`)
 
-### 方式1: 使用GitHub CLI (推荐)
+## 推送到 GitHub
+
+### 方式 1: GitHub CLI (推荐)
 
 ```bash
-# 1. 安装 GitHub CLI
 brew install gh
-
-# 2. 认证
 gh auth login
 
-# 3. 推送代码
 git push origin main
-
-# 4. 创建 Releases (可选)
-gh release create v0.1.0 \
-  --title "Version 0.1.0" \
-  --notes-file releases/RELEASE_NOTES.md
 ```
 
-### 方式2: 使用HTTPS + Personal Access Token
+### 方式 2: HTTPS + Personal Access Token
 
 ```bash
-# 1. 在 GitHub Settings > Developer settings > Personal access tokens 生成 token
+# 在 GitHub Settings > Developer settings > Personal access tokens 生成 token
+# 注意: token 不要写进仓库里的任何文件, 用环境变量传
 
-# 2. 修改 remote
-git remote set-url origin https://YOUR_TOKEN@github.com/mack-hx/esp_balance_robot.git
-
-# 3. 推送
+export GH_TOKEN=ghp_xxxxxxxxxxxx
 git push origin main
 ```
 
-### 方式3: 手动在GitHub网页操作
+> ⚠ **不要把 token 明文写进仓库文件**。2026-10-21 发现
+> `.cursor/rules/github-config.md` 里曾经硬编码过一把 PAT, 已替换成
+> `YOUR_TOKEN_HERE`, 但**明文仍在 git 历史里** (提交 `7ccc8ef`),
+> 所以那把 token 必须在 GitHub 后台吊销重建。
 
-1. 访问 https://github.com/mack-hx/esp_balance_robot
+### 方式 3: 手动在 GitHub 网页操作
+
+1. 访问 https://github.com/mack-hx/esp-
 2. 点击 "Upload files"
-3. 拖入 `releases/` 文件夹中的压缩包
+3. 拖入 `releases/` 里的压缩包
 4. 提交
+
+## 创建 Release
+
+```bash
+# 0.2 (当前版本)
+gh release create v0.2 \
+  --title "Version 0.2" \
+  --notes-file releases/RELEASE_NOTES.md \
+  releases/esp_balance_robot-0.2.tar.gz
+
+# 0.17 (上一个版本)
+gh release create v0.17 \
+  --title "Version 0.17" \
+  --notes-file releases/RELEASE_NOTES.md \
+  releases/esp_balance_robot-0.17.tar.gz
+```
 
 ## 版本列表
 
-| 版本 | 压缩包 | 大小 |
-|------|--------|------|
-| 0.1 | esp_balance_robot-0.1.tar.gz | 230K |
-| 0.2 | esp_balance_robot-0.2.tar.gz | 277K |
-| 1.0 | esp_balance_robot-1.0.tar.gz | 371K |
-| 1.1 | esp_balance_robot-1.1.tar.gz | 365K |
-| 1.2 | esp_balance_robot-1.2.tar.gz | 297K |
-| 1.3 | esp_balance_robot-1.3.tar.gz | 1.1M |
-| 1.4 | esp_balance_robot-1.4.tar.gz | 548K |
+| 版本 | 压缩包 | 大小 | 说明 |
+|------|--------|------|------|
+| 0.2 | esp_balance_robot-0.2.tar.gz | 273K | 当前版本, 三端打通 |
+| 0.17 | esp_balance_robot-0.17.tar.gz | 275K | 上一个版本 |
 
-## 版本时间线
+## 版本号规则
 
-- **v0.1**: 项目初始化，基础框架
-- **v0.2**: WiFi热点+网页调参，驱动全部打通
-- **v1.0**: 平衡控制算法框架，串级PID
-- **v1.1**: 配平表简化，腿角补偿优化
-- **v1.2**: 平衡控制优化
-- **v1.3**: 方向参数烘焙，App框架
-- **v1.4**: WiFi连接修复，主页显示优化
+项目还没正式实现, 版本号**不使用 1 以上的数字**。整体缩小 10 倍:
+
+| 旧编号 | 新编号 |
+|---|---|
+| 0.1 / 0.2 | 0.01 / 0.02 |
+| 1.0 ~ 1.7 | 0.1 ~ 0.17 |
+| 2.0 | 0.2 |
+
+之后按 `0.01 → 0.02 → 0.1 → 0.11 → 0.12 …` 递增。
+
+## 打包命令
+
+```bash
+cd /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot
+for v in 0.17 0.2; do
+  tar czf releases/esp_balance_robot-$v.tar.gz \
+    --exclude='node_modules' --exclude='unpackage' --exclude='.pio' \
+    --exclude='.cache' --exclude='.DS_Store' --exclude='.hbuilderx' \
+    --exclude='compile_commands.json' $v
+done
+```
+
+> 压缩包里只含源码, 不含 `node_modules` / `.pio` 等构建产物。
+> 拿到源码后: `cd <版本>/app && npm install`, 固件用 `cd <版本> && pio run`。
 
 ## 查看压缩包位置
 

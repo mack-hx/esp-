@@ -35,11 +35,11 @@
 typedef enum {
     UI_PAGE_HOME = 0,            // 主页
     UI_PAGE_MENU,                // 菜单页 (选择入口)
+    UI_PAGE_BALANCE,             // 平衡控制 (串级控制器状态 + 启停)
     UI_PAGE_SERVO,               // 舵机调试
     UI_PAGE_ENCODER,             // 编码电机调试
     UI_PAGE_MPU9250,             // MPU9250 参数调试
-    UI_PAGE_WIFI,                // WiFi 热点 / 网页调参入口
-    UI_PAGE_HC595_TEST,          // 74HC595 临时测试 (诊断电机 AIN1/AIN2 实际接在哪个 Qx)
+    UI_PAGE_NETSTAT,             // 网络状态 (WiFi + OneNet)
     UI_PAGE_MAX                  // 哨兵
 } ui_page_id_t;
 

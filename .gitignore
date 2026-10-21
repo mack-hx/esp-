@@ -41,5 +41,3 @@ __pycache__/
 compile_commands.json
 skills-lock.json
 
-# 开发版本目录（避免意外提交）
-1.6/

@@ -22,11 +22,11 @@ typedef struct {
 
 static const menu_item_t menu_items[] = {
     { (ui_page_id_t)-1, "0. Back to Home"   },
-    { UI_PAGE_SERVO,    "1. Servo Debug"    },
-    { UI_PAGE_ENCODER,  "2. Encoder & Motor"},
-    { UI_PAGE_MPU9250,  "3. MPU9250"        },
-    { UI_PAGE_WIFI,     "4. Web Tuner"      },
-    { UI_PAGE_HC595_TEST, "5. HC595 Test"   },
+    { UI_PAGE_BALANCE,   "1. Balance Ctrl"   },
+    { UI_PAGE_SERVO,    "2. Servo Debug"    },
+    { UI_PAGE_ENCODER,  "3. Encoder & Motor"},
+    { UI_PAGE_MPU9250,  "4. MPU9250"        },
+    { UI_PAGE_NETSTAT,  "5. Network"        },
 };
 #define MENU_ITEM_COUNT  (sizeof(menu_items) / sizeof(menu_items[0]))
 /* "Back to Home" 特殊 id 标识 */

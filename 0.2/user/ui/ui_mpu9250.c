@@ -154,7 +154,9 @@ static void ui_mpu9250_draw_data(void)
     snprintf(buf, sizeof(buf), "%6.2f deg", angle.pitch);
     ui_draw_string(40, Y_BAL_P, buf, TFT_COLOR_MAGENTA, TFT_COLOR_BLACK);
 
-    /* Gyx 角速度: 姿态变化的速率, 阻尼/超前控制输入 */
+    /* Gyx 角速度: 姿态变化的速率, 阻尼/超前控制输入
+     * ⚠ 这里取 gyro.x 是对的 —— 俯仰绕 MPU 的 X 轴 (车体轴向差 90° 置换,
+     *   详见 mpu9250.c 的 mpu9250_fuse_euler 注释) */
     ui_fill_rect(40, Y_BAL_G, 84, UI_FONT_H, TFT_COLOR_BLACK);
     snprintf(buf, sizeof(buf), "%6.2f d/s", data.gyro.x);
     ui_draw_string(40, Y_BAL_G, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);

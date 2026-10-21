@@ -9,6 +9,7 @@
 #define MPU9250_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "driver/i2c.h"
 #include "esp_err.h"
 
@@ -91,6 +92,13 @@ typedef struct {
 esp_err_t mpu9250_init(void);
 
 /**
+ * @brief 查询 MPU9250 是否就绪
+ * @note  mpu9250_init() 成功后才为 true
+ * @return true=可用
+ */
+bool mpu9250_is_ready(void);
+
+/**
  * @brief 配置加速度计量程
  * @param fs 加速度计量程
  * @return ESP_OK 成功, 其他值失败
@@ -136,8 +144,20 @@ esp_err_t mpu9250_read_temperature(float *temp);
  * @brief 获取欧拉角 (互补滤波)
  * @param angle 欧拉角指针
  * @return ESP_OK 成功, 其他值失败
+ * @note  mpu9250_get_pose() 的兼容包装, 内部同样只读一次 I2C
  */
 esp_err_t mpu9250_get_euler_angle(euler_angle_t *angle);
+
+/**
+ * @brief 一次读取, 同时得到姿态角和陀螺仪角速度
+ * @param out      [出参] 欧拉角指针
+ * @param gyro_out [出参] 三轴角速度指针 (°/s), 可传 NULL 只要姿态
+ * @return ESP_OK 成功, 其他值失败
+ * @note  控制任务请用这个接口, 不要分别调 mpu9250_get_euler_angle() +
+ *        mpu9250_read_gyro(): 那会读两次 I2C, 两次数据不同时刻,
+ *        姿态角与角速度错位会让平衡环的 D 项(角速度阻尼)失准。
+ */
+esp_err_t mpu9250_get_pose(euler_angle_t *out, mpu9250_axis_t *gyro_out);
 
 /**
  * @brief 校准陀螺仪零点

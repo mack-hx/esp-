@@ -32,7 +32,7 @@ static void ui_servo_draw_static(void)
     ui_draw_string(2, 1, "SERVO DEBUG", TFT_COLOR_BLACK, TFT_COLOR_WHITE);
 
     /* 限位提示 */
-    ui_draw_string(2, 14, "Range 30-100", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
+    ui_draw_string(2, 14, "Range 30-120", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
 
     /* 分隔线 */
     ui_draw_hline(0, 24, UI_SCREEN_W, TFT_COLOR_BLUE);

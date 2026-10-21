@@ -1,19 +1,21 @@
 /**
  * @file param.h
  * @brief 全局可调参数表 (网页滑块调参的唯一数据源)
- * @note  设计目的:
- *        1) 网页上每个滑块 = 一条 PARAM_ITEM 描述, 前端不用硬编码字段名
- *        2) 参数值存 NVS, 断电不丢; 上电自动读回来
- *        3) 以后写 PID 控制时, 直接 param_get_float(PARAM_PID_BAL_KP) 取值
- *        4) 参数表是扁平的 id -> {名称, 默认值, 最小, 最大, 小数位, 分组}
- *           加新参数只要加一行, 网页自动多出一个滑块, 无需改前端代码
  *
- * @note  加参数的步骤 (以后实际开发时照此做):
- *        1) 在下方 PARAM_ID 里加一个枚举
- *        2) 在 g_param_items[] 里加一行描述 (名字/默认值/范围/步进/分组)
- *        3) 完事。网页和 NVS 都不用改
- * @author ESP32 机械狗项目
- * @date 2026-10-04
+ * 0.13 起, 方向符号参数 (bal_sign / gyro_sign) 与 MPU 安装零偏
+ * (ang_zero) 已从这张表里删除, 烘焙成代码里的常量 (balance.h
+ * / mpu9250.c)。理由:
+ *   - ang_zero: 配平表已含每腿角的零偏基准, 改一个数就能消除
+ *   - gyro_sign: 0.11 第八阶段已实测 +1 正确, 不需要每次烧录都重测
+ *   - bal_sign: 本机实测 -1, 改电机接线方向后才会变, 一年也碰不到一次
+ * 少 3 个滑块 = 少 3 个被乱拖的隐患。
+ *
+ * @note  加参数只要两步:
+ *        1) 下方 PARAM_ID 里加一个枚举
+ *        2) param.c 的 g_param_items[] 里加一行描述
+ *        网页和 NVS 都不用改 (网页滑块完全由这张表生成)
+ * @author ESP32 平衡轮腿机器人
+ * @date 2026-10-07
  */
 
 #ifndef PARAM_H
@@ -27,38 +29,37 @@
 typedef enum {
     PARAM_GRP_BALANCE = 0,   // 平衡环 (直立)
     PARAM_GRP_SPEED,         // 速度环 (前后走)
-    PARAM_GRP_STEER,         // 转向环 (左右转)
-    PARAM_GRP_LIMIT,         // 限幅 / 死区 / 滤波
+    PARAM_GRP_LIMIT,         // 限幅 / 死区 / 启动门控
     PARAM_GRP_MAX            // 哨兵
 } param_group_t;
 
-/* ========== 参数 ID (每个滑块一个) ========== */
+/* ========== 参数 ID (每个滑块一个) ==========
+ * ⚠ 顺序 = NVS blob 的下标顺序, 中间插一行会让所有旧数据错位。
+ *   所以**只在末尾追加**, 改了数量就把 PARAM_DATA_VERSION +1。 */
 typedef enum {
-    /* --- 平衡环: 靠 Pitch 角度把车扶正 --- */
+    /* --- 平衡环: 靠 Pitch 把车扶正 --- */
     PARAM_PID_BAL_KP = 0,    // 平衡 Kp (越大越"硬", 但容易抖)
-    PARAM_PID_BAL_KI,        // 平衡 Ki (消除持续倾斜, 太大积分饱和)
-    PARAM_PID_BAL_KD,        // 平衡 Kd (角速度阻尼, 抑制超调)
+    PARAM_PID_BAL_KI,        // 平衡 Ki (消除持续倾斜)
+    PARAM_PID_BAL_KD,        // 平衡 Kd (角速度阻尼)
     /* --- 速度环: 控制前进后退速度 --- */
-    PARAM_PID_SPD_KP,        // 速度 Kp
-    PARAM_PID_SPD_KI,        // 速度 Ki
-    PARAM_PID_SPD_KD,        // 速度 Kd
-    /* --- 转向环: 控制偏航角 / 差速 --- */
-    PARAM_PID_STEER_KP,      // 转向 Kp
-    PARAM_PID_STEER_KI,      // 转向 Ki
-    PARAM_PID_STEER_KD,      // 转向 Kd
-    /* --- 限幅 / 死区 / 滤波 --- */
+    PARAM_PID_SPD_KP,
+    PARAM_PID_SPD_KI,
+    PARAM_PID_SPD_KD,
+    /* --- 限幅 / 死区 / 滤波 / 摔倒检测 --- */
     PARAM_MOTOR_OUT_MAX,     // 电机输出限幅 (%)
-    PARAM_SPEED_OUT_MAX,     // 速度环输出限幅 (%)
+    PARAM_SPEED_OUT_MAX,     // 速度环输出限幅 (°)
     PARAM_ANGLE_LIMIT,       // 倾角保护阈值 (°), 超过判定摔倒
-    PARAM_ANGLE_ZERO,        // 机械零点偏置 (°), 配平用
-    PARAM_GYRO_LPF,          // 陀螺仪低通滤波系数 (0~1, 越小越平滑)
-    PARAM_SPEED_DEADBAND,    // 速度死区 (编码器计数/采样周期), 抑制原地抖动
+    PARAM_GYRO_LPF,          // 陀螺仪低通滤波系数 (0~1)
     PARAM_ENCODER_GEAR,      // 减速比 (电机转速/轮转速)
-    /* --- 硬件调试 --- */
-    PARAM_SERVO_CENTER,      // 舵机中心角 (°)
-    PARAM_SERVO_LIMIT,       // 舵机摆动幅度 (°)
-    PARAM_MOTOR_PWM_MAX,     // 电机 PWM 上限 (%)
-    PARAM_MAX                 // 哨兵
+    /* --- 电机死区 --- */
+    PARAM_MOTOR_DEADBAND,    // 电机最小启动 PWM (%) 死区补偿
+    /* --- 安全门控: 启动前必须连续稳定这么久 --- */
+    PARAM_ARM_PITCH,         // 允许的最大倾角 (°)
+    PARAM_ARM_RATE,          // 允许的最大角速度 (°/s)
+    PARAM_ARM_TIME,          // 需要连续稳定的时长 (ms)
+    /* --- 舵机 --- */
+    PARAM_SERVO_CENTER,      // 舵机中心角 (°) —— 配平表的参考角
+    PARAM_MAX                // 哨兵
 } param_id_t;
 
 /* ========== 参数条目的静态描述 (加参数只改这张表) ========== */
@@ -69,7 +70,7 @@ typedef enum {
 typedef struct {
     param_id_t    id;            // 参数 ID (也是 NVS 里的存盘顺序)
     const char   *key;           // 短标识, JSON 传输用 (如 "bal_kp")
-    const char   *label;         // 网页上显示的名字 (如 "Balance Kp")
+    const char   *label;         // 网页上显示的名字
     const char   *unit;          // 单位 (无单位写 "")
     float         def;           // 默认值
     float         min;           // 滑块最小值
@@ -91,7 +92,7 @@ typedef struct {
  */
 extern const param_item_t g_param_items[];
 
-/* ========== 参数读写 API ========== */
+/* ================= 参数读写 API ================= */
 
 /**
  * @brief 从 NVS 载入参数 (上电调用一次)
@@ -122,8 +123,8 @@ float param_get_float(param_id_t id);
 /**
  * @brief 写入一个浮点参数 (只改内存, 需要 param_save() 才落盘)
  * @param id  参数 ID
- * @param val 新值 (超范围会自动 clamp 到 min~max)
- * @return ESP_OK 成功, ESP_ERR_INVALID_ARG id 非法
+ * @param val 新值 (超范围会自动 clamp 到 min~max, 并对齐到 step)
+ * @return ESP_OK 成功, ESP_ERR_INVALID_ARG id 非法或 val 是 NaN/Inf
  */
 esp_err_t param_set_float(param_id_t id, float val);
 
@@ -143,9 +144,19 @@ const param_item_t *param_get_item(param_id_t id);
 int param_to_json(char *buf, uint32_t len);
 
 /**
+ * @brief 把整个参数表序列化成"扁平键值对" JSON
+ * @param buf  输出缓冲区
+ * @param len  缓冲区大小
+ * @return 实际写入长度 (不含 '\0')
+ * @note  格式: {"bal_kp":40,"bal_ki":0,...}, 与 param_from_json 的输入格式一致,
+ *        App 拉参数走这个 (配对使用: param_get 读它, param_set 写它)
+ */
+int param_to_map_json(char *buf, uint32_t len);
+
+/**
  * @brief 从 JSON 片段批量设置参数
  * @param json JSON 对象字符串, 形如 {"bal_kp":12.5,"bal_ki":3}
- * @return ESP_OK 成功
+ * @return ESP_OK 至少成功设置了一个
  */
 esp_err_t param_from_json(const char *json);
 

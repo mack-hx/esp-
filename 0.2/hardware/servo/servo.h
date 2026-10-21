@@ -54,13 +54,17 @@
 
 /* ========== 限位 / 默认 ==========
  * 限位: 所有角度设置都按这个范围 clamp (UI 显示的也是这个范围)
- * 默认: 上电 / 初始化 / servo_set_both() 都用这个值 */
+ * 默认: 上电 / 初始化 / servo_set_both() 都用这个值
+ *
+ * 行程: 伸腿 = SERVO_LIMIT_MIN(30), 蜷腿 = SERVO_LIMIT_MAX(120)
+ *       测于 2026-10-15 新四连杆结构
+ * 注意: 120° 对应 2ms 脉宽 (物理极限), 不要超出 */
 #define SERVO_LIMIT_MIN     30
-#define SERVO_LIMIT_MAX     100
-#define SERVO_DEFAULT_ANGLE 80
+#define SERVO_LIMIT_MAX     120
+#define SERVO_DEFAULT_ANGLE 100
 
 /* 后台同步任务周期 (ms): 周期性把当前角度写到两路舵机硬件 */
-#define SERVO_KEEP_ALIVE_MS 50
+#define SERVO_KEEP_ALIVE_MS 20
 
 /* ========== 舵机 ID 定义 ========== */
 typedef enum {
@@ -112,6 +116,16 @@ esp_err_t servo_apply_both(void);
  * @return ESP_OK 成功
  */
 esp_err_t servo_keep_alive_start(void);
+
+/**
+ * @brief 获取舵机诊断信息 (用于调试)
+ * @param[out] duty1 舵机1当前实际占空比
+ * @param[out] duty2 舵机2当前实际占空比
+ * @param[out] pulse1_us 舵机1当前脉宽(微秒)
+ * @param[out] pulse2_us 舵机2当前脉宽(微秒)
+ */
+void servo_get_diagnostics(uint32_t *duty1, uint32_t *duty2,
+                          uint32_t *pulse1_us, uint32_t *pulse2_us);
 
 /**
  * @brief 将角度转换为占空比值

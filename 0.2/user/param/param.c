@@ -1,8 +1,12 @@
 /**
  * @file param.c
  * @brief 全局可调参数表实现 (内存数组 + NVS 持久化)
- * @author ESP32 机械狗项目
- * @date 2026-10-04
+ *
+ * 0.13 起, 19 → 16 个参数 (删除 ang_zero / bal_sign / gyro_sign)
+ * PARAM_DATA_VERSION 6 → 7
+ *
+ * @author ESP32 平衡轮腿机器人
+ * @date 2026-10-07
  */
 
 #include "param.h"
@@ -17,59 +21,62 @@ static const char *TAG = "PARAM";
 
 /* ========== 存储常量 ========== */
 #define NVS_NAMESPACE   "param"
-#define NVS_KEY_VALUES  "v"         /* 存所有 float 的 blob */
-#define NVS_KEY_VERSION "ver"       /* 表结构版本, 表变了就忽略旧数据 */
-#define PARAM_DATA_VERSION  1       /* 每次改 g_param_items 的数量/含义就 +1 */
+#define NVS_KEY_VALUES  "v"     /* 存所有 float 的 blob */
+#define NVS_KEY_VERSION "ver"   /* 表结构版本, 表变了就忽略旧数据 */
+#define PARAM_DATA_VERSION  7   /* 每次增删参数就 +1
+                                 * v2~v5: 0.1 的历史版本 (已作废)
+                                 * v6:    0.11 删掉转向环/servo_l/pwm_max/deadband 等
+                                 * v7:    0.13 再删 ang_zero/bal_sign/gyro_sign (烘焙成常量)
+                                 * NVS blob 布局变了, 旧数据必须作废 */
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
 static float s_values[PARAM_MAX];
 
-/* ========== 参数描述表 ==========
- * 以后加参数: 在 param.h 的 PARAM_ID 加枚举, 然后在这里加一行, 网页自动出现新滑块 */
+/* ========== 参数描述表 ========== */
 const param_item_t g_param_items[] = {
     /* ---------- 平衡环 (直立) ---------- */
-    { PARAM_PID_BAL_KP,  "bal_kp",  "Balance Kp",  "",  40.0f,   0.0f,  200.0f,  0.5f, 1, PARAM_GRP_BALANCE,
-      "越大越硬, 太小扶不倒, 太大高频抖" },
-    { PARAM_PID_BAL_KI,  "bal_ki",  "Balance Ki",  "",  12.0f,   0.0f,  100.0f,  0.5f, 1, PARAM_GRP_BALANCE,
-      "消除持续倾斜, 太大容易积分饱和" },
-    { PARAM_PID_BAL_KD,  "bal_kd",  "Balance Kd",  "",   2.0f,   0.0f,   30.0f,  0.1f, 1, PARAM_GRP_BALANCE,
-      "角速度阻尼, 抑制超调振荡" },
+    { PARAM_PID_BAL_KP, "bal_kp", "Balance Kp", "",  40.0f,   0.0f,  200.0f,  0.5f, 1, PARAM_GRP_BALANCE,
+      "越大越硬。太小扶不倒, 太大高频抖。这是**最需要真机试出来的**参数" },
+    { PARAM_PID_BAL_KI, "bal_ki", "Balance Ki", "",  12.0f,   0.0f,  100.0f,  0.5f, 1, PARAM_GRP_BALANCE,
+      "消除配平残余偏差。太大容易积分饱和 (车会先猛冲再回不来)" },
+    { PARAM_PID_BAL_KD, "bal_kd", "Balance Kd", "",   2.0f,   0.0f,   30.0f,  0.1f, 1, PARAM_GRP_BALANCE,
+      "角速度阻尼。车晃得停不下来就加大, 出现高频嗡嗡声就减小" },
+
     /* ---------- 速度环 (前进后退) ---------- */
-    { PARAM_PID_SPD_KP,  "spd_kp",  "Speed Kp",    "",  20.0f,   0.0f,  200.0f,  0.5f, 1, PARAM_GRP_SPEED,
-      "速度响应快慢" },
-    { PARAM_PID_SPD_KI,  "spd_ki",  "Speed Ki",    "",  30.0f,   0.0f,  300.0f,  0.5f, 1, PARAM_GRP_SPEED,
+    { PARAM_PID_SPD_KP, "spd_kp", "Speed Kp",   "",  20.0f,   0.0f,  200.0f,  0.5f, 1, PARAM_GRP_SPEED,
+      "走多快。太大车会猛地窜出去" },
+    { PARAM_PID_SPD_KI, "spd_ki", "Speed Ki",   "",  30.0f,   0.0f,  300.0f,  0.5f, 1, PARAM_GRP_SPEED,
       "消除稳态速度误差" },
-    { PARAM_PID_SPD_KD,  "spd_kd",  "Speed Kd",    "",   0.0f,   0.0f,   30.0f,  0.1f, 1, PARAM_GRP_SPEED,
+    { PARAM_PID_SPD_KD, "spd_kd", "Speed Kd",   "",   0.0f,   0.0f,   30.0f,  0.1f, 1, PARAM_GRP_SPEED,
       "速度变化阻尼" },
-    /* ---------- 转向环 (左右转) ---------- */
-    { PARAM_PID_STEER_KP,"steer_kp","Steer Kp",    "",  15.0f,   0.0f,  150.0f,  0.5f, 1, PARAM_GRP_STEER,
-      "转向响应快慢" },
-    { PARAM_PID_STEER_KI,"steer_ki","Steer Ki",    "",   0.0f,   0.0f,  100.0f,  0.5f, 1, PARAM_GRP_STEER,
-      "消除持续偏航" },
-    { PARAM_PID_STEER_KD,"steer_kd","Steer Kd",    "",   1.0f,   0.0f,   30.0f,  0.1f, 1, PARAM_GRP_STEER,
-      "转向阻尼" },
-    /* ---------- 限幅 / 死区 / 滤波 ---------- */
-    { PARAM_MOTOR_OUT_MAX, "motor_max", "Motor Out Max", "%", 100.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
-      "电机总输出上限, 调试时先压低防止打飞" },
-    { PARAM_SPEED_OUT_MAX, "spdout_max","Speed Out Max","",  40.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
-      "速度环输出映射到倾角目标的角度上限 (°)" },
-    { PARAM_ANGLE_LIMIT,   "ang_limit",  "Angle Limit", "°",  25.0f,  5.0f,   60.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+
+    /* ---------- 限幅 / 摔倒 / 滤波 / 减速比 ---------- */
+    { PARAM_MOTOR_OUT_MAX, "motor_max", "Motor Out Max", "%", 30.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "电机总输出上限。**默认只给 30% 是故意的**: 调试时宁小勿大, 站起来了再往上加" },
+    { PARAM_SPEED_OUT_MAX, "spdout_max", "Speed Out Max", "°", 40.0f, 0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "速度环能给出的最大倾角目标 (°)。车本来就有配平偏差时别调太大" },
+    { PARAM_ANGLE_LIMIT, "ang_limit", "Angle Limit", "°", 25.0f,  5.0f,   60.0f, 1.0f, 0, PARAM_GRP_LIMIT,
       "超过这个倾角判定摔倒, 立刻停电机" },
-    { PARAM_ANGLE_ZERO,    "ang_zero",   "Angle Zero",  "°",   0.0f, -20.0f,   20.0f, 0.5f, 1, PARAM_GRP_LIMIT,
-      "机械零点偏置, 车静止调它让 Pitch 显示 0" },
-    { PARAM_GYRO_LPF,      "gyro_lpf",   "Gyro LPF",    "",    0.2f,  0.0f,    1.0f, 0.01f,2, PARAM_GRP_LIMIT,
-      "陀螺仪低通系数, 越小越平滑但延迟越大" },
-    { PARAM_SPEED_DEADBAND,"deadband",   "Speed Deadband","",  1.0f,  0.0f,   20.0f, 0.5f, 1, PARAM_GRP_LIMIT,
-      "编码器速度死区, 抑制原地来回抖" },
-    { PARAM_ENCODER_GEAR,  "gear",       "Gear Ratio",  "",   1.0f,  0.1f,   50.0f, 0.1f, 1, PARAM_GRP_LIMIT,
-      "电机转速 / 轮子转速, 减速箱填 >1" },
-    /* ---------- 硬件调试 ---------- */
-    { PARAM_SERVO_CENTER,  "servo_c",   "Servo Center", "°", 80.0f, 30.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
-      "舵机中心角" },
-    { PARAM_SERVO_LIMIT,   "servo_l",   "Servo Limit",  "°",  10.0f,  0.0f,   50.0f, 1.0f, 0, PARAM_GRP_LIMIT,
-      "舵机摆动幅度 (围绕中心角左右各多少度)" },
-    { PARAM_MOTOR_PWM_MAX, "pwm_max",   "Motor PWM Max","%", 100.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
-      "电机 PWM 硬件上限" },
+    { PARAM_GYRO_LPF,    "gyro_lpf",  "Gyro LPF",    "",  0.2f,   0.0f,    1.0f, 0.01f,2, PARAM_GRP_LIMIT,
+      "陀螺仪低通系数。越小越平滑但延迟越大, 延迟大了阻尼会变弱" },
+    { PARAM_ENCODER_GEAR,"gear",      "Gear Ratio",  "",  1.0f,   0.1f,   50.0f, 0.1f, 1, PARAM_GRP_LIMIT,
+      "电机转速 / 轮转速。带减速箱的填 >1" },
+
+    /* ---------- 电机死区 ---------- */
+    { PARAM_MOTOR_DEADBAND, "deadzone", "Motor Deadband", "%", 8.0f, 0.0f, 30.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "电机最小启动 PWM。太小电机转不动 (车会慢慢歪然后突然猛冲), 太大车会一顿一顿" },
+
+    /* ---------- 启动门控 ---------- */
+    { PARAM_ARM_PITCH,   "arm_pitch", "Arm Pitch",   "°",   8.0f,  1.0f,   30.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "启动门控: 倾角小于这个值才允许输出。防止歪着启动直接摔" },
+    { PARAM_ARM_RATE,    "arm_rate",  "Arm Rate",    "°/s", 20.0f,  2.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "启动门控: 角速度小于这个值才允许输出。防止推着车启动" },
+    { PARAM_ARM_TIME,    "arm_time",  "Arm Time",    "ms", 500.0f,  0.0f, 3000.0f,100.0f,0, PARAM_GRP_LIMIT,
+      "启动门控: 需要连续稳定这么久才真正输出。0=不等(不推荐)" },
+
+    /* ---------- 舵机 ---------- */
+    { PARAM_SERVO_CENTER, "servo_c",  "Servo Center", "°", 80.0f,  30.0f,  120.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "舵机中心角。也是配平表的参考角 (补偿在这一档为 0)" },
 };
 
 /**
@@ -100,7 +107,8 @@ esp_err_t param_load(void)
         return ESP_OK;
     }
 
-    /* 检查表结构版本: 表改过就丢弃旧数据, 用新默认值 */
+    /* 检查表结构版本: 表改过就丢弃旧数据, 用新默认值。
+     * 必须在读 blob 之前查 —— 旧 blob 的下标顺序和现在不一样了, 读了会错位 */
     uint16_t ver = 0;
     size_t len = sizeof(ver);
     if (nvs_get_u16(h, NVS_KEY_VERSION, &ver) != ESP_OK || ver != PARAM_DATA_VERSION) {
@@ -166,6 +174,7 @@ float param_get_float(param_id_t id)
 esp_err_t param_set_float(param_id_t id, float val)
 {
     if ((int)id < 0 || (int)id >= PARAM_ITEM_COUNT) return ESP_ERR_INVALID_ARG;
+    /* NaN/Inf 必须挡住: 它们能通过 clamp, 进了 PID 就会静默算出垃圾输出 */
     if (isnan(val) || isinf(val)) return ESP_ERR_INVALID_ARG;
 
     const param_item_t *it = &g_param_items[id];
@@ -208,10 +217,31 @@ int param_to_json(char *buf, uint32_t len)
     return n;
 }
 
+int param_to_map_json(char *buf, uint32_t len)
+{
+    if (buf == NULL || len == 0) return 0;
+    int n = snprintf(buf, len, "{");
+    if (n < 0 || (uint32_t)n >= len) return 0;
+
+    for (int i = 0; i < PARAM_ITEM_COUNT; i++) {
+        const param_item_t *it = &g_param_items[i];
+        int w = snprintf(buf + n, len - n, "%s\"%s\":%.*f",
+                         i ? "," : "", it->key,
+                         it->decimals, (double)s_values[i]);
+        if (w <= 0 || (uint32_t)(n + w) >= len) return n;   /* 缓冲区不够, 截断 */
+        n += w;
+    }
+
+    if ((uint32_t)(n + 2) < len) {
+        buf[n++] = '}';
+        buf[n]   = '\0';
+    }
+    return n;
+}
+
 /* ================= JSON 解析 (只认 "key": 数字 这种最简形式) =================
- * 不用 cJSON / mbedtls 库: 调参数据格式是我们自己定的 (全是 ASCII 数字 + 引号),
- * 手写扫描 60 行搞定, 省一个组件依赖。
- * 格式示例: {"bal_kp":12.5,"bal_ki":3,"servo_c":75} */
+ * 不用 cJSON / mbedtls: 调参数据全是 ASCII 数字 + 引号, 手写扫描 60 行搞定,
+ * 省一个组件依赖。格式示例: {"bal_kp":12.5,"bal_ki":3,"servo_c":75} */
 esp_err_t param_from_json(const char *json)
 {
     if (json == NULL) return ESP_ERR_INVALID_ARG;

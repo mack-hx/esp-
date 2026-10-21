@@ -15,21 +15,23 @@
 #include "tft_display.h"
 #include "led.h"
 #include "servo.h"
+#include "magnet.h"
 #include "motor_driver.h"
 #include "encoder.h"
 #include "mpu9250.h"
 #include "pcf8574.h"
 #include "lcd_ui.h"
-#include "wifi_ap.h"
+#include "wifi_sta.h"
 #include "param.h"
-#include "web_server.h"
+#include "balance.h"
+#include "onenet_client.h"
 #include "ui_home.h"
 #include "ui_menu.h"
+#include "ui_balance.h"
 #include "ui_servo.h"
 #include "ui_encoder.h"
 #include "ui_mpu9250.h"
-#include "ui_wifi.h"
-#include "ui_hc595_test.h"
+#include "ui_netstat.h"
 
 static const char *TAG = "MAIN";
 
@@ -99,6 +101,9 @@ void app_main(void)
     /* 1. 初始化 74HC595 (电机方向/电磁铁控制) */
     ESP_ERROR_CHECK(hc595_init());
 
+    /* 0.11 初始化电磁铁 (走 74HC595 Q5/Q6, 默认释放) */
+    ESP_ERROR_CHECK(magnet_init());
+
     /* 2. 初始化 TFT 显示屏 (RST 已接 VCC, 依赖内部 POR) */
     ESP_ERROR_CHECK(tft_display_init());
 
@@ -118,6 +123,15 @@ void app_main(void)
     /* 6. 初始化编码器 */
     ESP_ERROR_CHECK(encoder_init());
 
+    /* 6.1 初始化 PCF8574 (按键 + 对接微动开关) - 允许失败: 模块可能未接
+     * 提前到这里是因为 OneNet 上报任务要读 P4/P5 两个微动开关 (对接检测) */
+    esp_err_t pcf_ret = pcf8574_init();
+    if (pcf_ret != ESP_OK) {
+        ESP_LOGE(TAG, "PCF8574 初始化失败 (按键模块未接), UI 无法响应按键");
+        ESP_LOGE(TAG, "请检查 PCF8574 模块接线 (SCL=GPIO%d, SDA=GPIO%d, INT=GPIO%d, VCC, GND)",
+                 PCF8574_SCL_GPIO, PCF8574_SDA_GPIO, PCF8574_INT_GPIO);
+    }
+
     /* 7. 初始化 MPU9250 (允许失败: 模块可能未接, UI 会显示 "NOT READY") */
     esp_err_t mpu_ret = mpu9250_init();
     if (mpu_ret != ESP_OK) {
@@ -126,26 +140,30 @@ void app_main(void)
                  MPU9250_SCL_GPIO, MPU9250_SDA_GPIO);
     }
 
-    /* 8. 启动 WiFi 热点 + 调参网页
-     * 注意: WiFi 驱动依赖 NVS, 必须在 nvs_flash_init 之后调用。
-     *       两者都允许失败: 失败只是没法用网页调参, 屏上按键调试照常。 */
-    esp_err_t wifi_ret = wifi_ap_start();
-    if (wifi_ret != ESP_OK) {
-        ESP_LOGE(TAG, "WiFi 热点启动失败, 网页调参不可用 (%s)",
-                 esp_err_to_name(wifi_ret));
-    } else {
-        esp_err_t web_ret = web_server_start();
-        if (web_ret != ESP_OK) {
-            ESP_LOGE(TAG, "网页服务器启动失败 (%s)", esp_err_to_name(web_ret));
-        }
+    /* 8. 初始化平衡控制 (读 param 参数 + 载入配平表 + 启动控制任务)
+     * 注意: 必须在 MPU9250 / 编码器 / 电机 / 舵机 之后, 控制任务要读它们。
+     * 允许失败: MPU 没接时控制任务仍会跑, 只是没有姿态数据不会输出。 */
+    esp_err_t bal_ret = balance_init();
+    if (bal_ret != ESP_OK) {
+        ESP_LOGE(TAG, "平衡控制初始化失败 (%s)", esp_err_to_name(bal_ret));
     }
 
-    /* 9. 初始化 PCF8574 (按键) - 允许失败: 模块可能未接 */
-    esp_err_t pcf_ret = pcf8574_init();
-    if (pcf_ret != ESP_OK) {
-        ESP_LOGE(TAG, "PCF8574 初始化失败 (按键模块未接), UI 无法响应按键");
-        ESP_LOGE(TAG, "请检查 PCF8574 模块接线 (SCL=GPIO%d, SDA=GPIO%d, INT=GPIO%d, VCC, GND)",
-                 PCF8574_SCL_GPIO, PCF8574_SDA_GPIO, PCF8574_INT_GPIO);
+    /* 8.1 启动 WiFi (STA 模式连家里 WiFi, 没配过的话进 AP 配网)
+     * 注意: WiFi 驱动依赖 NVS, 必须在 nvs_flash_init 之后调用。
+     *       两者都允许失败: 失败只是没法用 OneNet, 屏上按键调试照常 */
+    esp_err_t wifi_ret = wifi_sta_start();
+    if (wifi_ret != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi 启动失败, OneNet 远程不可用 (%s)",
+                 esp_err_to_name(wifi_ret));
+    }
+
+    /* 8.2 启动 OneNet MQTT 客户端 (走物模型 topic, 跟 App 端 onenet.js 对齐)
+     * 注意: mqtts.heclouds.com:1883 要走外网, 所以**必须在 wifi_sta_start() 之后**
+     * 依赖: 已经在 sdkconfig.defaults 里开了 CONFIG_MQTT_PROTOCOL_311=y
+     * 失败: 只是没法用 App 远程, 屏上按键调试照常 */
+    esp_err_t mqtt_ret = mqtt_client_start();
+    if (mqtt_ret != ESP_OK) {
+        ESP_LOGE(TAG, "OneNet MQTT 启动失败 (%s), App 远程不可用", esp_err_to_name(mqtt_ret));
     }
 
     /* ========================================================
@@ -154,11 +172,11 @@ void app_main(void)
     /* 注册所有页面 (顺序不影响, 但 HOME 必须先注册) */
     ESP_ERROR_CHECK(ui_home_register());
     ESP_ERROR_CHECK(ui_menu_register());
+    ESP_ERROR_CHECK(ui_balance_register());
     ESP_ERROR_CHECK(ui_servo_register());
     ESP_ERROR_CHECK(ui_encoder_register());
     ESP_ERROR_CHECK(ui_mpu9250_register());
-    ESP_ERROR_CHECK(ui_wifi_register());
-    ESP_ERROR_CHECK(ui_hc595_test_register());
+    ESP_ERROR_CHECK(ui_netstat_register());
 
     /* 根据 PCF8574 是否就绪, 选择按键回调
      * - 就绪: 从 PCF8574 读取真实按键

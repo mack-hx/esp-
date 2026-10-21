@@ -33,6 +33,10 @@ static uint8_t s_angle[SERVO_2 + 1] = {
     [SERVO_2] = SERVO_DEFAULT_ANGLE,
 };
 
+/* 舵机更新统计 (用于诊断) */
+static uint32_t s_update_count = 0;    // 总更新次数
+static uint32_t s_update_errors = 0;   // 更新失败次数
+
 /**
  * @brief 将逻辑角度转换为舵机 ID 对应的物理角度
  * @note  实物舵机安装方向:
@@ -67,9 +71,28 @@ static esp_err_t servo_write_hw(servo_id_t id, uint8_t logic_angle)
 {
     uint8_t  phys = servo_logic_to_phys(id, logic_angle);
     uint32_t duty = servo_angle_to_duty(phys);
+
+    s_update_count++;
+
     esp_err_t ret = ledc_set_duty(SERVO_PWM_MODE, servo_map[id].channel, duty);
-    if (ret != ESP_OK) return ret;
-    return ledc_update_duty(SERVO_PWM_MODE, servo_map[id].channel);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "舵机%d ledc_set_duty失败: %s", id, esp_err_to_name(ret));
+        s_update_errors++;
+        return ret;
+    }
+
+    ret = ledc_update_duty(SERVO_PWM_MODE, servo_map[id].channel);
+    if (ret != ESP_OK) {
+        /* 更新失败时重试一次 (ESP32 LEDC 有时需要多次调用) */
+        ESP_LOGW(TAG, "舵机%d ledc_update_duty失败, 重试...", id);
+        s_update_errors++;
+        ret = ledc_update_duty(SERVO_PWM_MODE, servo_map[id].channel);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "舵机%d ledc_update_duty重试仍失败: %s", id, esp_err_to_name(ret));
+            return ret;
+        }
+    }
+    return ESP_OK;
 }
 
 /**
@@ -134,6 +157,9 @@ esp_err_t servo_init(void)
     /* 两路归位到默认角度 (逻辑角度) */
     s_angle[SERVO_1] = SERVO_DEFAULT_ANGLE;
     s_angle[SERVO_2] = SERVO_DEFAULT_ANGLE;
+
+    /* 舵机初始化后先不给力，等待 100ms 让舵机完全上电准备 */
+    vTaskDelay(pdMS_TO_TICKS(100));
     servo_apply_both();
 
     ESP_LOGI(TAG, "舵机初始化成功 (S1(左)=GPIO%d/正向+180-x, S2(右)=GPIO%d/反向+直通, 50Hz, 默认=%d°, 限位=%d~%d)",
@@ -194,14 +220,54 @@ esp_err_t servo_apply_both(void)
 }
 
 /**
+ * @brief 获取舵机诊断信息 (用于调试)
+ * @param[out] duty1 舵机1当前实际占空比
+ * @param[out] duty2 舵机2当前实际占空比
+ * @param[out] pulse1_us 舵机1当前脉宽(微秒)
+ * @param[out] pulse2_us 舵机2当前脉宽(微秒)
+ */
+void servo_get_diagnostics(uint32_t *duty1, uint32_t *duty2,
+                          uint32_t *pulse1_us, uint32_t *pulse2_us)
+{
+    if (duty1) *duty1 = ledc_get_duty(SERVO_PWM_MODE, servo_map[SERVO_1].channel);
+    if (duty2) *duty2 = ledc_get_duty(SERVO_PWM_MODE, servo_map[SERVO_2].channel);
+
+    /* 计算实际脉宽: pulse_us = duty * 20000 / 16383 */
+    if (pulse1_us && duty1) *pulse1_us = (uint32_t)((uint64_t)(*duty1) * 20000 / 16383);
+    if (pulse2_us && duty2) *pulse2_us = (uint32_t)((uint64_t)(*duty2) * 20000 / 16383);
+}
+
+/**
  * @brief 后台"保持运行"任务: 周期性把两路角度同步到硬件
  *        作用: 防止任何路径(包括其他模块误改)导致舵机失力/跳变
  */
 static void servo_keep_alive_task(void *arg)
 {
     (void)arg;
+    uint32_t last_diag_tick = 0;
+
     while (1) {
-        servo_apply_both();
+        esp_err_t ret = servo_apply_both();
+
+        /* 每 10 秒输出一次诊断信息 */
+        uint32_t now_tick = xTaskGetTickCount();
+        if (now_tick - last_diag_tick >= (10000 / portTICK_PERIOD_MS)) {
+            last_diag_tick = now_tick;
+            uint32_t duty1, duty2, pulse1, pulse2;
+            servo_get_diagnostics(&duty1, &duty2, &pulse1, &pulse2);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "舵机状态: 计数=%u, 错误=%u, "
+                         "S1=%u°→物理%u° duty=%u pulse=%uus, "
+                         "S2=%u°→物理%u° duty=%u pulse=%uus",
+                         (unsigned)s_update_count, (unsigned)s_update_errors,
+                         s_angle[SERVO_1], 180 - s_angle[SERVO_1], (unsigned)duty1, (unsigned)pulse1,
+                         s_angle[SERVO_2], s_angle[SERVO_2], (unsigned)duty2, (unsigned)pulse2);
+            } else {
+                ESP_LOGW(TAG, "舵机更新失败: 计数=%u, 错误=%u",
+                         (unsigned)s_update_count, (unsigned)s_update_errors);
+            }
+        }
+
         vTaskDelay(pdMS_TO_TICKS(SERVO_KEEP_ALIVE_MS));
     }
 }
@@ -215,8 +281,8 @@ esp_err_t servo_keep_alive_start(void)
     if (started) return ESP_OK;
     started = true;
 
-    BaseType_t ret = xTaskCreate(servo_keep_alive_task, "servo_keep",
-                                  2048, NULL, 5, NULL);
+    BaseType_t ret = xTaskCreatePinnedToCore(servo_keep_alive_task, "servo_keep",
+                                  4096, NULL, 5, NULL, 1);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "后台舵机保持任务创建失败");
         return ESP_FAIL;
