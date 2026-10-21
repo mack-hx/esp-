@@ -11,6 +11,19 @@
       </view>
     </view>
 
+    <!-- 急停 / 起立 / 配平 -->
+    <view class="action-bar">
+      <view class="big-btn btn-stop" @click="onEmergencyStop">
+        <text>急停</text>
+      </view>
+      <view class="big-btn btn-stand" @click="onStand">
+        <text>起立</text>
+      </view>
+      <view class="big-btn btn-calib" @click="onCalibrate">
+        <text>配平</text>
+      </view>
+    </view>
+
     <!-- 速度档位 -->
     <view class="speed-card">
       <view class="card-title">速度档位</view>
@@ -27,28 +40,15 @@
       </view>
     </view>
 
-    <!-- 主控制盘: 上下左右 + 中央提示 -->
+    <!-- 主控制盘 -->
     <view class="pad-card">
       <view class="card-title">方向控制</view>
-      <view class="pad">
-        <!-- 上 -->
-        <view
-          class="pad-btn"
-          :class="{ active: held === 'forward' }"
-          @touchstart="onDown('forward')"
-          @touchend="onUp"
-          @touchcancel="onUp"
-          @mousedown="onDown('forward')"
-          @mouseup="onUp"
-          @mouseleave="onUp"
-        >
-          <text class="pad-icon">▲</text>
-          <text class="pad-label">前进</text>
-        </view>
 
-        <!-- 左 -->
+      <!-- 十字键容器 -->
+      <view class="dpad">
+        <!-- 左侧: 左转 -->
         <view
-          class="pad-btn"
+          class="pad-btn pad-btn-left"
           :class="{ active: held === 'left' }"
           @touchstart="onDown('left')"
           @touchend="onUp"
@@ -61,15 +61,48 @@
           <text class="pad-label">左转</text>
         </view>
 
-        <!-- 中央提示 -->
-        <view class="pad-center">
-          <text class="pad-center-text">双轮差速</text>
-          <text class="pad-center-sub">档位: {{ speedLabel }}</text>
+        <!-- 中间列: 上(前进) + 中间显示 + 下(后退) -->
+        <view class="dpad-center-col">
+          <!-- 前进 -->
+          <view
+            class="pad-btn pad-center-btn"
+            :class="{ active: held === 'forward' }"
+            @touchstart="onDown('forward')"
+            @touchend="onUp"
+            @touchcancel="onUp"
+            @mousedown="onDown('forward')"
+            @mouseup="onUp"
+            @mouseleave="onUp"
+          >
+            <text class="pad-icon">▲</text>
+            <text class="pad-label">前进</text>
+          </view>
+
+          <!-- 中间显示 -->
+          <view class="pad-center">
+            <text class="pad-center-text">双轮差速</text>
+            <text class="pad-center-sub">档位: {{ speedLabel }}</text>
+          </view>
+
+          <!-- 后退 -->
+          <view
+            class="pad-btn pad-center-btn"
+            :class="{ active: held === 'back' }"
+            @touchstart="onDown('back')"
+            @touchend="onUp"
+            @touchcancel="onUp"
+            @mousedown="onDown('back')"
+            @mouseup="onUp"
+            @mouseleave="onUp"
+          >
+            <text class="pad-icon">▼</text>
+            <text class="pad-label">后退</text>
+          </view>
         </view>
 
-        <!-- 右 -->
+        <!-- 右侧: 右转 -->
         <view
-          class="pad-btn"
+          class="pad-btn pad-btn-right"
           :class="{ active: held === 'right' }"
           @touchstart="onDown('right')"
           @touchend="onUp"
@@ -81,34 +114,41 @@
           <text class="pad-icon">▶</text>
           <text class="pad-label">右转</text>
         </view>
+      </view>
 
-        <!-- 下 -->
-        <view
-          class="pad-btn"
-          :class="{ active: held === 'back' }"
-          @touchstart="onDown('back')"
-          @touchend="onUp"
-          @touchcancel="onUp"
-          @mousedown="onDown('back')"
-          @mouseup="onUp"
-          @mouseleave="onUp"
-        >
-          <text class="pad-icon">▼</text>
-          <text class="pad-label">后退</text>
+      <!-- 舵机角度滑动条 -->
+      <view class="servo-section">
+        <view class="card-title">舵机角度</view>
+        <view class="servo-slider-row">
+          <text class="servo-bound">{{ servoMin }}</text>
+          <slider
+            class="servo-slider"
+            :min="servoMin"
+            :max="servoMax"
+            :step="1"
+            :value="servoAngle"
+            :block-size="22"
+            active-color="#1aad19"
+            background-color="#e0e0e0"
+            @change="onServoAngleChange"
+          />
+          <text class="servo-bound">{{ servoMax }}</text>
         </view>
-      </view>
-    </view>
-
-    <!-- 底部动作: 急停 / 起立 / 配平 -->
-    <view class="action-bar">
-      <view class="big-btn btn-stop" @click="onEmergencyStop">
-        <text>急停</text>
-      </view>
-      <view class="big-btn btn-stand" @click="onStand">
-        <text>起立</text>
-      </view>
-      <view class="big-btn btn-calib" @click="onCalibrate">
-        <text>配平</text>
+        <view class="servo-value-display">
+          <text class="servo-value-text">{{ servoAngle }}°</text>
+        </view>
+        <!-- 左/双/右 按钮 -->
+        <view class="servo-btn-row">
+          <view class="servo-btn" @click="applyServo(0)">
+            <text>◀ 左</text>
+          </view>
+          <view class="servo-btn" @click="applyServo(2)">
+            <text>◈ 双</text>
+          </view>
+          <view class="servo-btn" @click="applyServo(1)">
+            <text>右 ▶</text>
+          </view>
+        </view>
       </view>
     </view>
 
@@ -136,7 +176,11 @@ export default {
         { label: '快', value: 0.9 }
       ],
       _cfg: { productId: '', deviceName: '' },
-      tip: ''
+      tip: '',
+      // 舵机参数 (与 ESP32 servo.h 同步: SERVO_LIMIT_MIN=30, SERVO_LIMIT_MAX=120, SERVO_DEFAULT_ANGLE=100)
+      servoMin: 30,
+      servoMax: 120,
+      servoAngle: 100
     }
   },
   computed: {
@@ -188,6 +232,15 @@ export default {
     },
     onCalibrate() {
       controller.calibrate()
+    },
+    onServoAngleChange(e) {
+      this.servoAngle = e.detail.value
+    },
+    async applyServo(servoId) {
+      // servoId: 0=左舵机(servo1), 1=右舵机(servo2), 2=同时设置两路
+      await controller.setServoAngle(servoId, this.servoAngle)
+      const names = ['左舵机', '右舵机', '双舵机']
+      this._showTip(`${names[servoId]} → ${this.servoAngle}°`)
     },
     goConnect() {
       uni.navigateTo({ url: '/pages/connect/connect' })
@@ -290,15 +343,33 @@ export default {
   box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.06);
 }
 
-/* 十字键布局: 用 3x3 grid, 中心留空 */
-.pad {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  grid-template-rows: 130rpx 130rpx 130rpx;
-  gap: 16rpx;
-  margin-top: 20rpx;
+/* 急停/起立/配平 顶部动作条 */
+.action-bar {
+  display: flex;
+  gap: 12rpx;
+  padding: 20rpx;
 }
 
+/* 十字键布局 */
+/* 十字键布局 — 使用 Grid 确保三列高度一致、垂直居中 */
+.dpad {
+  display: grid;
+  grid-template-columns: 140rpx 1fr 140rpx;
+  align-items: center;
+  gap: 12rpx;
+  margin-bottom: 16rpx;
+}
+
+/* 中间列高度 = 前进100 + gap12 + 中间80 + gap12 + 后退100 = 304rpx */
+.dpad-center-col {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  height: 304rpx;
+}
+
+/* 十字键按钮 */
 .pad-btn {
   display: flex;
   flex-direction: column;
@@ -310,6 +381,21 @@ export default {
   user-select: none;
   -webkit-user-select: none;
   transition: all 0.1s;
+}
+
+/* 左右按钮 — 与中间列等高 304rpx */
+.pad-btn-left,
+.pad-btn-right {
+  height: 304rpx;
+  flex-shrink: 0;
+  align-self: stretch;
+}
+
+/* 中间上下按钮 */
+.pad-center-btn {
+  width: 200rpx;
+  height: 100rpx;
+  flex-shrink: 0;
 }
 
 .pad-btn.active {
@@ -335,15 +421,8 @@ export default {
   margin-top: 8rpx;
 }
 
-/* 位置 */
-.pad-btn:nth-of-type(1) { grid-column: 2; grid-row: 1; } /* 上 */
-.pad-btn:nth-of-type(2) { grid-column: 1; grid-row: 2; } /* 左 */
-.pad-btn:nth-of-type(3) { grid-column: 3; grid-row: 2; } /* 右 */
-.pad-btn:nth-of-type(4) { grid-column: 2; grid-row: 3; } /* 下 */
-
+/* 中间显示区 */
 .pad-center {
-  grid-column: 2;
-  grid-row: 2;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -353,6 +432,8 @@ export default {
   color: #999;
   text-align: center;
   border: 2rpx dashed #e8e8e8;
+  width: 200rpx;
+  height: 80rpx;
 }
 
 .pad-center-text {
@@ -365,21 +446,78 @@ export default {
   color: #bbb;
 }
 
-.action-bar {
-  display: flex;
-  gap: 16rpx;
-  padding: 0 20rpx;
-  margin: 20rpx 0;
+/* 舵机控制区 */
+.servo-section {
+  margin-top: 20rpx;
+  padding-top: 16rpx;
+  border-top: 1rpx solid #f0f0f0;
 }
 
-.big-btn {
+.servo-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.servo-bound {
+  font-size: 24rpx;
+  color: #999;
+  width: 36rpx;
+  text-align: center;
+}
+
+.servo-slider {
   flex: 1;
-  height: 120rpx;
+}
+
+.servo-value-display {
+  text-align: center;
+  margin: 8rpx 0 16rpx;
+}
+
+.servo-value-text {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: #1aad19;
+}
+
+/* 左/双/右 按钮 */
+.servo-btn-row {
+  display: flex;
+  gap: 12rpx;
+}
+
+.servo-btn {
+  flex: 1;
+  height: 80rpx;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 16rpx;
-  font-size: 34rpx;
+  background: #f5f5f5;
+  border-radius: 12rpx;
+  border: 2rpx solid #e0e0e0;
+  font-size: 28rpx;
+  color: #555;
+  user-select: none;
+  transition: all 0.1s;
+}
+
+.servo-btn:active {
+  background: #1aad19;
+  border-color: #168b16;
+  color: #fff;
+  transform: scale(0.97);
+}
+
+/* 底部大按钮 (已移到 pad-card 顶部, 保留样式复用) */
+.big-btn {
+  flex: 1;
+  height: 88rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12rpx;
+  font-size: 30rpx;
   font-weight: 600;
   color: #fff;
   user-select: none;

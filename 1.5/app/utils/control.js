@@ -155,6 +155,23 @@ class Controller {
       return false
     }
   }
+
+  /**
+   * @brief 设置舵机角度 (通过 setDesiredProperty 下发 servo1_angle / servo2_angle)
+   * @param servoId 0=左舵机, 1=右舵机, 2=同时设置两路
+   * @param angle 角度 (30-120)
+   */
+  async setServoAngle(servoId, angle) {
+    if (!this._check()) return
+    const params = {}
+    if (servoId === 0 || servoId === 2) params.servo1_angle = angle
+    if (servoId === 1 || servoId === 2) params.servo2_angle = angle
+    try {
+      await setDesiredProperty(this._getProjectId(), params)
+    } catch (e) {
+      oneApi.markError(e.message)
+    }
+  }
 }
 
 export const controller = new Controller()

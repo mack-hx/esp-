@@ -28,7 +28,9 @@
 #define HOME_MPU_Y      44      // MPU俯仰角行 Y
 
 #define HOME_L_LBL_X    2       // 左路标签 X
-#define HOME_L_VAL_X    20      // 左路数值 X
+#define HOME_L_VAL_X    24      // 左路数值 X (前两行)
+#define HOME_WIFI_VAL_X  34      // WiFi数值 X (减少3字符间距)
+#define HOME_MPU_VAL_X   40      // MPU数值 X (减少2字符间距)
 #define HOME_R_LBL_X    66      // 右路标签 X
 #define HOME_R_VAL_X    84      // 右路数值 X
 #define HOME_VAL_W      42      // 数值擦除宽度
@@ -65,7 +67,6 @@ static void ui_home_draw(void)
     snprintf(buf, sizeof(buf), "%5d", encoder_get_count(ENCODER_2));
     ui_draw_string(HOME_R_VAL_X, HOME_ENC_Y, buf, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
 
-    /* 第 3 行: WiFi 状态 */
     ui_draw_string(HOME_L_LBL_X, HOME_WIFI_Y, "WiFi:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
     wifi_sta_state_t state = wifi_sta_get_state();
     uint16_t text_color;
@@ -78,10 +79,12 @@ static void ui_home_draw(void)
         snprintf(buf, sizeof(buf), "AP Mode");
         text_color = TFT_COLOR_YELLOW;
     } else {
-        snprintf(buf, sizeof(buf), "Disconnected");
+        snprintf(buf, sizeof(buf), "Discon");
         text_color = TFT_COLOR_RED;
     }
-    ui_draw_string(HOME_L_VAL_X, HOME_WIFI_Y, buf, text_color, TFT_COLOR_BLACK);
+    /* 擦除足够宽的区域(80像素)确保旧内容被清除 */
+    ui_fill_rect(HOME_WIFI_VAL_X, HOME_WIFI_Y, 80, UI_FONT_H, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_WIFI_VAL_X, HOME_WIFI_Y, buf, text_color, TFT_COLOR_BLACK);
 
     /* 第 4 行: MPU 俯仰角 */
     ui_draw_string(HOME_L_LBL_X, HOME_MPU_Y, "Pitch:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
@@ -91,7 +94,9 @@ static void ui_home_draw(void)
     } else {
         snprintf(buf, sizeof(buf), "N/A");
     }
-    ui_draw_string(HOME_L_VAL_X, HOME_MPU_Y, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
+    /* 擦除足够宽的区域(48像素)确保旧内容被清除 */
+    ui_fill_rect(HOME_MPU_VAL_X, HOME_MPU_Y, 48, UI_FONT_H, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_MPU_VAL_X, HOME_MPU_Y, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
 }
 
 /* ========== 页面回调 ========== */
@@ -129,7 +134,7 @@ static void page_refresh(void)
     snprintf(buf, sizeof(buf), "%5d", encoder_get_count(ENCODER_2));
     ui_draw_string(HOME_R_VAL_X, HOME_ENC_Y, buf, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
 
-    /* WiFi 状态 */
+    /* WiFi 状态 - 擦除足够宽的区域确保旧内容被清除 */
     wifi_sta_state_t state = wifi_sta_get_state();
     uint16_t text_color;
     if (state == WIFI_STA_CONNECTED) {
@@ -141,21 +146,21 @@ static void page_refresh(void)
         snprintf(buf, sizeof(buf), "AP Mode");
         text_color = TFT_COLOR_YELLOW;
     } else {
-        snprintf(buf, sizeof(buf), "Disconnected");
+        snprintf(buf, sizeof(buf), "Discon");
         text_color = TFT_COLOR_RED;
     }
-    ui_fill_rect(HOME_L_VAL_X, HOME_WIFI_Y, 60, UI_FONT_H, TFT_COLOR_BLACK);
-    ui_draw_string(HOME_L_VAL_X, HOME_WIFI_Y, buf, text_color, TFT_COLOR_BLACK);
+    ui_fill_rect(HOME_WIFI_VAL_X, HOME_WIFI_Y, 80, UI_FONT_H, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_WIFI_VAL_X, HOME_WIFI_Y, buf, text_color, TFT_COLOR_BLACK);
 
-    /* MPU 俯仰角 */
+    /* MPU 俯仰角 - 擦除足够宽的区域确保旧内容被清除 */
     bal_data_t bal_data;
     if (balance_get_data(&bal_data) == ESP_OK) {
         snprintf(buf, sizeof(buf), "%+.1f", (double)bal_data.pitch);
     } else {
         snprintf(buf, sizeof(buf), "N/A");
     }
-    ui_fill_rect(HOME_L_VAL_X, HOME_MPU_Y, 40, UI_FONT_H, TFT_COLOR_BLACK);
-    ui_draw_string(HOME_L_VAL_X, HOME_MPU_Y, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
+    ui_fill_rect(HOME_MPU_VAL_X, HOME_MPU_Y, 48, UI_FONT_H, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_MPU_VAL_X, HOME_MPU_Y, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
 }
 
 /* ========== 页面注册 ========== */
