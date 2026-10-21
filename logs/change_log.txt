@@ -1,30 +1,8 @@
-## 2026-10-20 GitHub发布
-
-### 代码推送
-- 使用HTTPS方式推送代码到 github.com/mack-hx/esp-
-- 创建7个版本Release: v0.1.0 ~ v1.4.0
-- 每个Release包含对应版本的tar.gz压缩包
-
-### 版本说明
-| 版本 | 说明 |
-|------|------|
-| v0.1.0 | 项目初始化 |
-| v0.2.0 | WiFi热点+网页调参 |
-| v1.0.0 | 平衡控制算法框架 |
-| v1.1.0 | 配平表简化 |
-| v1.2.0 | 平衡控制优化 |
-| v1.3.0 | 方向参数烘焙 & App框架 |
-| v1.4.0 | WiFi稳定性修复 & UI优化 |
-
-### 遇到的问题
-- SSH代理问题：代理将github.com解析到127.0.0.1:7897
-- 解决：改用HTTPS方式推送
-
 ================================================================================
-变更日志 - ESP32 平衡轮腿机械狗 1.4
+变更日志 - ESP32 平衡轮腿机械狗
 ================================================================================
 
-## 2026-10-20 功能更新
+## 版本 1.4 (2026-10-19 ~ 10-20)
 
 ### 主页显示WiFi状态和MPU俯仰角
 - 第3行: 显示WiFi连接状态 (SSID名称/AP模式/Disconnected)
@@ -34,8 +12,6 @@
 ### 代码整理
 - 清理代码结构，优化注释
 - 编译: RAM 11.0%, Flash 27.4%
-
-## 2026-10-19 问题修复
 
 ### 问题1：系统莫名自动重启
 **根本原因**：任务堆栈不足 + 看门狗超时
@@ -55,10 +31,7 @@
 3. start_sta_mode: 简化代码，移除不必要的netif操作
 4. 重试次数: 5 → 15 次
 
-================================================================================
-## 2026-10-20 问题修复
-
-### 问题1：OneNET 平台未激活
+### 问题3：OneNET 平台未激活
 **根本原因**：MQTT URI/端口配置错误
 - 错误: `mqtts://mqtts.heclouds.com:1883` (TLS协议 + 非加密端口)
 - 错误: `mqtt://mqtts.heclouds.com:1883` (仍是错误地址)
@@ -66,28 +39,22 @@
 **修复方案**：
 - 改为 `mqtt://mqtt.heclouds.com:6002` (非加密MQTT，官方正确地址)
 
-### 问题2：主页 WiFi/Pitch 行刷新时字符残影
+### 问题4：主页 WiFi/Pitch 行刷新时字符残影
 **根本原因**：擦除区域宽度不足 + 标签和值坐标重叠
 
 **修复方案**：
 1. WiFi 行擦除宽度: 60 → 80 像素
-2. MPU 行擦除宽度: 40 → 48 像素
+2. Pitch 行擦除宽度: 40 → 48 像素
 3. 同步修改 ui_home_draw() 初始绘制时的擦除逻辑
 
-### 问题3：主页标签和数值重叠
-**根本原因**：标签 "WiFi:"(5字符=40像素) 和 "Pitch:"(6字符=48像素) 从X=2开始，数值从X=20开始，会被标签覆盖
+### 问题5：主页标签和数值重叠
+**根本原因**：标签 "WiFi:"(5字符=40像素) 和 "Pitch:"(6字符=48像素) 从X=2 开始，
+数值从X=20开始，会被标签覆盖
 
 **修复方案**：
 - 将 HOME_L_VAL_X 从 20 改为 52，确保数值显示在标签之后
 
-### 修改文件
-- `user/onenet_client/ononet_client.c` - MQTT 地址改为 mqtt.heclouds.com:6002
-- `user/ui/ui_home.c` - 坐标修正和擦除宽度调整
-
-================================================================================
-## 2026-10-20 OneNET Studio MQTT 连接修复
-
-### 问题：Connection refused, bad username or password
+### 问题6：Connection refused, bad username or password
 **根本原因**：
 1. Token 时间戳格式错误：使用动态时间戳而非 OneNET Studio 要求的固定时间戳
 2. sign base64 中的 `=` 字符未进行 URL 编码
@@ -96,18 +63,115 @@
 1. 时间戳 et 改为固定值 `1924833600`（2030-12-30 12:00:00 UTC）
 2. 添加 `url_encode_sign()` 函数对 sign 中的 `=` 进行 URL 编码
 
-### OneNET Studio 配置
-- Broker: `mqtt://studio-mqtt.heclouds.com:1883`
-- Client ID: `balancing_dog`
-- Username: `6YlUqr9lue`（产品ID）
-- Password: 动态生成的 token
+### 修改文件
+- `user/onenet_client/onenet_client.c` - MQTT 地址、Token 生成逻辑
+- `user/ui/ui_home.c` - 坐标修正和擦除宽度调整
+- `hardware/wifi_sta/wifi_sta.c` - DHCP server 显式启动
 
-### 代码修改
-- `user/onenet_client/onenet_client.c` - Token 生成逻辑修复
-- 添加 OneNET SDK 到 `components/onenet_sdk`
+--------------------------------------------------------------------------------
+## 版本 1.5 (2026-10-20)
 
-### 新增组件
-- `components/onenet_sdk/` - OneNET MQTT SDK（来自官方下载的 mqttsv5_onejson_soc）
+- 新建 1.5 工程目录 (基于 1.4 复制)
+- 引入 OneNET 官方 SDK 到 `components/onenet_sdk`
+- App 侧试做 MQTT 客户端 (`app/common/mqtt_client.js` 等) — **后来废弃, 见 1.7**
 
-### 版本更新
-- 发布 v1.6: 修复 OneNET Studio 连接问题
+--------------------------------------------------------------------------------
+## 版本 1.6 (2026-10-20 ~ 10-21)
+
+### OneNet Studio MQTT 连接修复
+- Broker 改为 `mqtt://studio-mqtt.heclouds.com:1883`
+- Client ID: `balancing_dog`, Username: 产品ID, Password: 动态 token
+
+### OneNet 属性上报修复
+**问题**：物模型定义的属性没有全部上报，OneNet 显示在线但属性不更新
+
+**修复**：
+1. `publish_task()` 修正: `roll` 改上报 0.0（两轮车无横滚角）
+2. 新增上报: `gz` (俯仰角速度)、`enc_l`/`enc_r` (编码器计数)、`uptime` (运行时间)
+3. 新增 `state` (状态机字符串) 单独上报
+
+**物模型属性对应**：
+
+| 物模型属性 | 数据来源 |
+|-----------|---------|
+| pitch | d.pitch |
+| roll | 0.0 |
+| motor_l / motor_r | d.motor_a / d.motor_b |
+| speed | d.speed |
+| gz | d.gyro |
+| enc_l / enc_r | encoder_get_count() |
+| state | state_to_string(d.state) |
+| uptime | esp_timer_get_time() |
+
+编译: RAM 11.0% (35996), Flash 27.4% (1006329)
+
+--------------------------------------------------------------------------------
+## 版本 1.7 (2026-10-21)
+
+**目标**：保证 App 能跟 OneNet 上的小车正常通信。
+
+### 设备端
+1. 修 static 缓冲区未截断 → 服务应答随机丢失（平台报"设备响应超时"）
+2. 属性上报按 step 分帧（角度帧 / 角速度帧 / 整数帧 / 字符串帧）
+3. 事件参数单位改秒、`fallen.pitch` 取整
+4. 移动指令同时认 `speed`（物模型里真实存在的）和 `vx`
+5. `desired_pull` 拉的标识符 `vx` → `speed`（原来每 5s 报一次 2306）
+6. 新增 `json_find_string()`：正确还原带转义引号的 JSON 字符串
+7. 删掉 sw1/sw2 的"探测"状态机，改成固定 1s 一帧
+8. 平台拒收日志从 30s 一次改成 5min 一次
+9. 新增上报：执行器状态 (灯 + 电磁铁) 和舵机角度
+10. 修舵机角度帧缓冲只有 128 字节导致整帧被丢（改成 256 / 512）
+
+### App 端
+1. 移动指令 `{vx, w}` → `{speed}`；左右转改提示（本机两轮同向，转不了）
+2. 下发频率：50ms 一帧 → 变化时立即发 + 每 1s 保活
+3. 统一错误出口 `reportError()`：单条指令失败不再升级成连接错误
+4. `setDesiredProperty` / `invokeService` 统一检查平台 `code`
+5. `project_id` 改成选填
+6. 参数表跟设备端 `param.c` 逐项对齐（原来 6 项对不上，保存参数传不到车）
+7. 删掉状态页里重复的 PID 编辑器（按一下保存就把车的 `bal_ki` 从 12 改成 0）
+8. 浏览器刷新后自动重连（`App.vue` 的 `onLaunch` 里自动 `ensureReady()`）
+9. 遥控页执行器按钮改用设备上报的真实状态（带 2.5s 防抖）
+
+### 平台侧
+用户在 OneNet 后台补齐物模型：灯 / 电磁铁 / 舵机 / 开关 / `param_get` / `param_set` /
+`param_save`。还差一项：`param_set` 的输出参数是空的。
+
+### 验收
+前进/后退/松开、起立/急停/配平、参数读写、状态实时显示、灯/电磁铁/舵机下发 —— 全过。
+编译: RAM 13.8% (45308), Flash 27.6% (1014261)
+
+--------------------------------------------------------------------------------
+## 2026-10-21 代码与文档整理
+
+### 删掉的死文件（无人引用）
+| 文件 | 原因 |
+|---|---|
+| `1.7/_onenet_sdk_backup/` (7MB) | 早期 OneNET 官方 SDK 组件，在 ESP-IDF 组件里用了不允许的 `project()` 命令而停用；现 MQTT 客户端是 `user/onenet_client/` 自研，全工程无引用 |
+| `1.7/cmake/vars.cmake` | 上面那个 SDK 的配套占位文件，只有它自己会 include |
+| `1.7/app/common/mqtt_client.js` | 1.3 时代"连公共 MQTT broker"方案的代码，现 App 走 OneNet HTTPS 开放接口，4 个页面无引用 |
+| `1.7/app/common/topic.js` | 同上（自 1.3 起没被引用过） |
+| `1.7/app/common/onenet_model.js` | 同上 |
+| `1.7/compile_commands.json` (5.5MB) | clangd 索引，.gitignore 已忽略，可重新生成 |
+| `1.7/components/`、`1.7/app/components/`、`1.7/app/store/` | 空目录 |
+
+删完重新编译：RAM 13.8% / Flash 27.6%，**跟删之前一模一样**，证明确实是死代码。
+
+### 修正的错误文档
+| 文件 | 问题 | 修正 |
+|---|---|---|
+| `1.7/app/common/config.js` | 注释写"AccessKey 必须是**产品级**，设备级一律 authPermissionDeny" —— 跟实测**正好相反** | 改成"用**设备级**那把（跟 ESP32 端同一把）；产品级那把调开放接口会 10403" |
+| `1.7/app/onenet_物模型.md` | 整个文件还是 1.3 时代的：写着 `vx`/`vy`/`w` 属性、`voltage`/`percent` 属性、`error` 事件（物模型里**一个都没有**）、失效的 AccessKey、project_id 必填、路径写的 `1.3/` | 按 2026-10-21 实测的物模型重写：19 个属性 / 6 个服务 / 2 个事件、正确的 AccessKey、1.7 的真实路径和 topic 清单 |
+| `1.7/README.md` | 标题还写着"版本 1.5"，正文全是 1.3/1.4 时代的内容（包括早就删掉的网页调参服务器 `192.168.4.1` 和一整张 `/api/*` 接口表） | 重写为 1.7：架构图、目录结构、控制结构、硬件映射、当前状态、1.7 改了什么 |
+| `1.7/app/README.md` | 同样停留在 1.3：公共 EMQX broker、20Hz MQTT 心跳、`esp32/{deviceId}/cmd/*` topic 规范（全是废止的） | 重写为 1.7：OneNet 开放接口 + 物模型、真实目录结构、5 个接口对照表 |
+| `1.7/app/package.json` | version 写 1.3.0 | 改成 1.7.0 |
+| `1.7/docs/物模型待补清单.md` | 没写复查时间 | 标注第三轮复查日期 + 指向新的操作员文档 |
+
+### 清理
+- 设备端 (`user/`, `hardware/`, `main/`) 和 App 端 (`app/`) 全部检查过，**没有遗留调试代码**
+  （grep TODO/FIXME/临时/调试 命中的都是正经功能，比如屏上的 MPU 调试页）
+- `/tmp` 下的串口抓取日志（v1~v4.log）已清掉
+
+### 状态
+- 固件重新编译通过，App 在浏览器里重新加载无报错
+- 小车在 18:20 左右断开 USB，平台显示"设备不在线"，等用户插回串口线再复检

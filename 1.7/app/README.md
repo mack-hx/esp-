@@ -1,90 +1,79 @@
-# 1.3/app
+# 1.7/app
 
-ESP32-S3R8N8 平衡轮腿机械狗 **配套 App**（uniapp 项目）。
+ESP32-S3R8N8 平衡轮腿机械狗 **配套 App**（uni-app 项目，H5 为主）。
 
 ## 技术栈
 
-- **uniapp**（Vue3 + JS，主打 H5 全平台发行）
-- **mqtt**（npm 包，H5 走 WebSocket，App/小程序按需换插件）
-- **uni-ui**（可选，UI 套件；当前手写样式够用，暂未引入）
+- **uni-app**（Vue3 + JS，主打 H5 发行）
+- **通信**: OneNet 开放接口 (HTTPS) + 物模型
+  - 查询属性 / 下发期望值 / 服务调用 → `https://iot-api.heclouds.com`
+  - ESP32 侧走 MQTT 订阅 `$sys/.../thing/...`
+- **无需 broker**: 平台自带物模型和鉴权
 
 ## 目录结构
 
 ```
-1.3/app/
-├── App.vue                # 根组件，启动时恢复配置 + 初始化 MQTT
-├── main.js                # Vue3 入口
-├── manifest.json          # uniapp 应用清单（多端配置）
-├── pages.json             # 路由 + tabBar
-├── package.json           # npm 依赖
+1.7/app/
+├── App.vue                 # 根组件: 启动时恢复配置 + 自动连通性检查
+├── main.js                 # Vue3 入口
+├── manifest.json           # uni-app 清单
+├── pages.json              # 路由 + tabBar
 ├── common/
-│   ├── config.js          # 本地连接配置（broker url / 设备 ID / 凭据）
-│   ├── topic.js           # MQTT topic 统一出口（与 ESP32 端同步）
-│   └── paramDef.js        # 参数表定义（镜像 1.3/user/param/param.c v7）
+│   ├── config.js           # 本地连接配置 (productId / deviceName / AccessKey)
+│   ├── onenet.js           # OneNet 开放接口封装 (token / 查属性 / 下发 / 服务调用)
+│   ├── oneapi.js           # 连接状态机 (ensureReady / markError / 统一错误出口)
+│   └── paramDef.js         # 参数表定义 (镜像 user/param/param.c)
 ├── utils/
-│   ├── mqtt.js            # MQTT 客户端封装（单例 + 状态机）
-│   └── control.js         # 控制指令封装（持续 publish + 急停 + 起立 + 配平）
+│   └── control.js          # 移动/起立/急停/配平指令封装
 ├── pages/
-│   ├── connect/connect.vue   # 设备连接页（broker url、设备 ID）
-│   ├── control/control.vue   # 遥控页（前后左右 + 急停 + 起立 + 配平）
-│   ├── params/params.vue     # 参数页（16 个滑块，镜像 NVS 参数表）
-│   └── status/status.vue     # 状态页（姿态/电机/电池/心跳）
-└── static/                # tabBar 图标（需手动补 6 个 PNG）
+│   ├── connect/connect.vue # 连接页 (填配置 + 验证)
+│   ├── control/control.vue # 遥控页 (前后 + 急停/起立/配平 + 灯/电磁铁/舵机)
+│   ├── params/params.vue   # 参数页 (拉取/保存参数)
+│   └── status/status.vue   # 状态页 (实时属性 + 去调参入口)
+├── dev/
+│   └── onenet_proxy.js     # 本地开发用代理 (跨域时用)
+└── onenet_物模型.md        # 物模型接入指南 (给操作员看)
 ```
 
-## MQTT Topic 规范
+## 通信方式
 
-> 改了一边要同步另一边，否则 App 和 ESP32 互相找不到对方。
+| 动作 | 走哪个接口 | 说明 |
+|---|---|---|
+| 读设备状态 | `GET /thingmodel/query-device-property` | 状态页轮询 |
+| 下发移动指令 | `POST /thingmodel/set-device-desired-property` | 期望值 `speed` (-1 ~ 1) |
+| 起立/急停/配平 | `POST /thingmodel/call-service` | `stand` / `stop` / `calibrate` |
+| 读参数 | 服务调用 `param_get` | 返回 JSON 字符串 |
+| 写参数 | 服务调用 `param_set` + `param_save` | 写完要再调 `param_save` 才落盘 |
 
-```
-esp32/{deviceId}/cmd/move         App → ESP32   {vx, vy, w}  20Hz 心跳
-esp32/{deviceId}/cmd/stop         App → ESP32   急停
-esp32/{deviceId}/cmd/stand        App → ESP32   起立
-esp32/{deviceId}/cmd/calibrate    App → ESP32   配平标定
+**鉴权**: 用**设备级** AccessKey 算 token (HMAC-SHA1, 跟 ESP32 端同一把)。
+`project_id` 选填。
 
-esp32/{deviceId}/state/pose       ESP32 → App   {pitch, roll, yaw, gz}
-esp32/{deviceId}/state/motor      ESP32 → App   {left, right, speed, enc_l, enc_r}
-esp32/{deviceId}/state/battery    ESP32 → App   {voltage, percent}
-esp32/{deviceId}/state/heartbeat  ESP32 → App   周期心跳
-
-esp32/{deviceId}/param/get        App → ESP32   拉取参数表
-esp32/{deviceId}/param/set        App → ESP32   写入参数表 {values: {...}}
-esp32/{deviceId}/param/resp       ESP32 → App   参数表应答
-
-esp32/{deviceId}/ack              ESP32 → App   命令应答
-```
+详见 `onet_物模型.md` 和 `../docs/物模型待补清单.md`。
 
 ## 开发运行
 
-### H5（最简单）
+### H5
 
 ```bash
-cd 1.3/app
+cd 1.7/app
 npm install
-npx uni-build --watch          # 或用 HBuilderX 直接打开 1.3/app 目录
+npm run dev:h5          # 浏览器访问 http://localhost:8080
 ```
-
-浏览器访问 `http://localhost:8080`。
 
 ### 多端发行
 
-打开 **HBuilderX** → 文件 → 导入 → 从本地目录导入 `1.3/app` → 发行菜单选目标平台。
+**HBuilderX** → 文件 → 导入 → 从本地目录导入 `1.7/app` → 发行菜单选目标平台。
 
-## 当前状态（2026-10-09）
+## 当前状态 (2026-10-21)
 
-✅ 已完成：项目骨架 + 4 个页面 + MQTT 封装 + 参数表镜像
-⏳ 待做：**ESP32 端的 MQTT 客户端**（`user/mqtt_client/mqtt_client.c/h`），目前只有 sdkconfig 里编译进了 esp-mqtt 库，业务代码还没接
+✅ 已完成: 4 个页面 + OneNet 开放接口封装 + 参数表镜像 + 与 ESP32 固件全链路联调通过
+- 移动指令 (前进/后退/松开)、起立/急停/配平、参数读写、状态实时显示
+- 灯 / 电磁铁 / 舵机角度下发与状态回显
+- 刷新页面自动重连 (配置存 localStorage)
 
-## 调试用 Broker
+⏳ 待补: 平台物模型里 `param_set` 的输出参数还是空的 (设备端已适配, 平台补上 `ok` 后改一行即可)
 
-默认 broker 走 `wss://broker.emqx.io:8084`（EMQX 公共测试服），**匿名可用**。
-国内不稳的话可以在连接页改成：
-- `wss://test.mosquitto.org:8081`
-- 或自建 EMQX / Mosquitto
+## 版本
 
-> ⚠ EMQX 公共服**只适合调试**，不要拿来做生产。所有设备用同一个 topic 前缀会互相串扰，建议给每辆车起不同的 `deviceId`。
-
-## 协议版本
-
-- App 版本：1.3.0（跟 ESP32 固件版本号对齐）
-- 参数表版本：v7（与 `1.3/user/param/param.c` 的 `PARAM_DATA_VERSION` 一致）
+- App 版本: 1.7.0 (跟 ESP32 固件版本号对齐)
+- 参数表版本: 与 `1.7/user/param/param.c` 的 `PARAM_DATA_VERSION` 一致

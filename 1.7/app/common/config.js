@@ -17,9 +17,10 @@ const STORAGE_KEY = 'ebr_config_v3'
 
 /**
  * @brief 默认配置 (OneNet 产品 6YlUqr9lue / 设备 balancing_dog)
- * @note  accessKey 必须是**产品级** AccessKey:
- *        设备级 key 调开放接口 (query-device-property / set-device-desired-property /
- *        call-service) 一律返回 authPermissionDeny。
+ * @note  accessKey 用**设备级** AccessKey (跟 ESP32 端同一把) 即可:
+ *        开放接口 (query-device-property / set-device-desired-property /
+ *        call-service) 都通。另一把产品级的 key 反而会返回 10403 无效鉴权。
+ * @note  project_id 选填: 期望值下发和服务调用, 带不带平台都收。
  */
 const DEFAULT_CONFIG = {
   // === OneNet 设备三元组 ===

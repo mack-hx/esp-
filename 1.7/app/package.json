@@ -1,7 +1,7 @@
 {
     "id": "esp_balance_robot",
     "name": "esp_balance_robot",
-    "version": "1.3.0",
+    "version": "1.7.0",
     "description": "ESP32-S3R8N8 平衡轮腿机械狗 配套 App (走 OneNet HTTP API)",
     "main": "main.js",
     "scripts": {
