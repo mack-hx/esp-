@@ -41,16 +41,23 @@ class OneApiManager {
   }
 
   /**
-   * @brief 主动"就绪"检查: 算一次 token, 没异常就标 ready
-   *   App 启动 / 用户在 connect 页点"连接"时调用
+   * @brief 主动"就绪"检查: 真的调一次平台接口, 不只是算 token
+   *   算 token 成功不代表有权限, 设备级 key 也能算出 token, 但一调接口就被拒。
+   *   所以这里直接拉一次设备属性, 能拿到数据才算配置正确。
+   * @return {Promise<boolean>} true=配置可用
    */
   async ensureReady() {
     try {
-      const { computeToken } = await import('./onenet.js')
-      computeToken()
-      this._lastTokenAt = Date.now()
-      this._setState('ready', null)
-      return true
+      const { queryDeviceProperty } = await import('./onenet.js')
+      const res = await queryDeviceProperty()
+      if (res && res.code === 0) {
+        this._lastTokenAt = Date.now()
+        this._setState('ready', null)
+        return true
+      }
+      const msg = (res && res.msg) ? '平台返回: ' + res.msg : '平台返回异常'
+      this._setState('error', msg)
+      return false
     } catch (e) {
       this._setState('error', e.message || String(e))
       return false

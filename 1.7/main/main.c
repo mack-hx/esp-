@@ -15,6 +15,7 @@
 #include "tft_display.h"
 #include "led.h"
 #include "servo.h"
+#include "magnet.h"
 #include "motor_driver.h"
 #include "encoder.h"
 #include "mpu9250.h"
@@ -100,6 +101,9 @@ void app_main(void)
     /* 1. 初始化 74HC595 (电机方向/电磁铁控制) */
     ESP_ERROR_CHECK(hc595_init());
 
+    /* 1.1 初始化电磁铁 (走 74HC595 Q5/Q6, 默认释放) */
+    ESP_ERROR_CHECK(magnet_init());
+
     /* 2. 初始化 TFT 显示屏 (RST 已接 VCC, 依赖内部 POR) */
     ESP_ERROR_CHECK(tft_display_init());
 
@@ -118,6 +122,15 @@ void app_main(void)
 
     /* 6. 初始化编码器 */
     ESP_ERROR_CHECK(encoder_init());
+
+    /* 6.1 初始化 PCF8574 (按键 + 对接微动开关) - 允许失败: 模块可能未接
+     * 提前到这里是因为 OneNet 上报任务要读 P4/P5 两个微动开关 (对接检测) */
+    esp_err_t pcf_ret = pcf8574_init();
+    if (pcf_ret != ESP_OK) {
+        ESP_LOGE(TAG, "PCF8574 初始化失败 (按键模块未接), UI 无法响应按键");
+        ESP_LOGE(TAG, "请检查 PCF8574 模块接线 (SCL=GPIO%d, SDA=GPIO%d, INT=GPIO%d, VCC, GND)",
+                 PCF8574_SCL_GPIO, PCF8574_SDA_GPIO, PCF8574_INT_GPIO);
+    }
 
     /* 7. 初始化 MPU9250 (允许失败: 模块可能未接, UI 会显示 "NOT READY") */
     esp_err_t mpu_ret = mpu9250_init();
@@ -151,14 +164,6 @@ void app_main(void)
     esp_err_t mqtt_ret = mqtt_client_start();
     if (mqtt_ret != ESP_OK) {
         ESP_LOGE(TAG, "OneNet MQTT 启动失败 (%s), App 远程不可用", esp_err_to_name(mqtt_ret));
-    }
-
-    /* 10. 初始化 PCF8574 (按键) - 允许失败: 模块可能未接 */
-    esp_err_t pcf_ret = pcf8574_init();
-    if (pcf_ret != ESP_OK) {
-        ESP_LOGE(TAG, "PCF8574 初始化失败 (按键模块未接), UI 无法响应按键");
-        ESP_LOGE(TAG, "请检查 PCF8574 模块接线 (SCL=GPIO%d, SDA=GPIO%d, INT=GPIO%d, VCC, GND)",
-                 PCF8574_SCL_GPIO, PCF8574_SDA_GPIO, PCF8574_INT_GPIO);
     }
 
     /* ========================================================

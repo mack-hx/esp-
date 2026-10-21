@@ -28,6 +28,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "onenet_client.h"
+#include <math.h>
 #include "freertos/task.h"
 #include <math.h>
 
@@ -63,6 +64,9 @@ static float s_trim_comp = 0.0f;
 
 /* 已连续满足门控条件的累计时长 (ms); 任何条件不满足立即清零 */
 static float s_arm_hold_ms = 0.0f;
+
+/* 速度环目标轮速 (rpm), 由远程指令 (App 的 vx) 换算而来; 0 = 原地保持 */
+static float s_target_rpm = 0.0f;
 
 /* ================= 内部辅助 ================= */
 
@@ -219,6 +223,17 @@ static void balance_arm_reset(void)
 }
 
 /**
+ * @brief 开机以来的秒数
+ * @return 秒
+ * @note  物模型里 armed / fallen 事件的 time 参数单位是"秒" (不是毫秒),
+ *        平台会按上限校验, 发毫秒会被拒收。
+ */
+static int64_t balance_uptime_sec(void)
+{
+    return (int64_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
+}
+
+/**
  * @brief 判断当前姿态是否**瞬时**满足门控条件
  * @return true=满足
  * @note  与"持续了多久"无关, 那部分由 s_arm_hold_ms 累积
@@ -259,7 +274,7 @@ static void balance_state_machine(float dt)
                         if (mqtt_client_is_connected()) {
                             char params[64];
                             int n = snprintf(params, sizeof(params),
-                                "{\"time\":{\"value\":%lld}}", (long long)(xTaskGetTickCount() * 1000ULL / configTICK_RATE_HZ));
+                                "{\"time\":{\"value\":%lld}}", (long long)balance_uptime_sec());
                             if (n > 0) mqtt_client_post_event("armed", params);
                         }
                 } else {
@@ -271,7 +286,7 @@ static void balance_state_machine(float dt)
                         if (mqtt_client_is_connected()) {
                             char params[64];
                             int n = snprintf(params, sizeof(params),
-                                "{\"time\":{\"value\":%lld}}", (long long)(xTaskGetTickCount() * 1000ULL / configTICK_RATE_HZ));
+                                "{\"time\":{\"value\":%lld}}", (long long)balance_uptime_sec());
                             if (n > 0) mqtt_client_post_event("armed", params);
                         }
                     }
@@ -293,10 +308,12 @@ static void balance_state_machine(float dt)
                 motor_brake_all();
                 if (mqtt_client_is_connected()) {
                     char params[128];
+                    /* 物模型里 fallen 的 pitch 步长是 1 (整数), time 单位是秒,
+                     * 所以 pitch 取整、time 用开机秒数, 否则平台拒收整个事件。 */
                     int n = snprintf(params, sizeof(params),
-                        "{\"pitch\":{\"value\":%g},\"time\":{\"value\":%lld}}",
-                        (double)s_data.pitch,
-                        (long long)(xTaskGetTickCount() * 1000ULL / configTICK_RATE_HZ));
+                        "{\"pitch\":{\"value\":%ld},\"time\":{\"value\":%lld}}",
+                        (long)lrintf(s_data.pitch),
+                        (long long)balance_uptime_sec());
                     if (n > 0) mqtt_client_post_event("fallen", params);
                 }
             }
@@ -326,8 +343,9 @@ static void balance_state_machine(float dt)
 static void balance_control_step(float dt)
 {
     /* --- 外环: 速度环 → 目标倾角 ---
-     * 车速要往前, 车就得先往前倾一点, 所以目标倾角 = 速度环输出 */
-    float spd_err = 0.0f - s_data.speed;
+     * 车速要往前, 车就得先往前倾一点, 所以目标倾角 = 速度环输出
+     * 目标车速 s_target_rpm 来自远程指令 (App 的 vx), 默认 0 = 原地站住 */
+    float spd_err = s_target_rpm - s_data.speed;
     s_data.target_pitch = pid_update(&s_pid_spd, spd_err, dt);
 
     /* --- 内环: 平衡环 → 电机输出 ---
@@ -555,4 +573,20 @@ esp_err_t balance_reload_params(void)
     balance_reset_pid();
     ESP_LOGI(TAG, "控制参数已从 param 表重新读取");
     return ESP_OK;
+}
+
+esp_err_t balance_set_speed_cmd(float cmd)
+{
+    if (isnan(cmd) || isinf(cmd)) return ESP_ERR_INVALID_ARG;
+    if (cmd >  1.0f) cmd =  1.0f;
+    if (cmd < -1.0f) cmd = -1.0f;
+    s_target_rpm = cmd * BAL_SPEED_CMD_MAX_RPM;
+    ESP_LOGI(TAG, "远程速度指令: cmd=%.2f → 目标轮速 %.1f rpm", (double)cmd, (double)s_target_rpm);
+    return ESP_OK;
+}
+
+float balance_get_speed_cmd(void)
+{
+    if (BAL_SPEED_CMD_MAX_RPM <= 0.0f) return 0.0f;
+    return s_target_rpm / BAL_SPEED_CMD_MAX_RPM;
 }

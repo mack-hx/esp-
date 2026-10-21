@@ -116,7 +116,8 @@ export default {
         }
       } catch (e) {
         uni.hideLoading()
-        oneApi.markError(e.message)
+        /* 只有鉴权失败才改连接状态, 其它错误只是这次操作没成功 */
+        if (e && e.auth) oneApi.markError(e.message)
         uni.showToast({ title: '拉取失败: ' + e.message, icon: 'none' })
       }
     },
@@ -136,7 +137,7 @@ export default {
         }
       } catch (e) {
         uni.hideLoading()
-        oneApi.markError(e.message)
+        if (e && e.auth) oneApi.markError(e.message)
         uni.showToast({ title: '保存失败: ' + e.message, icon: 'none' })
       }
     },

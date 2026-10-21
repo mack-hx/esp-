@@ -103,8 +103,8 @@
         </view>
       </view>
       <view class="row">
-        <text class="label">速度</text>
-        <text class="value">{{ fmt(motor.speed, 2) }} m/s</text>
+        <text class="label">目标速度</text>
+        <text class="value">{{ fmt(motor.speed * 100, 0) }}%</text>
       </view>
       <view class="row">
         <text class="label">编码器</text>
@@ -145,6 +145,7 @@ export default {
       motor: { left: 0, right: 0, speed: 0, enc_l: 0, enc_r: 0 },
       deviceState: '--',
       lastSeen: null,
+      _lastDataAt: 0,
       msgCount: 0,
       // 折线图数据
       pitchHistory: [],
@@ -320,14 +321,18 @@ export default {
     
     async _poll() {
       if (oneApi.getState().state !== 'ready') return
+      /* 刷新"心跳"秒数: 距离上一次收到平台数据过了多久 */
+      if (this._lastDataAt) {
+        this.lastSeen = Math.floor((Date.now() - this._lastDataAt) / 1000)
+      }
       try {
         const res = await queryDeviceProperty()
-        if (res && res.success && res.data && Array.isArray(res.data.list)) {
+        /* 平台返回: { code:0, data:[{identifier, value, time, ...}], msg:'succ' } */
+        if (res && res.code === 0 && Array.isArray(res.data)) {
           const obj = {}
-          res.data.list.forEach(p => { obj[p.identifier] = p.value })
+          res.data.forEach(p => { obj[p.identifier] = p.value })
           this._bumpSeen()
           this.msgCount++
-          
           if (obj.pitch   !== undefined) {
             const newPitch = Number(obj.pitch)
             this.pose.pitch = newPitch
@@ -352,6 +357,8 @@ export default {
     },
 
     _bumpSeen() {
+      /* 记录最后一次收到平台数据的时间, 供"心跳"显示用 */
+      this._lastDataAt = Date.now()
       this.lastSeen = 0
     },
 

@@ -13,10 +13,13 @@
  *   - tokenExpireSec: token 有效期 (秒), 默认 86400 = 1 天
  */
 
-const STORAGE_KEY = 'ebr_config_v2'
+const STORAGE_KEY = 'ebr_config_v3'
 
 /**
- * @brief 默认配置 (从 README / 物模型文档复制过来的用户项目)
+ * @brief 默认配置 (OneNet 产品 6YlUqr9lue / 设备 balancing_dog)
+ * @note  accessKey 必须是**产品级** AccessKey:
+ *        设备级 key 调开放接口 (query-device-property / set-device-desired-property /
+ *        call-service) 一律返回 authPermissionDeny。
  */
 const DEFAULT_CONFIG = {
   // === OneNet 设备三元组 ===

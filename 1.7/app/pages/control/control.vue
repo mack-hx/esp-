@@ -161,9 +161,9 @@
       </view>
     </view>
 
-    <!-- RGBW 彩灯控制 -->
+    <!-- RGB 彩灯控制 (SK6812 只有 RGB 三通道) -->
     <view class="pad-card">
-      <view class="card-title">RGBW 彩灯</view>
+      <view class="card-title">RGB 彩灯</view>
       <view class="rgb-sliders">
         <view class="rgb-item">
           <text class="rgb-label" style="color:#ff4444">R</text>
@@ -176,10 +176,6 @@
         <view class="rgb-item">
           <text class="rgb-label" style="color:#4444ff">B</text>
           <slider :value="ledState.b" min="0" max="255" step="1" show-value active-color="#4444ff" block-size="28" @changing="e => onRgbChange(e, 'b')" />
-        </view>
-        <view class="rgb-item">
-          <text class="rgb-label" style="color:#aaaaaa">W</text>
-          <slider :value="ledState.w" min="0" max="255" step="1" show-value active-color="#aaaaaa" block-size="28" @changing="e => onRgbChange(e, 'w')" />
         </view>
         <view class="rgb-item">
           <text class="rgb-label" style="color:#1aad19">亮度</text>
@@ -328,24 +324,28 @@ export default {
       this.ledState.preset = -1
       this.ledState.on = true
       // 滑动时直接发送，不 await 避免阻塞
-      const { r, g, b, w, brightness, on } = this.ledState
-      const colorVal = (r << 24) | (g << 16) | (b << 8) | w
-      controller.sendLed({ led_on: on ? 1 : 0, led_color: colorVal, led_brightness: brightness })
+      this._sendLed()
     },
-    updateServoPreview() {},
     onSendLedControl() {
-      const { r, g, b, w, brightness, on } = this.ledState
-      const colorVal = (r << 24) | (g << 16) | (b << 8) | w
-      controller.sendLed({ led_on: on ? 1 : 0, led_color: colorVal, led_brightness: brightness })
+      this._sendLed()
         .then(() => this._showTip('灯控制已发送'))
-        .catch(e => uni.showToast({ title: '发送失败', icon: 'none' }))
+        .catch(e => controller.reportError(e))
+    },
+    /**
+     * @brief 下发灯控制
+     * @note  led_color 用 0x00RRGGBB (和设备端解析一致); SK6812 只有 RGB 三通道
+     */
+    _sendLed() {
+      const { r, g, b, brightness, on } = this.ledState
+      const colorVal = (r << 16) | (g << 8) | b
+      return controller.sendLed({ led_on: on ? 1 : 0, led_color: colorVal, led_brightness: brightness })
     },
 
     onToggleMagnet() {
       this.magnetState.on = !this.magnetState.on
       controller.sendMagnet({ magnet_on: this.magnetState.on ? 1 : 0 })
         .then(() => this._showTip(this.magnetState.on ? '执行对接' : '取消对接'))
-        .catch(e => uni.showToast({ title: '发送失败', icon: 'none' }))
+        .catch(e => controller.reportError(e))
     },
     // 微动开关轮询
     _startSwitchPoll() {
@@ -356,11 +356,12 @@ export default {
     async _fetchSwitch() {
       try {
         const res = await queryDeviceProperty()
-        if (res && res.data && res.data.list) {
+        /* 平台返回: { code:0, data:[{identifier, value, ...}] } */
+        if (res && res.code === 0 && Array.isArray(res.data)) {
           const props = {}
-          res.data.list.forEach(item => { props[item.identifier] = item.value })
-          this.switchState.sw1 = !!props.sw1
-          this.switchState.sw2 = !!props.sw2
+          res.data.forEach(item => { props[item.identifier] = item.value })
+          this.switchState.sw1 = !!Number(props.sw1)
+          this.switchState.sw2 = !!Number(props.sw2)
         }
       } catch (e) {
         // 忽略查询错误
@@ -369,22 +370,30 @@ export default {
     onSendMagnet() {
       controller.sendMagnet({ magnet_on: this.magnetState.on ? 1 : 0 })
         .then(() => this._showTip('电磁铁已发送'))
-        .catch(e => uni.showToast({ title: '发送失败', icon: 'none' }))
+        .catch(e => controller.reportError(e))
     },
-    // 舵机控制 (servo_angle: 0=左, 1=右, 2=双)
+    // 舵机控制 (左=舵机1, 右=舵机2, 双=两路一起)
     onServoLeft() {
-      this.onSendServo(0)
+      this.onSendServo('servo1_angle')
     },
     onServoBoth() {
-      this.onSendServo(2)
+      this.onSendServo('both')
     },
     onServoRight() {
-      this.onSendServo(1)
+      this.onSendServo('servo2_angle')
     },
-    onSendServo(target) {
-      controller.sendServo({ servo_angle: this.servoAngle, servo_target: target })
-        .then(() => this._showTip(`舵机 ${target === 0 ? '左' : target === 1 ? '右' : '双'} 已设为 ${this.servoAngle}°`))
-        .catch(e => uni.showToast({ title: '发送失败', icon: 'none' }))
+    /**
+     * @brief 下发舵机角度
+     * @param {string} which 'servo1_angle' | 'servo2_angle' | 'both'
+     */
+    onSendServo(which) {
+      const payload = {}
+      if (which === 'servo1_angle' || which === 'both') payload.servo1_angle = this.servoAngle
+      if (which === 'servo2_angle' || which === 'both') payload.servo2_angle = this.servoAngle
+      const label = which === 'servo1_angle' ? '左' : which === 'servo2_angle' ? '右' : '双'
+      controller.sendServo(payload)
+        .then(() => this._showTip(`舵机 ${label} 已设为 ${this.servoAngle}°`))
+        .catch(e => controller.reportError(e))
     }
   }
 }

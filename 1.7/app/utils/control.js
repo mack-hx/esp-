@@ -1,45 +1,35 @@
 /**
  * @file control.js
- * @brief 控制指令封装 (走 OneNet HTTP API, 不再走 MQTT)
- * @date 2026-10-10
+ * @brief 控制指令封装 (走 OneNet 开放接口)
+ * @date 2026-10-21
  *
  * 命令下发分两类:
- *   - 持续指令 (vx/vy/w 移动): 走 SetDeviceDesiredProperty 写期望值
- *       设备订阅 $sys/.../thing/property/desired/get/reply 时会收到
- *   - 单次动作 (急停 / 起立 / 配平): 走 invokeService('stop' / 'stand' / 'calibrate')
- *   - 参数读写: 走 invokeService('param_get' / 'param_set' / 'param_save')
+ *   - 持续指令 (移动 / 灯 / 舵机 / 电磁铁): 走 setDesiredProperty
+ *       → 平台把期望值推给设备的 $sys/.../thing/property/set 消息
+ *   - 单次动作 (急停 / 起立 / 配平 / 参数读写): 走 invokeService
+ *       → 平台把服务调用推给设备的 $sys/.../thing/service/{name}/invoke 消息
  *
- * 频率: 移动指令 50ms 一帧, 跟之前一样.
- *   - 期望值是"幂等"的, 重复写相同值不会触发设备回调, 改用 vx 极小时做归零判断
- *   - 后端是 HTTP POST, 一次访问就一帧, 没有 50ms 合并之类的优化
+ * @note  移动指令走物模型里已有的 `speed` 属性 (标幺 -1~1):
+ *        平台会把期望值 push 给设备, 设备直接当速度环目标用。
+ *        原来用的 `vx` / `w` 在物模型里并不存在, 平台会回
+ *        10412 "identifier not exist", 指令根本下发不下去。
+ * @note  下发频率: 值变化时立即发, 另外每 1s 补发一次保活
+ *        (平台只在期望值变化时 push, 补发是为了让设备在重连后能恢复指令)。
  */
 
 import { oneApi } from '../common/oneapi.js'
 import { setDesiredProperty, invokeService } from '../common/onenet.js'
-import { getConfig } from '../common/config.js'
+
+/** 移动指令的属性名 (物模型里必须存在这个标识符) */
+const MOVE_PROP = 'speed'
+
+/** 保活补发周期 (毫秒) */
+const KEEPALIVE_MS = 1000
 
 class Controller {
   constructor() {
-    this.active = { vx: 0, vy: 0, w: 0 }
+    this.active = { speed: 0 }
     this.timer = null
-    this.PERIOD_MS = 50
-    this.projectId = ''   // 从 connect 页填, 存在 storage 里
-  }
-
-  /** 读 projectId (从 storage) */
-  _getProjectId() {
-    try {
-      // H5 环境
-      if (typeof uni === 'undefined' || !uni.getStorageSync) {
-        return localStorage.getItem('ebr_project_id_v1') || ''
-      }
-      return uni.getStorageSync('ebr_project_id_v1') || ''
-    } catch (e) {
-      // fallback to localStorage
-      try {
-        return localStorage.getItem('ebr_project_id_v1') || ''
-      } catch (e2) { return '' }
-    }
   }
 
   /** 检查 OneNet API 是否就绪 */
@@ -48,27 +38,30 @@ class Controller {
       uni.showToast({ title: '请先在连接页配置 OneNet', icon: 'none' })
       return false
     }
-    const pid = this._getProjectId()
-    if (!pid) {
-      uni.showToast({ title: '缺少项目 ID, 请到连接页填', icon: 'none' })
-      return false
-    }
     return true
   }
 
   /**
-   * @brief 持续发移动指令 (50ms 一帧, HTTP POST)
+   * @brief 持续发移动指令 (按下方向键时调用)
+   * @param {string} dir   'forward' | 'back' | 'left' | 'right'
+   * @param {number} speed 0~1 档位
+   * @note  本机是两轮同向结构, 没法原地转向, 左右转只给提示不做动作
    */
   startMove(dir, speed = 0.6) {
     if (!this._check()) return
-    this.active = this._dirToVel(dir, speed)
+    if (dir === 'left' || dir === 'right') {
+      uni.showToast({ title: '两轮同向结构不支持原地转向', icon: 'none' })
+      return
+    }
+    this.active = { [MOVE_PROP]: this._dirToVel(dir, speed) }
     this._publishMove()
     if (this.timer) clearInterval(this.timer)
-    this.timer = setInterval(() => this._publishMove(), this.PERIOD_MS)
+    this.timer = setInterval(() => this._publishMove(), KEEPALIVE_MS)
   }
 
+  /** 停止移动 (目标速度归零) */
   stopMove() {
-    this.active = { vx: 0, vy: 0, w: 0 }
+    this.active = { [MOVE_PROP]: 0 }
     if (this.timer) {
       clearInterval(this.timer)
       this.timer = null
@@ -76,34 +69,56 @@ class Controller {
     this._publishMove()
   }
 
+  /**
+   * @brief 方向 → 目标速度 (标幺 -1~1)
+   * @param {string} dir   方向
+   * @param {number} speed 档位
+   * @return {number} 标幺速度
+   */
   _dirToVel(dir, speed) {
     switch (dir) {
-      case 'forward': return { vx: +speed, vy: 0, w: 0 }
-      case 'back':    return { vx: -speed, vy: 0, w: 0 }
-      case 'left':    return { vx: 0,     vy: 0, w: +speed }
-      case 'right':   return { vx: 0,     vy: 0, w: -speed }
-      default:        return { vx: 0,     vy: 0, w: 0 }
+      case 'forward': return +speed
+      case 'back':    return -speed
+      default:        return 0
     }
   }
 
+  /** 推一帧移动指令 */
   async _publishMove() {
-    const pid = this._getProjectId()
     try {
-      await setDesiredProperty(pid, this.active)
+      await setDesiredProperty(this.active)
     } catch (e) {
+      this.reportError(e)
+    }
+  }
+
+  /**
+   * @brief 统一的失败处理 (页面也可以直接调这个来显示错误)
+   * @param {Error} e 平台返回的错误
+   * @note  只有**鉴权类**错误 (AccessKey 配错) 才把连接状态打成错误;
+   *        单条指令失败 (物模型缺属性之类的) 只提示, 不影响其它指令。
+   */
+  reportError(e) {
+    if (e && e.auth) {
       oneApi.markError(e.message)
     }
+    if (e && e.code === 10412) {
+      uni.showToast({ title: '物模型缺这个属性, 请在 OneNet 后台补上', icon: 'none' })
+    } else {
+      const msg = (e && e.message) ? e.message : String(e)
+      uni.showToast({ title: msg.slice(0, 30), icon: 'none' })
+    }
   }
 
-  /** 急停 (单次) - 走服务调用 */
+  /** 急停 (单次服务调用) */
   async emergencyStop() {
     if (!this._check()) return
     if (this.timer) { clearInterval(this.timer); this.timer = null }
-    this.active = { vx: 0, vy: 0, w: 0 }
+    this.active = { [MOVE_PROP]: 0 }
     try {
       await invokeService('stop', {})
     } catch (e) {
-      oneApi.markError(e.message)
+      this.reportError(e)
     }
   }
 
@@ -113,7 +128,7 @@ class Controller {
     try {
       await invokeService('stand', {})
     } catch (e) {
-      oneApi.markError(e.message)
+      this.reportError(e)
     }
   }
 
@@ -125,7 +140,7 @@ class Controller {
       content: '请把车摆正, 然后点确定. 标定过程约 3 秒, 期间不要动车.',
       success: (res) => {
         if (res.confirm) {
-          invokeService('calibrate', {}).catch(e => oneApi.markError(e.message))
+          invokeService('calibrate', {}).catch(e => this.reportError(e))
           uni.showLoading({ title: '配平中...' })
           setTimeout(() => uni.hideLoading(), 3500)
         }
@@ -133,72 +148,90 @@ class Controller {
     })
   }
 
-  /** 读参数 (返回 values 对象)
-   * 物模型定义 output: values: string (JSON 字符串), 需要 parse */
+  /**
+   * @brief 读全部 PID 参数
+   * @return {Promise<Object|null>} { bal_kp: 40, ... }
+   * @note  出错时往上抛, 让页面能把平台的具体原因显示出来
+   *        (比如物模型里 values 的长度限制不够, 平台会回 "string length error")
+   */
   async getParams() {
     if (!this._check()) return null
     try {
       const res = await invokeService('param_get', {})
-      // res: { code: 0, data: { values: '{"bal_kp":40,...}' } }
+      /* 物模型 output: values (string), 内容是设备给的扁平 JSON 字符串 */
       if (res && res.data && res.data.values) {
         return JSON.parse(res.data.values)
       }
       return null
     } catch (e) {
-      oneApi.markError(e.message)
-      return null
+      this.reportError(e)
+      throw e
     }
   }
 
-  /** 写参数 (物模型 input: values: string, 传 JSON 字符串)
-   * param_set 成功后再调 param_save 落盘 */
+  /**
+   * @brief 写全部 PID 参数 (写完自动落盘)
+   * @param {Object} values 形如 { bal_kp: 40, ... }
+   * @return {Promise<boolean>} 是否成功
+   * @note  出错时往上抛, 让页面能把平台的具体原因显示出来
+   */
   async setParams(values) {
     if (!this._check()) return false
     try {
-      // values 是 JS 对象, 物模型 string 类型, 先 stringify
-      await invokeService('param_set', { values: JSON.stringify(values) })
-      await invokeService('param_save', {})
-      return true
+      /* 物模型 input: values (string), 所以要 stringify */
+      const r1 = await invokeService('param_set', { values: JSON.stringify(values) })
+      if (!r1) return false
+      const r2 = await invokeService('param_save', {})
+      return !!r2
     } catch (e) {
-      oneApi.markError(e.message)
-      return false
+      this.reportError(e)
+      throw e
     }
   }
 
-  /** 发送灯控制 */
+  /**
+   * @brief 发送灯控制
+   * @param {Object} payload { led_on, led_color, led_brightness }
+   * @note  这几个属性物模型里还没有, 平台会回 10412, 提示用户去补物模型
+   */
   async sendLed(payload) {
     if (!this._check()) return
     try {
-      await setDesiredProperty(this._getProjectId(), payload)
+      await setDesiredProperty(payload)
     } catch (e) {
-      oneApi.markError(e.message)
+      this.reportError(e)
       throw e
     }
   }
 
-  /** 发送电磁铁控制 */
+  /**
+   * @brief 发送电磁铁控制
+   * @param {Object} payload { magnet_on }
+   */
   async sendMagnet(payload) {
     if (!this._check()) return
     try {
-      await setDesiredProperty(this._getProjectId(), payload)
+      await setDesiredProperty(payload)
     } catch (e) {
-      oneApi.markError(e.message)
+      this.reportError(e)
       throw e
     }
   }
 
-  /** 发送舵机控制
-   * @param payload.servo_angle: 角度 (30-120)
-   * @param payload.servo_target: 0=左, 1=右, 2=双 */
+  /**
+   * @brief 发送舵机控制
+   * @param {Object} payload { servo1_angle, servo2_angle }
+   */
   async sendServo(payload) {
     if (!this._check()) return
     try {
-      await setDesiredProperty(this._getProjectId(), payload)
+      await setDesiredProperty(payload)
     } catch (e) {
-      oneApi.markError(e.message)
+      this.reportError(e)
       throw e
     }
   }
+
 }
 
 export const controller = new Controller()

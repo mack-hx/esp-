@@ -31,15 +31,15 @@
       </view>
 
       <view class="form-item">
-        <text class="form-label">设备级 AccessKey</text>
+        <text class="form-label">AccessKey</text>
         <input
           v-model="form.deviceAccessKey"
           class="form-input"
           password
-          placeholder="Base64 字符串, 设备详情页查看"
+          placeholder="Base64 字符串, 产品详情页查看"
           placeholder-class="form-placeholder"
         />
-        <text class="form-hint">用此 key 计算 token, 需勾选设备级权限</text>
+        <text class="form-hint">设备级 AccessKey 即可 (跟 ESP32 端用同一把, 平台会同时校验产品+设备权限)</text>
       </view>
 
       <view class="form-item">
@@ -47,9 +47,10 @@
         <input
           v-model="form.projectId"
           class="form-input"
-          placeholder="OneNet 项目概览可见, 用于期望值下发"
+          placeholder="选填: OneNet 项目概览可见"
           placeholder-class="form-placeholder"
         />
+        <text class="form-hint">选填: 期望值下发和服务调用不填也能用</text>
       </view>
     </view>
 
@@ -97,7 +98,6 @@
 <script>
 import { getConfig, saveConfig, resetConfig } from '../../common/config.js'
 import { oneApi } from '../../common/oneapi.js'
-import { computeToken } from '../../common/onenet.js'
 
 export default {
   data() {
@@ -160,19 +160,17 @@ export default {
         }
       } catch (e) {}
 
-      // 2. 验证 token
+      // 2. 真的去平台拉一次设备属性, 能拉到才算配置正确
       this.connecting = true
       this.errorMsg = ''
-      try {
-        computeToken()
-        oneApi._setState('ready', null)
-        uni.showToast({ title: '配置验证通过', icon: 'success' })
-      } catch (e) {
-        this.errorMsg = 'token 计算失败: ' + (e.message || e)
-        oneApi._setState('error', this.errorMsg)
-      }
-
+      const ok = await oneApi.ensureReady()
       this.connecting = false
+      if (ok) {
+        uni.showToast({ title: '连接成功', icon: 'success' })
+      } else {
+        this.errorMsg = oneApi.getState().error || '连接失败'
+        uni.showToast({ title: '连接失败', icon: 'none' })
+      }
     },
 
     onReset() {

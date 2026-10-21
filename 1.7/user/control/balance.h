@@ -40,6 +40,11 @@
  * 本版用单一周期 10ms 跑完整串级, 简单可靠。 */
 #define CONTROL_PERIOD_MS      10
 
+/* ========== 远程速度指令 (App 通过 OneNet 下发 vx) ==========
+ * App 发的 vx 是"标幺" (-1~1), 这里换算成轮速 (rpm) 送给速度环。
+ * 60 rpm ≈ 0.2 m/s (65mm 轮), 保守起步值, 想要更快改这里。 */
+#define BAL_SPEED_CMD_MAX_RPM   60.0f
+
 /* ========== 方向常量 (1.3 起不在网页上可调) ==========
  * 实测 2026-10-05: 启动后车往倒的反方向冲 → 平衡输出要反相 → -1
  * 陀螺符号: 第八阶段实测前倾 gx 为正、Pitch 也为正 → +1
@@ -137,5 +142,20 @@ float balance_get_arm_ms(void);
  * @return ESP_OK 成功
  */
 esp_err_t balance_reload_params(void);
+
+/**
+ * @brief 设置速度环目标速度 (远程遥控用)
+ * @param cmd 标幺速度指令, -1.0 (后退) ~ +1.0 (前进), 0 = 原地保持
+ * @note  App 通过 OneNet 的 vx 属性下发这个值。
+ *        内部换算成轮速 (rpm) 送给速度环, 超出 ±1 的值会被 clamp。
+ * @return ESP_OK 成功
+ */
+esp_err_t balance_set_speed_cmd(float cmd);
+
+/**
+ * @brief 读取当前速度环目标速度 (标幺)
+ * @return -1.0 ~ +1.0
+ */
+float balance_get_speed_cmd(void);
 
 #endif // BALANCE_H

@@ -144,6 +144,16 @@ const param_item_t *param_get_item(param_id_t id);
 int param_to_json(char *buf, uint32_t len);
 
 /**
+ * @brief 把整个参数表序列化成"扁平键值对" JSON
+ * @param buf  输出缓冲区
+ * @param len  缓冲区大小
+ * @return 实际写入长度 (不含 '\0')
+ * @note  格式: {"bal_kp":40,"bal_ki":0,...}, 与 param_from_json 的输入格式一致,
+ *        App 拉参数走这个 (配对使用: param_get 读它, param_set 写它)
+ */
+int param_to_map_json(char *buf, uint32_t len);
+
+/**
  * @brief 从 JSON 片段批量设置参数
  * @param json JSON 对象字符串, 形如 {"bal_kp":12.5,"bal_ki":3}
  * @return ESP_OK 至少成功设置了一个

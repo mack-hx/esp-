@@ -1,37 +1,44 @@
 /**
  * @file onenet.js
  * @brief OneNet 鉴权 (token 计算) + HTTP API 封装
- * @date 2026-10-10
+ * @date 2026-10-21
  *
  * 鉴权算法 (OneNet 平台 2018-10-31 协议):
  *   res = products/{productId}/devices/{deviceName}
- *   et  = (现在 + tokenExpireSec) 的 Unix 秒
+ *   et  = 过期时间 (Unix 秒)
  *   sign = base64( hmac_sha1( base64decode(accessKey), "{et}\n{method}\n{res}\n{version}" ) )
  *   token = version=2018-10-31&res=<urlencoded>&et=<et>&method=sha1&sign=<urlencoded>
  *
- * HTTP API 调用方式: 走 HTTPS, 鉴权头为 Authorization: <token>
- * 设备级 AccessKey 权限: 关联设备后有该设备最大权限 (可读写数据 / 下发命令等)
+ * 平台地址 (2026-10-21 实测确认):
+ *   - 开放接口  https://iot-api.heclouds.com        ← App 走这里
+ *   - 设备接入  https://studio-mqtt.heclouds.com   ← ESP32 走 MQTT
+ *   - 旧的 https://open.iot.10086.cn/application?action=... 已经废弃,
+ *     会直接返回 authPermissionDeny, 不要用。
  *
- * 文档: https://open.iot.10086.cn/doc/iot_platform/book/device-connect&manager/device-auth.html
+ * 实际用到的接口:
+ *   GET  /thingmodel/query-device-property?product_id=&device_name=
+ *        → 读设备最新属性 (App 状态页用)
+ *   POST /thingmodel/set-device-desired-property
+ *        → 设置属性期望值 (App 摇杆/灯/舵机/电磁铁用), body: {product_id, device_name, project_id, params}
+ *   POST /thingmodel/call-service
+ *        → 调用物模型服务 (急停/起立/配平/读参数/写参数/保存参数)
+ *        body: {product_id, device_name, project_id, identifier, params}
+ *
+ * @note  AccessKey 必须是**产品级** key: 设备级 key 调上面这些接口一律
+ *        authPermissionDeny (设备级 key 只能给设备自己用)。
  */
 
 import { getConfig } from './config.js'
 
-/** OneNet Studio HTTP API 根地址 (新版 Masa 平台) */
-const API_BASE = 'https://open.iot.10086.cn'
+/** OneNet Studio 开放接口根地址 */
+const API_BASE = 'https://iot-api.heclouds.com'
 
 /**
- * H5 开发环境走本地代理 (解决 CORS):
- *   http://127.0.0.1:8080/onenet-api/* → localhost:7898 (onenet_proxy.js)
- *   代理负责处理 OPTIONS 预检 + 转发到 OneNet
- * 生产 H5 / App 环境下仍然直连 OneNet
+ * @brief 接口地址
+ * @note  H5 / App 都直接连 OneNet (平台已开放 CORS: Access-Control-Allow-Origin: *),
+ *        不需要本地代理, 也不需要改 vite.config.js
  */
 function getApiBase() {
-  if (typeof window !== 'undefined') {
-    // #ifdef H5
-    return location.origin + '/onenet-api'
-    // #endif
-  }
   return API_BASE
 }
 
@@ -46,7 +53,10 @@ export function computeToken() {
   const version = '2018-10-31'
   const method = 'sha1'
   const res = `products/${cfg.productId}/devices/${cfg.deviceName}`
-  const et = Math.floor(Date.now() / 1000) + (cfg.tokenExpireSec || 86400)
+  /* et 用固定的长效时间戳 (2030-12-30)。
+   * OneNet MQTT broker 只认长效 token, 用"当前时间 + 24h"会被 broker
+   * 拒掉 (Bad username or password), 所以 App 和设备端保持一致。 */
+  const et = 1924833600
 
   // 签名原文: 按 et / method / res / version 顺序, \n 分隔
   const strForSig = `${et}\n${method}\n${res}\n${version}`
@@ -57,12 +67,15 @@ export function computeToken() {
   const sign = base64Encode(sigBin)
 
   // 各 value 部分 URL 编码
+  // ⚠ 必须用 encodeURIComponent, 不能用 encodeURI:
+  //   res 里的 "/" 必须编码成 %2F, 否则平台报 "invalid authorization"。
+  //   (encodeURI 不转义 "/")
   const token =
-    `version=${encodeURI(version)}` +
-    `&res=${encodeURI(res)}` +
+    `version=${encodeURIComponent(version)}` +
+    `&res=${encodeURIComponent(res)}` +
     `&et=${et}` +
-    `&method=${encodeURI(method)}` +
-    `&sign=${encodeURI(sign)}`
+    `&method=${encodeURIComponent(method)}` +
+    `&sign=${encodeURIComponent(sign)}`
 
   return token
 }
@@ -71,7 +84,6 @@ export function computeToken() {
 
 /**
  * @brief base64 解码 (返回 Uint8Array)
- *   uni-app / 小程序 / H5 都能用这个纯 JS 实现, 避免依赖 nodejs Buffer
  */
 function base64Decode(b64) {
   if (typeof atob === 'function') {
@@ -79,11 +91,6 @@ function base64Decode(b64) {
     const out = new Uint8Array(bin.length)
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
     return out
-  }
-  // 小程序 / app-plus: 走 uni 提供的 polyfill (如果有)
-  if (typeof uni !== 'undefined' && typeof uni.arrayBufferToBase64 === 'function') {
-    // 反向没有, 退到下面的 base64Encode 逻辑里做对偶
-    return base64DecodePolyfill(b64)
   }
   return base64DecodePolyfill(b64)
 }
@@ -156,21 +163,15 @@ function base64EncodePolyfill(bytes) {
 
 /**
  * @brief HMAC-SHA1 (key: Uint8Array, msg: string) → Uint8Array
- *   优先用 crypto.subtle, 小程序/app 走 fallback SHA1
  */
 function hmacSha1(key, msg) {
-  if (typeof crypto !== 'undefined' && crypto.subtle) {
-    // 同步: 用同步 SHA1 + 自实现 HMAC
-    return hmacSha1Sync(key, msg)
-  }
   return hmacSha1Sync(key, msg)
 }
 
 /**
- * @brief 同步的 HMAC-SHA1 (用内置的 SHA1 实现, 不依赖异步 crypto.subtle)
+ * @brief 同步的 HMAC-SHA1 (自实现 SHA1, 不依赖异步 crypto.subtle)
  */
 function hmacSha1Sync(key, msg) {
-  // key 太长时先 hash 一次
   if (key.length > 64) key = sha1(key)
   if (key.length < 64) {
     const padded = new Uint8Array(64)
@@ -206,7 +207,6 @@ function sha1(bytes) {
   buf.set(bytes)
   buf[len] = 0x80
   const bitLen = len * 8
-  // 64-bit 大端长度 (高 32 位用 0, JS 位运算 32 位)
   buf[wordLen - 1] = bitLen & 0xff
   buf[wordLen - 2] = (bitLen >> 8) & 0xff
   buf[wordLen - 3] = (bitLen >> 16) & 0xff
@@ -256,9 +256,29 @@ function sha1(bytes) {
 /* ===================== HTTP API 调用 (支持 H5 和 App) ===================== */
 
 /**
+ * @brief 检查平台返回的 code, 非 0 就抛异常 (让上层能给用户看清楚原因)
+ * @param {Object} res  平台返回的 JSON
+ * @param {string} what 操作名 (用于拼错误提示)
+ * @return {Object} 原样返回 res
+ * @note  平台 HTTP 状态码永远是 200, 真正的错误在 body 的 code 里:
+ *        10412 = 标识符不存在 (物模型没建这个属性)
+ *        10415 = 服务调用失败 (设备没应答 / 应答跟物模型对不上)
+ */
+function checkResult(res, what) {
+  if (res && typeof res.code === 'number' && res.code !== 0) {
+    const err = new Error(`${what}失败 (${res.code}): ${res.msg || '未知错误'}`)
+    err.code = res.code
+    /* 10403 = 鉴权失败, 说明 AccessKey 配错了, 这才算"连接配置"问题 */
+    if (res.code === 10403) err.auth = true
+    throw err
+  }
+  return res
+}
+
+/**
  * @brief 通用 HTTP 调用, 自动带 Authorization
  * @param {string} method 'GET' / 'POST'
- * @param {string} path 路径, 例如 '/device/thing/property/post?topic=...'
+ * @param {string} path  路径, 例如 '/thingmodel/query-device-property?product_id=xx'
  * @param {Object} [body] POST body (会被 JSON.stringify)
  * @returns {Promise<Object>} 解析后的 JSON
  */
@@ -269,7 +289,7 @@ export function httpRequest(method, path, body) {
     'Authorization': token,
     'Content-Type': 'application/json'
   }
-  
+
   // H5 环境使用 fetch
   if (typeof uni === 'undefined' || typeof uni.request === 'undefined') {
     return fetch(url, {
@@ -277,18 +297,22 @@ export function httpRequest(method, path, body) {
       headers,
       body: body ? JSON.stringify(body) : undefined
     }).then(res => {
-      // 通过代理时 res.url 可能是完整代理 URL，与预期不同不算 redirect
-      if (res.status === 302 || res.status === 301) {
+      if (!res.ok) {
         return res.text().then(text => {
-          try { return JSON.parse(text) } catch { return {} }
+          const err = new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`)
+          /* 鉴权类错误单独标记: 只有这种才说明"配置不对" */
+          if (res.status === 401 || res.status === 403) err.auth = true
+          throw err
         })
       }
       return res.json().catch(() => ({}))
     }).catch(err => {
-      throw new Error(err.message || '请求失败')
+      const e = new Error(err.message || '请求失败')
+      e.auth = !!err.auth
+      throw e
     })
   }
-  
+
   // App 环境使用 uni.request
   return new Promise((resolve, reject) => {
     uni.request({
@@ -301,7 +325,9 @@ export function httpRequest(method, path, body) {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(res.data)
         } else {
-          reject(new Error(`HTTP ${res.statusCode}: ${JSON.stringify(res.data)}`))
+          const err = new Error(`HTTP ${res.statusCode}: ${JSON.stringify(res.data)}`)
+          if (res.statusCode === 401 || res.statusCode === 403) err.auth = true
+          reject(err)
         }
       },
       fail: (err) => reject(new Error(err.errMsg || '请求失败'))
@@ -310,132 +336,66 @@ export function httpRequest(method, path, body) {
 }
 
 /**
- * @brief 属性上报 (设备状态 / 移动指令 → OneNet)
- *   HTTP 路径: POST /device/thing/property/post
- *   URL 参数:  topic=$sys/{pid}/{device-name}/thing/property/post, protocol=http
- */
-export function postProperties(paramsObj) {
-  const cfg = getConfig()
-  const topic = `$sys/${cfg.productId}/${cfg.deviceName}/thing/property/post`
-  const query = `topic=${encodeURIComponent(topic)}&protocol=http`
-  const body = {
-    id: String(Date.now() % 10000000000000).padStart(13, '0'),
-    version: '1.0',
-    params: wrapWithTime(paramsObj)
-  }
-  return httpRequest('POST', `/device/thing/property/post?${query}`, body)
-}
-
-/**
- * @brief 事件上报
- *   HTTP 路径: POST /device/thing/event/post
- */
-export function postEvent(name, outObj) {
-  const cfg = getConfig()
-  const topic = `$sys/${cfg.productId}/${cfg.deviceName}/thing/event/post`
-  const query = `topic=${encodeURIComponent(topic)}&protocol=http`
-  const params = {}
-  for (const k in outObj) {
-    params[k] = { value: outObj[k], time: Date.now() }
-  }
-  const body = {
-    id: String(Date.now() % 10000000000000).padStart(13, '0'),
-    version: '1.0',
-    name,
-    params
-  }
-  return httpRequest('POST', `/device/thing/event/post?${query}`, body)
-}
-
-/**
- * @brief 设置属性期望值 (云→设备, App 推命令用)
- *   HTTP 路径: POST /application?action=SetDeviceDesiredProperty&version=1
- *   注意: project_id 需要填, 这是从 OneNet Studio 项目概览拿的 ID
- *
- * @param {string} projectId  项目 ID
- * @param {Object} values     形如 { vx: 0.3, vy: 0, w: 0 }
- */
-export function setDesiredProperty(projectId, values) {
-  const cfg = getConfig()
-  const body = {
-    project_id: projectId,
-    product_id: cfg.productId,
-    device_name: cfg.deviceName,
-    params: values
-  }
-  return httpRequest('POST', '/application?action=SetDeviceDesiredProperty&version=1', body)
-}
-
-/**
  * @brief 读设备最新属性值
- *   HTTP 路径: GET /device/thing/property/get?topic=...&protocol=http
- *   注: 这个接口实际是从设备影子读, 设备主动上报后才会有
- */
-export function getDeviceProperties() {
-  const cfg = getConfig()
-  const topic = `$sys/${cfg.productId}/${cfg.deviceName}/thing/property/get`
-  const query = `topic=${encodeURIComponent(topic)}&protocol=http`
-  return httpRequest('GET', `/device/thing/property/get?${query}`)
-}
-
-/**
- * @brief 服务调用 (App 调 ESP32 的 stop / stand / calibrate / param_get / param_set / param_save)
- *   HTTP 路径: POST /application?action=InvokeService&version=1
- *   Body 格式: {project_id, product_id, device_name, service_identifier, args}
- *   args 是 JSON 字符串
- */
-export function invokeService(name, inputObj) {
-  const cfg = getConfig()
-  const args = Object.keys(inputObj || {}).length > 0
-    ? JSON.stringify(inputObj)
-    : '{}'
-  const body = {
-    project_id: getProjectId(),
-    product_id: cfg.productId,
-    device_name: cfg.deviceName,
-    service_identifier: name,
-    args
-  }
-  return httpRequest('POST', '/application?action=InvokeService&version=1', body)
-}
-
-/**
- * @brief 读设备最新属性值 (轮询设备最近一次上报的值)
- *   HTTP 路径: GET /application?action=QueryDeviceProperty&version=1
- *   返回: { data: { list: [{identifier, value, time, data_type}, ...] } }
+ * @returns {Promise<Object>} { code:0, data:[{identifier, value, time, ...}, ...] }
  */
 export function queryDeviceProperty() {
   const cfg = getConfig()
-  const pid = getProjectId()
-  const q = [
-    'action=QueryDeviceProperty',
-    'version=1',
-    `project_id=${encodeURIComponent(pid)}`,
-    `product_id=${encodeURIComponent(cfg.productId)}`,
-    `device_name=${encodeURIComponent(cfg.deviceName)}`
-  ].join('&')
-  return httpRequest('GET', `/application?${q}`)
+  const q = `product_id=${encodeURIComponent(cfg.productId)}&device_name=${encodeURIComponent(cfg.deviceName)}`
+  return httpRequest('GET', `/thingmodel/query-device-property?${q}`)
 }
 
-/* ===================== 工具 ===================== */
+/**
+ * @brief 设置属性期望值 (云→设备)
+ * @param {Object} values 形如 { speed: 0.3 }
+ * @note  设备会收到 $sys/.../thing/property/set 消息, 参数是**裸值**
+ * @returns {Promise<Object>} { code:0, msg:'succ' }
+ */
+export function setDesiredProperty(values) {
+  const cfg = getConfig()
+  const body = {
+    product_id: cfg.productId,
+    device_name: cfg.deviceName,
+    params: values || {}
+  }
+  /* project_id 不填也能用 (实测 2026-10-21), 填了才带上 */
+  const pid = getProjectId()
+  if (pid) body.project_id = pid
+  return httpRequest('POST', '/thingmodel/set-device-desired-property', body)
+    .then(res => checkResult(res, '设置期望值'))
+}
 
-/** 从 storage 读 project_id (用户在 connect 页填的) */
-function getProjectId() {
+/**
+ * @brief 调用物模型服务 (急停 / 起立 / 配平 / 读参数 / 写参数 / 保存参数)
+ * @param {string} name     服务标识符
+ * @param {Object} inputObj 服务入参 (物模型里没声明入参时传 {})
+ * @returns {Promise<Object>} { code:0, data:{...}, msg:'succ' }
+ */
+export function invokeService(name, inputObj) {
+  const cfg = getConfig()
+  const body = {
+    product_id: cfg.productId,
+    device_name: cfg.deviceName,
+    identifier: name,
+    params: inputObj || {}
+  }
+  const pid = getProjectId()
+  if (pid) body.project_id = pid
+  return httpRequest('POST', '/thingmodel/call-service', body)
+    .then(res => checkResult(res, `调用服务 ${name}`))
+}
+
+/* ===================== 工具函数 ===================== */
+
+/**
+ * @brief 从 storage 读 project_id (用户在 connect 页填的)
+ * @return {string} project_id
+ */
+export function getProjectId() {
   try {
-    // H5 环境
     if (typeof uni === 'undefined' || !uni.getStorageSync) {
       return localStorage.getItem('ebr_project_id_v1') || ''
     }
     return uni.getStorageSync('ebr_project_id_v1') || ''
   } catch (e) { return '' }
-}
-
-function wrapWithTime(obj) {
-  const now = Date.now()
-  const out = {}
-  for (const k in obj) {
-    if (obj[k] === null || obj[k] === undefined) continue
-    out[k] = { value: obj[k], time: now }
-  }
-  return out
 }

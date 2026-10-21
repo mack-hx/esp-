@@ -217,6 +217,28 @@ int param_to_json(char *buf, uint32_t len)
     return n;
 }
 
+int param_to_map_json(char *buf, uint32_t len)
+{
+    if (buf == NULL || len == 0) return 0;
+    int n = snprintf(buf, len, "{");
+    if (n < 0 || (uint32_t)n >= len) return 0;
+
+    for (int i = 0; i < PARAM_ITEM_COUNT; i++) {
+        const param_item_t *it = &g_param_items[i];
+        int w = snprintf(buf + n, len - n, "%s\"%s\":%.*f",
+                         i ? "," : "", it->key,
+                         it->decimals, (double)s_values[i]);
+        if (w <= 0 || (uint32_t)(n + w) >= len) return n;   /* 缓冲区不够, 截断 */
+        n += w;
+    }
+
+    if ((uint32_t)(n + 2) < len) {
+        buf[n++] = '}';
+        buf[n]   = '\0';
+    }
+    return n;
+}
+
 /* ================= JSON 解析 (只认 "key": 数字 这种最简形式) =================
  * 不用 cJSON / mbedtls: 调参数据全是 ASCII 数字 + 引号, 手写扫描 60 行搞定,
  * 省一个组件依赖。格式示例: {"bal_kp":12.5,"bal_ki":3,"servo_c":75} */
