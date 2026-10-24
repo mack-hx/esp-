@@ -40,9 +40,11 @@ static const char *MODE_NAMES[MODE_MAX] = {
     "SPD"
 };
 
-/* 速度档位 (SPEED 模式设定, 同时也是 M1/M2/BOTH 实际转动速度) */
-static const int8_t SPEED_LEVELS[] = { 20, 40, 60, 80 };
-#define SPEED_LEVEL_COUNT  (sizeof(SPEED_LEVELS) / sizeof(SPEED_LEVELS[0]))
+/* 速度档位 (SPEED 模式设定, 同时也是 M1/M2/BOTH 实际转动速度)
+ * 直接引用 motor_spd_levels[] —— 全工程唯一的档位表,
+ * App 的"速度档位"也用这张表, 保证屏上和 App 上的档位含义完全一致。 */
+#define SPEED_LEVELS      motor_spd_levels
+#define SPEED_LEVEL_COUNT MOTOR_SPD_LEVEL_COUNT
 
 /* 当前模式 */
 static motor_mode_t s_mode       = MODE_M1;

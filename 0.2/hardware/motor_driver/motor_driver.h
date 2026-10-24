@@ -46,9 +46,25 @@
 
 /* ========== 电机 ID 定义 ========== */
 typedef enum {
-    MOTOR_A = 0,    // 电机 A
-    MOTOR_B = 1     // 电机 B
+    MOTOR_A = 0,    // 电机 A (左轮)
+    MOTOR_B = 1     // 电机 B (右轮)
 } motor_id_t;
+
+/* ========== 直驱档位表 (整个工程唯一的档位定义) ==========
+ * 档位值 = 电机 PWM 百分比 (0~100), 与 UI 编码器调试页 (ui_encoder.c)
+ * 和 App 的"速度档位"用的是同一张表 —— 三处必须一致, 所以只在这里定义一次。
+ *   索引 0~3 → 20% / 40% / 60% / 80%
+ * 用法: motor_spd_levels[i] 取得该档的 PWM 百分比 */
+#define MOTOR_SPD_LEVEL_COUNT 4
+extern const int8_t motor_spd_levels[MOTOR_SPD_LEVEL_COUNT];
+
+/**
+ * @brief 把任意百分比吸附到最近的合法档位
+ * @param pct 目标百分比 (0~100)
+ * @return 合法档位的百分比 (20 / 40 / 60 / 80 之一)
+ * @note  0 表示停止, 原样返回 0
+ */
+int8_t motor_spd_level_snap(int8_t pct);
 
 /* ========== 电机方向定义 ========== */
 typedef enum {

@@ -106,7 +106,7 @@
 
         <!-- 中央提示 -->
         <view class="pad-center">
-          <text class="pad-center-text">双轮差速</text>
+          <text class="pad-center-text">原地转向</text>
           <text class="pad-center-sub">档位: {{ speedLabel }}</text>
         </view>
       </view>
@@ -202,11 +202,14 @@ export default {
     return {
       state: 'idle',
       held: null,
-      speed: 0.6,
+      /* 速度档位 (PWM 百分比): 必须与车上的 motor_spd_levels[] 一致,
+       * 也就是屏上"编码器调试"页调出来的 20/40/60/80 四档 */
+      speed: 60,
       speedOptions: [
-        { label: '慢', value: 0.3 },
-        { label: '中', value: 0.6 },
-        { label: '快', value: 0.9 }
+        { label: '慢', value: 20 },
+        { label: '中', value: 40 },
+        { label: '快', value: 60 },
+        { label: '极速', value: 80 }
       ],
       _cfg: { productId: '', deviceName: '' },
       tip: '',
@@ -256,7 +259,7 @@ export default {
     },
     speedLabel() {
       const s = this.speedOptions.find(o => o.value === this.speed)
-      return s ? s.label : ''
+      return s ? `${s.label} ${s.value}%` : ''
     },
     devicePath() {
       return '$sys/' + (this._cfg || {}).productId + '/' + (this._cfg || {}).deviceName

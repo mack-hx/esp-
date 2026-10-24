@@ -15,6 +15,13 @@
  *        10412 "identifier not exist", 指令根本下发不下去。
  * @note  下发频率: 值变化时立即发, 另外每 1s 补发一次保活
  *        (平台只在期望值变化时 push, 补发是为了让设备在重连后能恢复指令)。
+ *
+ * @note  移动指令的编码 (物模型属性 `speed`, 范围 -10~10):
+ *        0                        → 停止
+ *        ±0.2 / ±0.4 / ±0.6 / ±0.8 → 前进(+) / 后退(-), 档位 20/40/60/80 (%)
+ *        ±1.2 / ±1.4 / ±1.6 / ±1.8 → 左转(+) / 右转(-), 档位 20/40/60/80 (%)
+ *        档位跟车上的 UI 编码器调试页同源 (motor_spd_levels[]),
+ *        所以 App 上的档位和屏上调出来的档位是一回事。
  */
 
 import { oneApi } from '../common/oneapi.js'
@@ -25,6 +32,20 @@ const MOVE_PROP = 'speed'
 
 /** 保活补发周期 (毫秒) */
 const KEEPALIVE_MS = 1000
+
+/** 速度档位 (PWM 百分比), 必须与车上的 motor_spd_levels[] 一致 */
+export const SPEED_LEVELS = [20, 40, 60, 80]
+
+/** 方向 → 指令符号 (前进/左转为正, 后退/右转为负) */
+const DIR_SIGN = {
+  forward: 1,
+  back: -1,
+  left: 1,
+  right: -1
+}
+
+/** 转向指令的基址 (>1 表示转向, 与设备端解码一致) */
+const TURN_BASE = 1.0
 
 class Controller {
   constructor() {
@@ -43,17 +64,16 @@ class Controller {
 
   /**
    * @brief 持续发移动指令 (按下方向键时调用)
-   * @param {string} dir   'forward' | 'back' | 'left' | 'right'
-   * @param {number} speed 0~1 档位
-   * @note  本机是两轮同向结构, 没法原地转向, 左右转只给提示不做动作
+   * @param dir   'forward' | 'back' | 'left' | 'right'
+   * @param level 档位 (PWM 百分比, 取 SPEED_LEVELS 里的值: 20/40/60/80)
+   * @note  设备收到后是**直驱**: 直接给两轮 PWM (跟车上 UI 编码器页一样),
+   *        前进/后退两轮同向, 左转/右转两轮反向 (原地转向)。
+   * @note  平台的 speed 属性范围是 -10~10, 指令值由 _dirToCmd() 编码。
    */
-  startMove(dir, speed = 0.6) {
+  startMove(dir, level = 60) {
     if (!this._check()) return
-    if (dir === 'left' || dir === 'right') {
-      uni.showToast({ title: '两轮同向结构不支持原地转向', icon: 'none' })
-      return
-    }
-    this.active = { [MOVE_PROP]: this._dirToVel(dir, speed) }
+    if (!(dir in DIR_SIGN)) return
+    this.active = { [MOVE_PROP]: this._dirToCmd(dir, level) }
     this._publishMove()
     if (this.timer) clearInterval(this.timer)
     this.timer = setInterval(() => this._publishMove(), KEEPALIVE_MS)
@@ -70,17 +90,20 @@ class Controller {
   }
 
   /**
-   * @brief 方向 → 目标速度 (标幺 -1~1)
-   * @param {string} dir   方向
-   * @param {number} speed 档位
-   * @return {number} 标幺速度
+   * @brief 方向 + 档位 → 指令值 (设备端 apply_move_cmd() 的逆运算)
+   * @param dir   方向
+   * @param level 档位 (PWM 百分比)
+   * @return 指令值
+   *
+   * 编码规则 (与设备端一致):
+   *   前进/后退: ±档位/100                → ±0.2 / ±0.4 / ±0.6 / ±0.8
+   *   左转/右转: ±(1 + 档位/100)          → ±1.2 / ±1.4 / ±1.6 / ±1.8
    */
-  _dirToVel(dir, speed) {
-    switch (dir) {
-      case 'forward': return +speed
-      case 'back':    return -speed
-      default:        return 0
-    }
+  _dirToCmd(dir, level) {
+    const lv = Number(level) / 100
+    const sign = DIR_SIGN[dir]
+    const isTurn = (dir === 'left' || dir === 'right')
+    return +(sign * (isTurn ? (TURN_BASE + lv) : lv)).toFixed(2)
   }
 
   /** 推一帧移动指令 */

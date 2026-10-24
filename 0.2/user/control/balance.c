@@ -8,8 +8,8 @@
  *
  * @note  姿态读数的修正链 (采样阶段做, 在算误差之前):
  *
- *     修正后 pitch = 原始 pitch − 配平表补偿(φ)
- *                      └─ user/trim, 0.11 起 ─┘
+ *     修正后 pitch = 原始 pitch − 配平表补偿(φ) − 配平零点
+ *                      └─ user/trim ─┘        └─ 配平动作记录的基准角 ┘
  *
  *   0.13 起不再有 ang_zero / bal_sign / gyro_sign 三个参数
  *   (详见 balance.h 顶部的方向常量)
@@ -28,6 +28,8 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "onenet_client.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <math.h>
 #include "freertos/task.h"
 #include <math.h>
@@ -65,10 +67,82 @@ static float s_trim_comp = 0.0f;
 /* 已连续满足门控条件的累计时长 (ms); 任何条件不满足立即清零 */
 static float s_arm_hold_ms = 0.0f;
 
-/* 速度环目标轮速 (rpm), 由远程指令 (App 的 vx) 换算而来; 0 = 原地保持 */
+/* 速度环目标轮速 (rpm): 遥控直驱期间不参与, 恒为 0 (原地站立) */
 static float s_target_rpm = 0.0f;
 
+/* ========== 遥控直驱 (App 方向键) ==========
+ * 直驱 = 直接给电机 PWM, 不经过平衡环, 跟 UI 编码器调试页一样。
+ * 期间暂停平衡环输出, 状态机也暂停 (车被开着走, 姿态检测没有意义)。 */
+static bal_move_t s_move_dir   = BAL_MOVE_STOP;
+static int8_t     s_move_level = 0;
+
+/* ========== 起立软启动 ==========
+ * 输出限幅 (%), 进入平衡状态后从 BAL_RAMP_START_PCT 慢慢放开到 100% */
+static float s_out_ramp = BAL_RAMP_START_PCT;
+
+/* ========== 配平零点 (°) ==========
+ * 配平 = 记录"车摆正时的 pitch", 之后平衡环以这个角度为 0。
+ * 与配平表 (腿角 → pitch) 是两回事: 表管"腿的角度带来的偏移",
+ * 零点管"整体安装/摆放的基准角"。 */
+static float s_pitch_zero = 0.0f;
+/* 修正链里扣掉配平表补偿、但**还没扣零点**的 pitch (配平采样要用) */
+static float s_pitch_corr = 0.0f;
+
+/* 配平采样状态: 控制任务连续采 CALIB_SAMPLES 个点取平均 */
+#define CALIB_SAMPLES   50          /* 50 个点 × 10ms = 0.5s */
+static int   s_calib_count  = 0;
+static float s_calib_sum    = 0.0f;
+static bool  s_calib_active = false;
+
+/* 配平零点的 NVS 存放位置 (namespace "bal", key "pz") */
+#define BAL_NVS_NS        "bal"
+#define BAL_NVS_KEY_ZERO  "pz"
+
 /* ================= 内部辅助 ================= */
+
+/**
+ * @brief 从 NVS 读配平零点
+ * @note  存成整数 (角度×10), 避免 float 存 NVS 的对齐问题
+ */
+static void balance_load_zero(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(BAL_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        s_pitch_zero = 0.0f;
+        return;
+    }
+    int16_t v = 0;
+    esp_err_t ret = nvs_get_i16(h, BAL_NVS_KEY_ZERO, &v);
+    nvs_close(h);
+
+    if (ret != ESP_OK) {
+        s_pitch_zero = 0.0f;
+        return;
+    }
+    s_pitch_zero = (float)v / 10.0f;
+    ESP_LOGI(TAG, "已载入配平零点: %.1f°", (double)s_pitch_zero);
+}
+
+/**
+ * @brief 把配平零点写进 NVS
+ */
+static void balance_save_zero(void)
+{
+    nvs_handle_t h;
+    esp_err_t ret = nvs_open(BAL_NVS_NS, NVS_READWRITE, &h);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "配平零点保存失败: NVS 打开失败 (%s)", esp_err_to_name(ret));
+        return;
+    }
+    int16_t v = (int16_t)lrintf(s_pitch_zero * 10.0f);
+    ret = nvs_set_i16(h, BAL_NVS_KEY_ZERO, v);
+    if (ret == ESP_OK) ret = nvs_commit(h);
+    nvs_close(h);
+
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "配平零点保存失败: %s", esp_err_to_name(ret));
+    }
+}
 
 /**
  * @brief 从 param 表读出所有控制参数, 配置两个 PID
@@ -140,14 +214,17 @@ static void balance_read_sensors(void)
         mpu9250_axis_t gyro = {0};
 
         if (mpu9250_get_pose(&euler, &gyro) == ESP_OK) {
-            /* 姿态修正链: 直接减配平表补偿。
+            /* 姿态修正链: 原始 pitch − 配平表补偿 − 配平零点。
+             *   - 配平表补偿: 腿角度带来的偏移 (trim_pitch)
+             *   - 配平零点:   车"摆正"时的 pitch (配平动作记录的基准角)
              * 0.13 起 ang_zero 已删除: 配平表每个腿角都采, 零偏自然包含在测出的 Pitch 里 */
             float phi = (float)servo_get_angle(SERVO_1);
             float comp = balance_trim_compensation(phi,
                                                    param_get_float(PARAM_SERVO_CENTER));
 
             s_data.pitch_raw = euler.pitch;
-            s_data.pitch     = euler.pitch - comp;
+            s_pitch_corr     = euler.pitch - comp;   /* 配平采样用 (未扣零点) */
+            s_data.pitch     = s_pitch_corr - s_pitch_zero;
             s_data.trim_comp = comp;
 
             /* 俯仰方向角速度: 取 MPU 的 X 轴 (车体俯仰的旋转轴),
@@ -306,6 +383,7 @@ static void balance_state_machine(float dt)
                  * 摔倒只需要刹车 + 清积分。 */
                 balance_reset_pid();
                 motor_brake_all();
+                s_out_ramp = BAL_RAMP_START_PCT;   /* 下次起立重新从缓启动 */
                 if (mqtt_client_is_connected()) {
                     char params[128];
                     /* 物模型里 fallen 的 pitch 步长是 1 (整数), time 单位是秒,
@@ -342,9 +420,18 @@ static void balance_state_machine(float dt)
  */
 static void balance_control_step(float dt)
 {
+    /* --- 起立软启动: 输出限幅慢慢放开到 100% ---
+     * 刚起立时车还歪着, PID 输出会直接顶格 → 电机猛冲。
+     * 这里先把限幅压在 BAL_RAMP_START_PCT, 再按 BAL_RAMP_TIME_MS 放开。 */
+    if (s_state == BAL_STATE_BALANCING && s_out_ramp < 100.0f) {
+        float rate = (100.0f - BAL_RAMP_START_PCT) / (BAL_RAMP_TIME_MS / 1000.0f);
+        s_out_ramp += rate * dt;
+        if (s_out_ramp > 100.0f) s_out_ramp = 100.0f;
+    }
+
     /* --- 外环: 速度环 → 目标倾角 ---
      * 车速要往前, 车就得先往前倾一点, 所以目标倾角 = 速度环输出
-     * 目标车速 s_target_rpm 来自远程指令 (App 的 vx), 默认 0 = 原地站住 */
+     * 目标轮速 s_target_rpm 恒为 0 (遥控走直驱通道), 即"原地保持" */
     float spd_err = s_target_rpm - s_data.speed;
     s_data.target_pitch = pid_update(&s_pid_spd, spd_err, dt);
 
@@ -366,6 +453,14 @@ static void balance_control_step(float dt)
     if (out >  out_max) out =  out_max;
     if (out < -out_max) out = -out_max;
 
+    /* --- 起立软启动: 输出限幅慢慢放开 ---
+     * 刚进入平衡状态时车多半还歪着 (甚至被人扶着), 误差大,
+     * PID 输出会直接顶到限幅 → 电机猛地冲一下, 看着就是"剧烈抖动"。
+     * 所以起立后先把输出压在 BAL_RAMP_START_PCT, 再用 BAL_RAMP_TIME_MS
+     * 慢慢放到全功率。 */
+    if (out >  s_out_ramp) out =  s_out_ramp;
+    if (out < -s_out_ramp) out = -s_out_ramp;
+
     s_data.motor_a = (int8_t)out;
     s_data.motor_b = (int8_t)out;   /* 同向: 两轮一起转, 不做差速 */
 
@@ -379,6 +474,85 @@ static void balance_control_step(float dt)
     } else {
         motor_brake_all();
     }
+}
+
+/**
+ * @brief 把"方向 + 档位"换算成两轮的 PWM 值
+ * @param dir   方向
+ * @param level 档位百分比 (正数)
+ * @param out_a [出参] 电机 A (左轮) PWM
+ * @param out_b [出参] 电机 B (右轮) PWM
+ * @note  前进/后退 = 两轮同向; 左转/右转 = 两轮反向 (原地转向)
+ */
+static void balance_move_wheels(bal_move_t dir, int8_t level,
+                                int8_t *out_a, int8_t *out_b)
+{
+    int8_t sa = 0;
+    int8_t sb = 0;
+
+    switch (dir) {
+        case BAL_MOVE_FWD:   sa =  level; sb =  level; break;
+        case BAL_MOVE_BACK:  sa = -level; sb = -level; break;
+        case BAL_MOVE_LEFT:
+            if (BAL_MOTOR_A_IS_LEFT) { sa = -level; sb =  level; }
+            else                     { sa =  level; sb = -level; }
+            break;
+        case BAL_MOVE_RIGHT:
+            if (BAL_MOTOR_A_IS_LEFT) { sa =  level; sb = -level; }
+            else                     { sa = -level; sb =  level; }
+            break;
+        default:
+            sa = 0; sb = 0;
+            break;
+    }
+
+    *out_a = sa;
+    *out_b = sb;
+}
+
+/**
+ * @brief 遥控直驱: 直接给两轮 PWM (不走平衡环)
+ * @note  行为与 UI 编码器调试页 (ui_encoder.c) 一致:
+ *        - 前进/后退: 两轮同向
+ *        - 左转/右转: 两轮反向 (原地转向)
+ *        档位取自 motor_spd_levels[], 与 ui_encoder 的调速档位同源。
+ */
+static void balance_apply_direct_move(void)
+{
+    int8_t sa = 0;
+    int8_t sb = 0;
+
+    balance_move_wheels(s_move_dir, s_move_level, &sa, &sb);
+
+    s_data.motor_a = sa;
+    s_data.motor_b = sb;
+    motor_set_speed_both(sa, sb);
+}
+
+/**
+ * @brief 配平采样: 控制任务里连续采 CALIB_SAMPLES 个 pitch 取平均
+ * @note  采样的是**未扣零点**的 pitch (s_pitch_corr),
+ *        否则第二次配平会把零点又减一遍, 越配越偏。
+ */
+static void balance_calib_step(void)
+{
+    if (!s_calib_active) return;
+
+    s_calib_sum += s_pitch_corr;
+    s_calib_count++;
+
+    if (s_calib_count < CALIB_SAMPLES) return;
+
+    /* 采样完成: 取平均作为新的配平零点 */
+    float avg = s_calib_sum / (float)s_calib_count;
+    s_pitch_zero = avg;
+    s_calib_active = false;
+
+    /* 立刻生效 (内存里的零点), 再落盘 */
+    balance_save_zero();
+
+    ESP_LOGI(TAG, "配平完成: 记录零点 pitch=%.2f° (采样 %d 个点), 已落盘",
+             (double)avg, s_calib_count);
 }
 
 /**
@@ -422,20 +596,31 @@ static void balance_task(void *arg)
         /* 1) 采样 (只写 s_data 的输入段, 不需要加锁: 只有本任务写输入) */
         balance_read_sensors();
 
-        /* 2) 状态机 (摔倒检测) */
-        balance_state_machine(dt);
+        /* 1.5) 配平采样 (只记录 pitch, 不碰电机) */
+        balance_calib_step();
 
-        /* 3) 运算 + 输出 */
-        if (s_enabled) {
-            balance_control_step(dt);
-        } else {
-            /* 未启用: 只刹车, PID 不动 (enable 时会 reset) */
+        /* 2) 遥控直驱优先: 直接驱动电机, 暂停平衡环与状态机 */
+        if (s_move_dir != BAL_MOVE_STOP) {
+            balance_apply_direct_move();
             s_data.target_pitch = 0.0f;
             s_data.bal_out      = 0.0f;
             s_data.spd_out      = 0.0f;
-            s_data.motor_a      = 0;
-            s_data.motor_b      = 0;
-            motor_brake_all();
+        } else {
+            /* 3) 状态机 (摔倒检测) */
+            balance_state_machine(dt);
+
+            /* 4) 运算 + 输出 */
+            if (s_enabled) {
+                balance_control_step(dt);
+            } else {
+                /* 未启用: 只刹车, PID 不动 (enable 时会 reset) */
+                s_data.target_pitch = 0.0f;
+                s_data.bal_out      = 0.0f;
+                s_data.spd_out      = 0.0f;
+                s_data.motor_a      = 0;
+                s_data.motor_b      = 0;
+                motor_brake_all();
+            }
         }
 
         /* 4) 一次性发布整帧快照, 避免外部读到撕裂的数据 */
@@ -459,10 +644,16 @@ esp_err_t balance_init(void)
     trim_erase_nvs();
     trim_load();
 
+    /* 配平零点 (跟配平表分开存, 不受 trim_erase_nvs() 影响) */
+    balance_load_zero();
+
     s_state      = BAL_STATE_IDLE;
     s_enabled    = false;
     s_arm_hold_ms = 0.0f;
     s_mpu_ready  = mpu9250_is_ready();
+    s_move_dir   = BAL_MOVE_STOP;
+    s_move_level = 0;
+    s_out_ramp   = BAL_RAMP_START_PCT;
 
     if (!s_mpu_ready) {
         ESP_LOGW(TAG, "MPU9250 不可用, 平衡控制无法工作 (请先接好 IMU)");
@@ -517,6 +708,7 @@ esp_err_t balance_set_enable(bool on)
         balance_arm_reset();          /* 门控从零开始计时 */
         s_state   = BAL_STATE_STANDBY;
         s_enabled = true;
+        s_out_ramp = BAL_RAMP_START_PCT;   /* 起立软启动: 输出限幅从缓开始 */
         ESP_LOGI(TAG, "平衡控制已启动, 等待连续稳定 %.0fms 后输出 "
                       "(需 |pitch|<%.0f° 且 |角速度|<%.0f°/s)",
                  (double)param_get_float(PARAM_ARM_TIME),
@@ -526,6 +718,7 @@ esp_err_t balance_set_enable(bool on)
         s_enabled = false;
         s_state   = BAL_STATE_IDLE;
         balance_arm_reset();
+        balance_clear_move();        /* 直驱也要停 */
         motor_brake_all();
         servo_set_both((uint8_t)param_get_float(PARAM_SERVO_CENTER));
         ESP_LOGI(TAG, "平衡控制已停止, 电机刹车, 舵机回中");
@@ -544,6 +737,7 @@ esp_err_t balance_emergency_stop(void)
     s_state   = BAL_STATE_IDLE;
     balance_arm_reset();
     balance_reset_pid();       /* 清积分, 避免下次启动猛冲 */
+    balance_clear_move();      /* 直驱指令也要清掉 */
     motor_brake_all();
     return ESP_OK;
 }
@@ -575,18 +769,76 @@ esp_err_t balance_reload_params(void)
     return ESP_OK;
 }
 
-esp_err_t balance_set_speed_cmd(float cmd)
+esp_err_t balance_set_move(bal_move_t dir, int8_t level_pct)
 {
-    if (isnan(cmd) || isinf(cmd)) return ESP_ERR_INVALID_ARG;
-    if (cmd >  1.0f) cmd =  1.0f;
-    if (cmd < -1.0f) cmd = -1.0f;
-    s_target_rpm = cmd * BAL_SPEED_CMD_MAX_RPM;
-    ESP_LOGI(TAG, "远程速度指令: cmd=%.2f → 目标轮速 %.1f rpm", (double)cmd, (double)s_target_rpm);
+    if (dir == BAL_MOVE_STOP) {
+        balance_clear_move();
+        return ESP_OK;
+    }
+
+    /* 档位吸附到 motor_spd_levels[] (20/40/60/80), 与 UI 编码器页同源 */
+    int8_t lvl = motor_spd_level_snap(level_pct);
+    if (lvl <= 0) {
+        balance_clear_move();
+        return ESP_OK;
+    }
+
+    /* 刚进入直驱时清一次 PID 积分: 直驱期间平衡环不跑,
+     * 退出时若还留着老积分, 平衡环一恢复就会猛冲一下 */
+    if (s_move_dir == BAL_MOVE_STOP) {
+        balance_reset_pid();
+    }
+
+    s_move_dir   = dir;
+    s_move_level = lvl;
+
+    int8_t sa = 0;
+    int8_t sb = 0;
+    balance_move_wheels(dir, lvl, &sa, &sb);
+
+    ESP_LOGI(TAG, "遥控直驱: 方向=%d, 档位=%d%% (电机A%+d, 电机B%+d)",
+             (int)dir, lvl, sa, sb);
     return ESP_OK;
 }
 
-float balance_get_speed_cmd(void)
+void balance_clear_move(void)
 {
-    if (BAL_SPEED_CMD_MAX_RPM <= 0.0f) return 0.0f;
-    return s_target_rpm / BAL_SPEED_CMD_MAX_RPM;
+    if (s_move_dir == BAL_MOVE_STOP) return;
+
+    s_move_dir   = BAL_MOVE_STOP;
+    s_move_level = 0;
+    balance_reset_pid();
+
+    /* 平衡没开就直接刹车; 开了则交给平衡环接管 */
+    if (!s_enabled) motor_brake_all();
+
+    ESP_LOGI(TAG, "遥控直驱结束, 电机交回平衡环");
+}
+
+void balance_get_move(bal_move_t *out_dir, int8_t *out_level)
+{
+    if (out_dir)   *out_dir   = s_move_dir;
+    if (out_level) *out_level = s_move_level;
+}
+
+esp_err_t balance_calibrate(void)
+{
+    if (!s_mpu_ready) {
+        ESP_LOGE(TAG, "配平失败: MPU9250 不可用");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* 只启动采样, 由控制任务连续采 0.5s 取平均。
+     * 这里**不碰电机、不动平衡状态** —— 配平只是记录 pitch。 */
+    s_calib_count  = 0;
+    s_calib_sum    = 0.0f;
+    s_calib_active = true;
+
+    ESP_LOGI(TAG, "配平开始: 采样 %d 个 pitch 点取平均 (不驱动电机)", CALIB_SAMPLES);
+    return ESP_OK;
+}
+
+float balance_get_pitch_zero(void)
+{
+    return s_pitch_zero;
 }

@@ -17,6 +17,7 @@
 #include "led_strip_encoder.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 
 static const char *TAG = "LED";
@@ -110,11 +111,32 @@ static esp_err_t flush_led(led_id_t id)
         return ret;
     }
 
-    ESP_LOGD(TAG, "LED[%d] RGB=(%d,%d,%d) 亮度=%d -> GRB=(%d,%d,%d)",
+    ESP_LOGI(TAG, "LED[%d] RGB=(%d,%d,%d) 亮度=%d -> GRB=(%d,%d,%d)",
              id, current_color[id].r, current_color[id].g, current_color[id].b,
              current_brightness[id], led_data[0], led_data[1], led_data[2]);
 
     return ESP_OK;
+}
+
+/**
+ * @brief 开机自检: 红 → 绿 → 蓝 → 灭, 每档 300ms
+ * @note  用来肉眼确认 "SK6812 到底有没有接到 GPIO9" —— 灯不亮时,
+ *        先看这三个颜色有没有依次出现, 再去查 App / 云端。
+ */
+void led_selftest(void)
+{
+    const struct { led_color_t c; const char *name; } seq[] = {
+        { LED_COLOR_RED,   "红" },
+        { LED_COLOR_GREEN, "绿" },
+        { LED_COLOR_BLUE,  "蓝" },
+    };
+
+    for (int i = 0; i < 3; i++) {
+        led_set_color(LED_1, seq[i].c);
+        vTaskDelay(pdMS_TO_TICKS(300));
+    }
+    led_set_color(LED_1, LED_COLOR_OFF);
+    ESP_LOGI(TAG, "开机自检结束 (红→绿→蓝)");
 }
 
 /* ========== 公开函数 ========== */

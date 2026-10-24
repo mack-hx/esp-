@@ -664,10 +664,10 @@ static void publish_task(void *arg)
                 }
 
                 /* --- 2. float 帧 (step 0.01): gz 角速度 + speed 移动指令 --- *
-                 * speed 是"移动指令通道" (标幺 -1~1), 设备上报的是当前
-                 * 目标指令值, 跟云端下发的期望值语义一致。 */
+                 * speed 是"移动指令通道": 设备上报的是当前收到的指令值
+                 * (0 / ±0.2~0.8 / ±1.2~1.8), 跟云端期望值语义一致。 */
                 double gz    = clamp_step(d.gyro, -2000.0, 2000.0, 0.01);
-                double speed = clamp_step((double)balance_get_speed_cmd(), -1.0, 1.0, 0.01);
+                double speed = clamp_step((double)s_target_vx, -10.0, 10.0, 0.01);
                 int ng = build_property_post_f(gzbody, sizeof(gzbody), ts, 2, 2,
                     "gz",    gz,
                     "speed", speed);
@@ -761,13 +761,40 @@ static void desired_pull_task(void *arg)
 /* ========== 收到下行消息处理 ========== */
 
 /**
- * @brief 应用远程速度指令
- * @param vx 前后速度目标 (标幺)
+ * @brief 应用远程移动指令 (物模型属性 `speed`)
+ * @param v 指令值 (编码见下)
+ *
+ * @note  指令编码 (平台属性 speed, 范围 -10~10):
+ *
+ *        0                        → 停止
+ *        ±0.2 / ±0.4 / ±0.6 / ±0.8 → 前进(+) / 后退(-), 档位 20/40/60/80 (%)
+ *        ±1.2 / ±1.4 / ±1.6 / ±1.8 → 左转(+) / 右转(-), 档位 20/40/60/80 (%)
+ *
+ *        档位与 UI 编码器调试页 (ui_encoder.c) 的调速档位同源,
+ *        都取自 motor_spd_levels[]。
+ *
+ * @note  直驱期间平衡环不输出 (电机直接由本指令驱动), 跟编码器调试页一样是开环动作。
  */
-static void apply_speed_cmd(float vx)
+static void apply_move_cmd(float v)
 {
-    s_target_vx = vx;
-    balance_set_speed_cmd(vx);
+    float a = fabsf(v);
+    bal_move_t dir = BAL_MOVE_STOP;
+    int8_t level = 0;
+
+    if (a <= 1.0f) {
+        if (a >= 0.05f) {
+            dir   = (v > 0.0f) ? BAL_MOVE_FWD : BAL_MOVE_BACK;
+            level = (int8_t)lrintf(a * 100.0f);
+        }
+    } else if (a <= 2.0f) {
+        dir   = (v > 0.0f) ? BAL_MOVE_LEFT : BAL_MOVE_RIGHT;
+        level = (int8_t)lrintf((a - 1.0f) * 100.0f);
+    }
+
+    /* 记录原始指令值, 设备上报 `speed` 时用它 (后台能看出当前指令) */
+    s_target_vx = v;
+
+    balance_set_move(dir, level);
 }
 
 /**
@@ -858,8 +885,8 @@ static void handle_property_set(const char *json)
     ESP_LOGI(TAG, "收到属性设置: %s", json);
 
     /* --- 移动指令 ---
-     * 物模型里没有 vx 属性, 用 speed 当移动指令通道 (标幺 -1~1)。
-     * vx 也一并支持, 万一以后物模型里补上了 vx, 不用改设备端。 */
+     * 物模型里没有 vx 属性, 用 speed 当移动指令通道。
+     * 编码见 apply_move_cmd() 的注释。 */
     float vx = 0.0f;
     int has_vx = json_find_value(json, "vx", &vx);
     if (!has_vx) {
@@ -870,7 +897,7 @@ static void handle_property_set(const char *json)
         }
     }
     if (has_vx) {
-        apply_speed_cmd(vx);
+        apply_move_cmd(vx);
     } else {
         ESP_LOGI(TAG, "属性设置: 没有移动指令 (vx/speed), 只处理灯/舵机/电磁铁");
     }
@@ -901,13 +928,13 @@ static void handle_desired_reply(const char *data, int data_len)
             ESP_LOGW(TAG, "期望值应答异常: %.*s", data_len, data);
         }
     }
-    /* 移动指令在物模型里叫 speed (标幺 -1~1); vx 是老名字, 兼容一下 */
+    /* 移动指令在物模型里叫 speed; vx 是老名字, 兼容一下 */
     float vx = 0.0f;
     int has = json_find_value(json, "speed", &vx);
     if (!has) has = json_find_value(json, "vx", &vx);
     if (has) {
         ESP_LOGI(TAG, "期望值应答: 移动指令=%.2f", (double)vx);
-        apply_speed_cmd(vx);
+        apply_move_cmd(vx);
     }
     free(json);
 }
@@ -973,16 +1000,23 @@ static void handle_service_invoke(const char *topic, int topic_len, const char *
 
     /* --- 3. 执行 --- */
     if (strcmp(name, "stop") == 0) {
+        /* 急停: 清直驱指令 + 停平衡 + 刹车 */
+        balance_clear_move();
         balance_emergency_stop();
-        apply_speed_cmd(0.0f);
+        apply_move_cmd(0.0f);
         service_reply(name, req_id, "{\"ok\":true}");
     } else if (strcmp(name, "stand") == 0) {
+        /* 起立: 启动平衡控制。
+         * 起立瞬间电机不会猛冲 —— balance 内部有软启动 (输出限幅从
+         * BAL_RAMP_START_PCT 慢慢放开到 100%), 车还歪着也不会一上来就顶格。 */
+        balance_clear_move();
         balance_set_enable(true);
         service_reply(name, req_id, "{\"ok\":true}");
     } else if (strcmp(name, "calibrate") == 0) {
-        balance_set_enable(false);
-        vTaskDelay(pdMS_TO_TICKS(50));
-        balance_set_enable(true);
+        /* 配平: **只记录当前 pitch 作为平衡零点, 不驱动任何电机**。
+         * 之前的实现是"停平衡 → 再开平衡", 电机会在重新起立时猛冲,
+         * 看起来像配平引起剧烈抖动 —— 其实配平和电机没关系。 */
+        balance_calibrate();
         service_reply(name, req_id, "{\"ok\":true}");
     } else if (strcmp(name, "param_get") == 0) {
         /* 物模型 output: values (string), 内容是整张参数表的 JSON (扁平键值对) */

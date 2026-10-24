@@ -109,6 +109,8 @@ void app_main(void)
 
     /* 3. 初始化 SK6812 LED (RMT 直驱, 支持真实调色调光) */
     ESP_ERROR_CHECK(led_init());
+    /* 3.1 开机自检: 红→绿→蓝, 用来肉眼确认 LED 到底通没通 */
+    led_selftest();
 
     /* 4. 初始化舵机 (归位到 SERVO_DEFAULT_ANGLE, 默认舵机2 镜像) */
     ESP_ERROR_CHECK(servo_init());

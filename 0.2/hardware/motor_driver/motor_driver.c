@@ -28,6 +28,36 @@ static motor_dir_t current_dir[MOTOR_B + 1] = {
     [MOTOR_B] = MOTOR_DIR_BRAKE,
 };
 
+/* 直驱档位表: 20% / 40% / 60% / 80%
+ * 整个工程只有这一张档位表 —— UI 编码器页的调速档位、App 的速度档位、
+ * 遥控直驱用的 PWM 都取自这里, 保证三处永远一致。 */
+const int8_t motor_spd_levels[MOTOR_SPD_LEVEL_COUNT] = { 20, 40, 60, 80 };
+
+/**
+ * @brief 把任意百分比吸附到最近的合法档位 (20/40/60/80)
+ * @param pct 目标百分比 (0~100)
+ * @return 合法档位百分比; 0 (停止) 原样返回
+ */
+int8_t motor_spd_level_snap(int8_t pct)
+{
+    if (pct <= 0) return 0;
+    if (pct > 100) pct = 100;
+
+    int8_t best = motor_spd_levels[0];
+    int16_t best_diff = (int16_t)(pct - best);
+    if (best_diff < 0) best_diff = -best_diff;
+
+    for (int i = 1; i < MOTOR_SPD_LEVEL_COUNT; i++) {
+        int16_t diff = (int16_t)(pct - motor_spd_levels[i]);
+        if (diff < 0) diff = -diff;
+        if (diff < best_diff) {
+            best_diff = diff;
+            best = motor_spd_levels[i];
+        }
+    }
+    return best;
+}
+
 /**
  * @brief 将速度 (-100~100) 转换为 LEDC 占空比
  */

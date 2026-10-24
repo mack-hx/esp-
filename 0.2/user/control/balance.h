@@ -23,6 +23,17 @@
  *        GYRO_PITCH_SIGN: 陀螺俯仰角速度符号, 由 MPU 焊接朝向决定
  *                         0.11 第八阶段实测 +1 正确
  *
+ * @note  三条"不经过速度环"的通道 (0.2 版, 2026-10-24):
+ *        1) 遥控直驱 (balance_set_move): App 方向键直接给 PWM, 跟 UI
+ *           编码器调试页一样, 车没起立也能让轮子转; 前进/后退两轮同向,
+ *           左/右转两轮反向 (原地转向)。直驱期间暂停平衡环与状态机。
+ *        2) 起立软启动: 进入平衡状态后输出限幅从 15% 渐开到 100% (1500ms),
+ *           避免车还歪着时 PID 输出顶满导致电机猛冲抖动。
+ *        3) 配平 (balance_calibrate): 只采 50 个 pitch 点取平均当"配平零点"
+ *           (存 NVS `bal`/`pz`), **不驱动电机**; 姿态修正链为
+ *           原始 pitch − 配平表补偿 − 配平零点。
+ *        速度环目标恒为 0 (原地站立), 要走位一律走直驱通道。
+ *
  * @author ESP32 平衡轮腿机器人
  * @date 2026-10-07
  */
@@ -40,10 +51,35 @@
  * 本版用单一周期 10ms 跑完整串级, 简单可靠。 */
 #define CONTROL_PERIOD_MS      10
 
-/* ========== 远程速度指令 (App 通过 OneNet 下发 vx) ==========
- * App 发的 vx 是"标幺" (-1~1), 这里换算成轮速 (rpm) 送给速度环。
- * 60 rpm ≈ 0.2 m/s (65mm 轮), 保守起步值, 想要更快改这里。 */
-#define BAL_SPEED_CMD_MAX_RPM   60.0f
+/* ========== 速度环 (外环) ==========
+ * 速度环把"轮速误差"换算成"目标倾角": 车要往前走, 得先往前倾一点。
+ * 遥控指令走的是**直驱**通道 (balance_set_move), 不经过速度环,
+ * 所以这里的目标轮速恒为 0 (原地站立, 不主动走)。 */
+
+/* ========== 遥控直驱 (App 方向键) ==========
+ * App 的方向键不经过速度环, 而是**直接给电机 PWM** (跟 UI 编码器调试页
+ * ui_encoder.c 的行为完全一样), 这样在车没起立/没平衡时也能看到轮子转。
+ *
+ * 指令编码 (物模型属性 `speed`, 平台范围 -10~10):
+ *     0                      → 停止
+ *     ±0.2 / ±0.4 / ±0.6 / ±0.8 → 前进(+)/后退(-), 档位 20/40/60/80 (%)
+ *     ±1.2 / ±1.4 / ±1.6 / ±1.8 → 左转(+)/右转(-), 档位 20/40/60/80 (%)
+ * 档位值取自 motor_spd_levels[], 与 ui_encoder.c 的调速档位同源。
+ */
+#define BAL_MOVE_TURN_BASE      1.0f   /* 转向指令的基址 (>1 表示转向) */
+
+/* ========== 转向时哪个电机是左轮 ==========
+ * 1 = 电机 A 是左轮 (与"motor_l 上报 motor_a"的约定一致)
+ * 若实际按左转却向右转, 把这里改成 0 即可, 不用改别的代码。 */
+#define BAL_MOTOR_A_IS_LEFT     1
+
+/* ========== 起立软启动 (防抖) ==========
+ * 起立瞬间电机不能一上来就全力输出: 车多半还歪着/被人扶着,
+ * 误差一大 PID 输出直接顶到限幅, 电机就会"猛冲"一下, 看着像剧烈抖动。
+ * 所以进入平衡状态后, 输出限幅从 BAL_RAMP_START_PCT 慢慢放开到 100%。 */
+#define BAL_RAMP_START_PCT      15.0f  /* 起立瞬间允许的最大输出 (%) */
+#define BAL_RAMP_TIME_MS        1500.0f/* 限幅从起始值放开到 100% 所需时间 */
+
 
 /* ========== 方向常量 (0.13 起不在网页上可调) ==========
  * 实测 2026-10-05: 启动后车往倒的反方向冲 → 平衡输出要反相 → -1
@@ -60,6 +96,16 @@ typedef enum {
     BAL_STATE_BALANCING,    /* 平衡中, 电机输出跟随控制器 */
     BAL_STATE_FALLEN,       /* 检测到摔倒, 电机已停, 等重新扶正 */
 } bal_state_t;
+
+/* ========== 遥控直驱方向 ========== */
+typedef enum {
+    BAL_MOVE_STOP  = 0,     /* 停止 */
+    BAL_MOVE_FWD,           /* 前进 (两轮同向) */
+    BAL_MOVE_BACK,          /* 后退 (两轮同向反向) */
+    BAL_MOVE_LEFT,          /* 左转 (左轮反转 + 右轮正转, 原地转向) */
+    BAL_MOVE_RIGHT,         /* 右转 (左轮正转 + 右轮反转, 原地转向) */
+} bal_move_t;
+
 
 /* ========== 一个控制周期的中间量快照 (供 UI / 网页显示) ========== */
 
@@ -144,18 +190,42 @@ float balance_get_arm_ms(void);
 esp_err_t balance_reload_params(void);
 
 /**
- * @brief 设置速度环目标速度 (远程遥控用)
- * @param cmd 标幺速度指令, -1.0 (后退) ~ +1.0 (前进), 0 = 原地保持
- * @note  App 通过 OneNet 的 vx 属性下发这个值。
- *        内部换算成轮速 (rpm) 送给速度环, 超出 ±1 的值会被 clamp。
+ * @brief 设置遥控直驱指令 (App 方向键)
+ * @param dir  方向 (前进/后退/左转/右转)
+ * @param level_pct 档位百分比 (会被吸附到 20/40/60/80 之一)
+ * @note  直驱期间**暂停平衡环输出** (电机直接由本指令驱动),
+ *        跟 UI 编码器调试页一样是开环动作, 车会跑, 需要扶着。
  * @return ESP_OK 成功
  */
-esp_err_t balance_set_speed_cmd(float cmd);
+esp_err_t balance_set_move(bal_move_t dir, int8_t level_pct);
 
 /**
- * @brief 读取当前速度环目标速度 (标幺)
- * @return -1.0 ~ +1.0
+ * @brief 清除遥控直驱指令 (电机交回平衡环; 若平衡没开则刹车)
+ * @note  清除时会清 PID 积分, 免得直驱期间攒的积分让平衡环一恢复就猛冲
  */
-float balance_get_speed_cmd(void);
+void balance_clear_move(void);
+
+/**
+ * @brief 读取当前遥控直驱指令
+ * @param out_dir    [出参] 当前方向 (可为 NULL)
+ * @param out_level  [出参] 当前档位百分比 (可为 NULL)
+ */
+void balance_get_move(bal_move_t *out_dir, int8_t *out_level);
+
+/**
+ * @brief 配平: 记录当前姿态角作为平衡零点
+ * @note  **不动电机**: 只在控制任务里连续采样约 0.5s 的 pitch 取平均,
+ *        存成"配平零点", 之后平衡环以这个角度为 0。
+ *        之前这个动作是"停平衡 → 再开平衡", 电机会在重新起立时猛冲,
+ *        看着像剧烈抖动, 其实配平和电机没关系。
+ * @return ESP_OK 成功; ESP_ERR_INVALID_STATE MPU 不可用
+ */
+esp_err_t balance_calibrate(void);
+
+/**
+ * @brief 读取已记录的配平零点 (°)
+ * @return 零点角度; 没标定过返回 0
+ */
+float balance_get_pitch_zero(void);
 
 #endif // BALANCE_H

@@ -84,6 +84,13 @@ esp_err_t led_init(void);
 esp_err_t led_deinit(void);
 
 /**
+ * @brief 开机自检: 红 → 绿 → 蓝 → 灭, 每档 300ms
+ * @note  用来肉眼确认 "SK6812 到底有没有接到 GPIO9" —— 灯不亮时,
+ *        先看这三个颜色有没有依次出现, 再去查 App / 云端。
+ */
+void led_selftest(void);
+
+/**
  * @brief 设置 LED 颜色 (任意 RGB, 真实驱动)
  * @param id LED ID
  * @param color 颜色 (任意 RGB)

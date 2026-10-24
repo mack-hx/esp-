@@ -76,8 +76,8 @@
         </view>
       </view>
       <view class="row">
-        <text class="label">目标速度</text>
-        <text class="value">{{ fmt(motor.speed * 100, 0) }}%</text>
+        <text class="label">遥控指令</text>
+        <text class="value">{{ moveText }}</text>
       </view>
       <view class="row">
         <text class="label">编码器</text>
@@ -124,6 +124,8 @@ export default {
       ctx: null,
       canvasWidth: 0,
       canvasHeight: 0,
+      _cssW: 0,      // canvas 的 CSS 像素宽 (绘图坐标用)
+      _cssH: 0,      // canvas 的 CSS 像素高 (绘图坐标用)
       isDrawing: false,
       _pollTick: null,
       _animationId: null
@@ -156,6 +158,21 @@ export default {
         const w = Math.max(0, Math.min(100, Math.abs(v)))
         return `width: ${w}%; background: ${v < 0 ? '#d9534f' : '#1aad19'};`
       }
+    },
+    /**
+     * @brief 遥控指令文字
+     * @note  `speed` 属性是打包指令 (见 app/utils/control.js 的编码说明):
+     *        0=停止, ±0.2~0.8=前进/后退, ±1.2~1.8=左转/右转
+     */
+    moveText() {
+      const v = Number(this.motor.speed) || 0
+      const a = Math.abs(v)
+      if (a < 0.05) return '停止'
+      const level = Math.round((a > 1.0 ? a - 1.0 : a) * 100)
+      let name = ''
+      if (a <= 1.0) name = v > 0 ? '前进' : '后退'
+      else name = v > 0 ? '左转' : '右转'
+      return `${name} ${level}%`
     }
   },
   onShow() {
@@ -184,18 +201,31 @@ export default {
   methods: {
     _initCanvas() {
       // #ifdef H5
-      const canvas = document.querySelector('canvas[canvas-id="pitchCanvas"]')
+      /* ⚠ uni-app 的 H5 端会把 <canvas canvas-id="xxx"> 渲染成
+       *   <canvas class="uni-canvas-canvas">, **不会保留 canvas-id 属性**,
+       *   所以 document.querySelector('canvas[canvas-id="..."]') 永远取不到,
+       *   表现就是曲线框空白。这里按 class 找, 兜底再取第一个 canvas。 */
+      const canvas = document.querySelector('canvas.uni-canvas-canvas') ||
+                     document.querySelector('canvas')
       if (canvas) {
         this.ctx = canvas.getContext('2d')
-        this.canvasWidth = canvas.width = canvas.offsetWidth * 2
-        this.canvasHeight = canvas.height = canvas.offsetHeight * 2
+        /* canvas.width 是设备像素 (2x), ctx.scale(2,2) 后绘图用 CSS 像素,
+         * 所以 canvasWidth/Height 存的是 CSS 尺寸 (绘制坐标不用除以 2) */
+        const w = canvas.offsetWidth || 300
+        const h = canvas.offsetHeight || 150
+        this.canvasWidth = canvas.width = w * 2
+        this.canvasHeight = canvas.height = h * 2
         this.ctx.scale(2, 2)
+        this._cssW = w
+        this._cssH = h
       }
       // #endif
     },
     
     _startDrawLoop() {
       const draw = () => {
+        /* canvas 可能在页面切换后才渲染出来, 这里兜底再取一次 */
+        if (!this.ctx) this._initCanvas()
         if (this.pitchHistory.length > 1) {
           this._drawChart()
         }
@@ -209,8 +239,10 @@ export default {
       if (!this.ctx) return
       
       const ctx = this.ctx
-      const w = this.canvasWidth / 2
-      const h = this.canvasHeight / 2
+      /* ctx.scale(2,2) 之后绘图坐标用 CSS 像素, 直接用 _cssW/_cssH,
+       * 不要再除以 2 (否则图形只画在左上角 1/4 区域) */
+      const w = this._cssW || this.canvasWidth / 2 || 300
+      const h = this._cssH || this.canvasHeight / 2 || 150
       const padding = 10
       const chartW = w - padding * 2
       const chartH = h - padding * 2
