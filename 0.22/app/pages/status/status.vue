@@ -6,8 +6,7 @@
         <text class="dot"></text>
         <text>{{ connText }}</text>
       </view>
-      <text class="last-seen" v-if="lastSeen !== null">心跳: {{ lastSeen }}s</text>
-      <text class="last-seen" v-else>无数据</text>
+      <text class="last-seen">心跳: {{ heartbeatText }}</text>
     </view>
 
     <!-- Pitch 折线图 -->
@@ -24,7 +23,7 @@
         <text class="chart-info-item">数据延迟: {{ latencyText }}</text>
       </view>
       <view class="chart-info">
-        <text class="chart-info-item">请求耗时: {{ _rttMs }}ms</text>
+        <text class="chart-info-item">请求耗时: {{ rttMs }}ms</text>
         <text class="chart-info-item">时钟偏差: {{ skewText }}</text>
       </view>
     </view>
@@ -114,7 +113,7 @@ import { queryDeviceProperty, queryDevicePropertyHistory, getServerNowMs, getSer
 import { getConfig } from '../../common/config.js'
 
 const MAX_POINTS = 120  // 最多显示120个点
-const PITCH_RANGE = 30  // 显示范围 ±30°
+const PITCH_RANGE = 60  // 显示范围 ±60° (车倾倒时角度能到 60 度以上)
 /* 俯仰角高速通道参数:
  *   - 设备端 50ms 上报一次 (20Hz)
  *   - App 每 120ms 拉一次历史, 一次能拿回 10 个点 → 曲线点密度 ~80 点/秒
@@ -192,15 +191,16 @@ export default {
       pose: { pitch: 0, roll: 0, yaw: 0, gz: 0 },
       motor: { left: 0, right: 0, speed: 0, enc_l: 0, enc_r: 0 },
       deviceState: '--',
-      lastSeen: null,
-      _lastDataAt: 0,
+      _lastDataAt: 0,      // 最后一次收到平台数据的时间 (本地时钟, ms)
+      _tick: 0,            // 每秒自增, 用来让"心跳"读数定时刷新
       msgCount: 0,
       // 折线图数据 (高速通道: 每点带毫秒时间戳)
       pitchHistory: [],
       pitchSeries: [],
       pitchLatency: null,
       _lastPointT: 0,   // 最新采样点的平台时间戳 (ms), 用来对齐查询窗口
-      _rttMs: 0,        // 最近一次历史接口请求耗时 (ms), 排查网络慢用
+      rttMs: 0,         // 最近一次历史接口请求耗时 (ms), 排查网络慢用
+      skewMs: 0,        // 平台时间 − 手机时间 (ms), 正数 = 手机时钟慢了
       painter: null,    // 绘图适配器 (见 createPainter), null = 还没初始化好
       _cssW: 0,        // canvas 的 CSS 像素宽 (绘图坐标用)
       _cssH: 0,        // canvas 的 CSS 像素高 (绘图坐标用)
@@ -208,6 +208,7 @@ export default {
       _pollTick: null,
       _pitchTick: null,
       _redrawTick: null,
+      _beatTick: null,     // 每秒心跳计时器 (让"心跳"读数定时刷新)
       _canvasPending: false, // App 端取画布尺寸的查询是否在进行中
       _lastDrawKey: ''       // 上次绘制时的数据指纹, 没变就不重复画
     }
@@ -256,6 +257,17 @@ export default {
       return `${name} ${level}%`
     },
     /**
+     * @brief 心跳文字: 距离上一次收到平台数据过了多久
+     * @note  依赖 _tick (每秒自增) 才会定时刷新;
+     *        1 秒内显示毫秒, 超过 1 秒显示秒 —— 数据断了会看到数字往上跳
+     */
+    heartbeatText() {
+      if (!this._lastDataAt) return '无数据'
+      const age = Date.now() - this._lastDataAt
+      if (age < 1000) return age + 'ms'
+      return Math.floor(age / 1000) + 's'
+    },
+    /**
      * @brief 数据延迟文字
      * @note  最新采样点的平台时间戳与平台当前时间的差值, 用来判断"曲线跟不跟手"
      */
@@ -266,12 +278,13 @@ export default {
     /**
      * @brief 平台时钟与手机本地时钟的偏差文字
      * @note  正数 = 平台比手机快 (手机本地时钟慢了), 这正是"车动了要好几秒
-     *        才看到变化"的元凶 —— 查询窗口必须以平台时间为准
+     *        才看到变化"的元凶 —— 查询窗口必须以平台时间为准。
+     *        ⚠ 偏差值必须放在 data 里 (skewMs), 直接在 computed 里调
+     *        getServerSkewMs() 的话没有响应式依赖, 计算结果会被缓存住不更新
      */
     skewText() {
-      const s = getServerSkewMs()
-      if (!s) return '--'
-      return (s > 0 ? '+' : '') + (s / 1000).toFixed(1) + 's'
+      if (!this.skewMs) return '--'
+      return (this.skewMs > 0 ? '+' : '') + (this.skewMs / 1000).toFixed(1) + 's'
     }
   },
   onShow() {
@@ -288,7 +301,10 @@ export default {
     
     // 启动绘制循环
     this._startDrawLoop()
-    
+
+    // 每秒心跳计时器: 让"心跳"读数每秒刷新一次 (数据断了能看到秒数往上跳)
+    this._beatTick = setInterval(() => { this._tick++ }, 1000)
+
     // 初始化 Canvas
     this.$nextTick(() => this._initCanvas())
   },
@@ -297,6 +313,7 @@ export default {
     if (this._pollTick) clearInterval(this._pollTick)
     if (this._pitchTick) clearInterval(this._pitchTick)
     if (this._redrawTick) clearInterval(this._redrawTick)
+    if (this._beatTick) clearInterval(this._beatTick)
     /* 画布上下文在页面隐藏后可能失效, 下次 onShow 重新建 */
     this.painter = null
     this._canvasPending = false
@@ -305,6 +322,7 @@ export default {
     if (this._pollTick) clearInterval(this._pollTick)
     if (this._pitchTick) clearInterval(this._pitchTick)
     if (this._redrawTick) clearInterval(this._redrawTick)
+    if (this._beatTick) clearInterval(this._beatTick)
     this.painter = null
     this._canvasPending = false
   },
@@ -515,7 +533,10 @@ export default {
       const startTime = anchor - PITCH_WINDOW_MS - PITCH_MARGIN_MS
       try {
         const res = await queryDevicePropertyHistory('pitch', startTime, endTime)
-        this._rttMs = Date.now() - t0
+        this.rttMs = Date.now() - t0
+        /* 时钟偏差放到 data 里 (而不是在 computed 里直接调),
+         * 这样它才是响应式的, 读数才会随每次请求更新 */
+        this.skewMs = getServerSkewMs()
         if (!res || res.code !== 0 || !res.data || !Array.isArray(res.data.list)) return
         const list = res.data.list
         if (!list.length) return
@@ -556,12 +577,10 @@ export default {
     
     async _poll() {
       if (oneApi.getState().state !== 'ready') return
-      /* 刷新"心跳"秒数: 距离上一次收到平台数据过了多久 */
-      if (this._lastDataAt) {
-        this.lastSeen = Math.floor((Date.now() - this._lastDataAt) / 1000)
-      }
       try {
         const res = await queryDeviceProperty()
+        /* 顺带更新时钟偏差 (这个接口也会拿到平台的 Date 响应头) */
+        this.skewMs = getServerSkewMs()
         /* 平台返回: { code:0, data:[{identifier, value, time, ...}], msg:'succ' } */
         if (res && res.code === 0 && Array.isArray(res.data)) {
           const obj = {}
@@ -597,7 +616,6 @@ export default {
     _bumpSeen() {
       /* 记录最后一次收到平台数据的时间, 供"心跳"显示用 */
       this._lastDataAt = Date.now()
-      this.lastSeen = 0
     },
 
     fmt(v, dec) {
