@@ -55,8 +55,10 @@ function getApiBase() {
  * ⚠ H5 端受 CORS 限制读不到 Date 头 (Date 不是 CORS safelisted 响应头),
  *   那时退化为本地时间 + 大余量兜底 (见 status.vue 的窗口计算)。 */
 
-/** 平台服务器时间 (Unix 毫秒), 0 = 还没拿到 */
+/** 平台服务器时间基准 (Unix 毫秒), 0 = 还没拿到 */
 let _serverNowMs = 0
+/** 取到基准那一刻的本地时间 (Unix 毫秒), 用来把基准时间随本地时钟推进 */
+let _serverSyncLocal = 0
 /** 平台时间 − 本地时间 (ms), 正数 = 平台比手机快 (手机时钟慢了) */
 let _serverSkewMs = 0
 
@@ -70,15 +72,18 @@ function updateServerClock(dateHeader) {
   const t = Date.parse(dateHeader)
   if (isNaN(t) || t <= 0) return
   _serverNowMs = t
-  _serverSkewMs = t - Date.now()
+  _serverSyncLocal = Date.now()
+  _serverSkewMs = t - _serverSyncLocal
 }
 
 /**
  * @brief 取平台时间 (Unix 毫秒)
- * @return 拿到过 Date 头就返回平台时间, 否则退回本地时间
+ * @return 拿到过 Date 头就返回平台时间 (基准 + 本地流逝的时间, 不会卡住不动),
+ *         否则退回本地时间
  */
 export function getServerNowMs() {
-  return _serverNowMs || Date.now()
+  if (!_serverNowMs) return Date.now()
+  return _serverNowMs + (Date.now() - _serverSyncLocal)
 }
 
 /**
