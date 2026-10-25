@@ -40,6 +40,7 @@ typedef enum {
     UI_PAGE_ENCODER,             // 编码电机调试
     UI_PAGE_MPU9250,             // MPU9250 参数调试
     UI_PAGE_NETSTAT,             // 网络状态 (WiFi + OneNet)
+    UI_PAGE_LED_MAGNET,          // LED 灯 + 电磁铁 共用控制页
     UI_PAGE_MAX                  // 哨兵
 } ui_page_id_t;
 

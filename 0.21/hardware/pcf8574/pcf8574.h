@@ -97,6 +97,15 @@ esp_err_t pcf8574_is_pressed(btn_id_t id, bool *pressed);
 esp_err_t pcf8574_scan_buttons(uint8_t *pressed_mask);
 
 /**
+ * @brief 读取两个对接微动开关的状态 (对接检测用)
+ * @param[out] sw1 微动开关1 是否压下 (左), 压下= true
+ * @param[out] sw2 微动开关2 是否压下 (右), 压下= true
+ * @return ESP_OK 成功; 读取失败时两个开关都按"未压下"处理
+ * @note  PCF8574 的 P4/P5 接微动开关, 内部上拉, 压下拉低 (跟按键同约定)。
+ *        云端上报和屏上显示都调这个函数, 保证两边看到的完全一致。
+ */
+esp_err_t pcf8574_read_dock_switches(bool *sw1, bool *sw2);
+/**
  * @brief 注册按键事件回调
  * @param cb 回调函数指针
  * @return ESP_OK 成功, 其他值失败

@@ -32,6 +32,7 @@
 #include "ui_encoder.h"
 #include "ui_mpu9250.h"
 #include "ui_netstat.h"
+#include "ui_led_magnet.h"
 
 static const char *TAG = "MAIN";
 
@@ -179,6 +180,7 @@ void app_main(void)
     ESP_ERROR_CHECK(ui_encoder_register());
     ESP_ERROR_CHECK(ui_mpu9250_register());
     ESP_ERROR_CHECK(ui_netstat_register());
+    ESP_ERROR_CHECK(ui_led_magnet_register());
 
     /* 根据 PCF8574 是否就绪, 选择按键回调
      * - 就绪: 从 PCF8574 读取真实按键

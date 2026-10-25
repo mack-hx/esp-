@@ -26,7 +26,8 @@ static const menu_item_t menu_items[] = {
     { UI_PAGE_SERVO,    "2. Servo Debug"    },
     { UI_PAGE_ENCODER,  "3. Encoder & Motor"},
     { UI_PAGE_MPU9250,  "4. MPU9250"        },
-    { UI_PAGE_NETSTAT,  "5. Network"        },
+    { UI_PAGE_LED_MAGNET,"5. LED & Magnet"   },
+    { UI_PAGE_NETSTAT,  "6. Network"        },
 };
 #define MENU_ITEM_COUNT  (sizeof(menu_items) / sizeof(menu_items[0]))
 /* "Back to Home" 特殊 id 标识 */
@@ -36,8 +37,8 @@ static const menu_item_t menu_items[] = {
 static uint8_t s_selected = 0;
 
 /* 每条目的起始 Y 坐标 */
-#define ITEM_Y0   24                       // 第 1 条目 Y
-#define ITEM_DY   16                       // 每条目间距 (像素)
+#define ITEM_Y0   22                       // 第 1 条目 Y
+#define ITEM_DY   15                       // 每条目间距 (像素)
 
 /**
  * @brief 绘制整个菜单

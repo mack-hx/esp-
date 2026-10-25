@@ -356,3 +356,22 @@ esp_err_t pcf8574_enable_interrupt(void)
     ESP_LOGI(TAG, "PCF8574 中断已启用 (GPIO=%d)", PCF8574_INT_GPIO);
     return ESP_OK;
 }
+
+/**
+ * @brief 读取两个对接微动开关的状态
+ */
+esp_err_t pcf8574_read_dock_switches(bool *sw1, bool *sw2)
+{
+    if (sw1 == NULL || sw2 == NULL) return ESP_ERR_INVALID_ARG;
+
+    uint8_t state = 0xFF;
+    if (pcf8574_read_all(&state) != ESP_OK) {
+        *sw1 = false;
+        *sw2 = false;
+        return ESP_FAIL;
+    }
+    /* P5/P4 内部上拉, 压下拉低 —— 取反才是"压下" */
+    *sw1 = !(state & (1 << SW_K5));
+    *sw2 = !(state & (1 << SW_K6));
+    return ESP_OK;
+}

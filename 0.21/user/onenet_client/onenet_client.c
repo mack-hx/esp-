@@ -612,23 +612,8 @@ static const char* state_to_string(bal_state_t state)
     }
 }
 
-/**
- * @brief 读两个微动开关 (对接检测)
- * @param sw1 输出: 微动开关1 是否压下 (左)
- * @param sw2 输出: 微动开关2 是否压下 (右)
- * @note  PCF8574 的 P4/P5 接微动开关, 内部上拉, 压下拉低 (跟按键同约定)
- */
-static void read_dock_switches(bool *sw1, bool *sw2)
-{
-    uint8_t state = 0xFF;
-    if (pcf8574_read_all(&state) != ESP_OK) {
-        *sw1 = false;
-        *sw2 = false;
-        return;
-    }
-    *sw1 = !(state & (1 << SW_K5));   /* P5 = 微动开关1 */
-    *sw2 = !(state & (1 << SW_K6));   /* P4 = 微动开关2 */
-}
+/* 注: 微动开关的读取统一走 pcf8574_read_dock_switches() (在 pcf8574 驱动里),
+ * 车上的测试页 (ui_led_magnet.c) 和这里上报的 sw1/sw2 用的是同一个函数, 保证一致。 */
 
 /* ========== 周期上报任务 ========== */
 
@@ -713,7 +698,7 @@ static void publish_task(void *arg)
                 if (now_ms - last_sw_ms >= 1000) {
                     last_sw_ms = now_ms;
                     bool sw1 = false, sw2 = false;
-                    read_dock_switches(&sw1, &sw2);
+                    pcf8574_read_dock_switches(&sw1, &sw2);
                     int n3 = build_property_post_i(swbody, sizeof(swbody), ts, 2,
                         "sw1", (long long)(sw1 ? 1 : 0),
                         "sw2", (long long)(sw2 ? 1 : 0));

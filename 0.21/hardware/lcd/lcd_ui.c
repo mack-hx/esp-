@@ -20,7 +20,8 @@
 static const char *TAG = "LCD_UI";
 
 /* ========== 内部状态 ========== */
-#define MAX_PAGES  8
+/* 可注册页面数上限 (页面少加一个就要改这里) */
+#define MAX_PAGES  10
 static const ui_page_t *pages[MAX_PAGES];
 static uint8_t page_count = 0;
 
