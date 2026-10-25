@@ -66,6 +66,10 @@ float pid_update(bal_pid_t *pid, float err, float dt)
  * @brief D 项用角速度反馈的 PID (平衡环专用)
  * @note  与 pid_update() 的唯一区别: D 项直接取 rate, 不对误差求导。
  *        详细理由见 pid.h 里 pid_update_rate() 的文档。
+ *
+ * @note  ⚠ D 项符号 (2026-10-25 修正): 取**正号**, 与 err/rate 同号。
+ *        车体前倾时轮子要往倒的方向追才接得住, rate 越大追得越凶 = 阻尼。
+ *        取负号 = 负阻尼 (越晃越大)。详见下面实现处的推导。
  */
 float pid_update_rate(bal_pid_t *pid, float err, float rate, float dt)
 {
@@ -79,8 +83,19 @@ float pid_update_rate(bal_pid_t *pid, float err, float rate, float dt)
 
     pid->i = clamp_sym(pid->i + err * dt, pid->i_max);
 
-    /* 阻尼是**减速**作用: 车在往前摆 (rate>0) 时电机要往回收一把力。
-     * 所以 D 项取负号 —— 与 rate 同号会变成正反馈, 把车推倒。 */
-    float out = pid->kp * err + pid->ki * pid->i - pid->kd * d;
+    /* ⚠ D 项取**正号** (2026-10-25 修正, 之前是负号 = 负阻尼, 车必然站不住)
+     *
+     * 物理关系 (轮 + 倒立摆):
+     *   车体前倾 θ>0 时, 轮子必须**往倒的方向加速**才能把重心甩回轮轴上方,
+     *   即轮加速度 a = K1·θ + K2·θ̇, 闭环稳定要求 **K2 > 0**。
+     *   代入本函数 (out = kp·err + ki·i + kd·rate, err 与 rate 同号):
+     *       a = k·(kp·θ + kd·θ̇)   →  K2 = k·kd > 0  ✓ 阻尼正确
+     *   若 D 项取负号 → K2 < 0 → 负阻尼: 越晃越大, 必然摔倒。
+     *
+     * 直觉: 车往前倒得越快, 轮子要追得**越凶** (前冲才接得住);
+     *       "电机往回收" 是在帮着车继续倒, 不是阻尼。
+     *
+     * rate 必须与 err **同号** (车前倾为正), 见 pid.h 的说明。 */
+    float out = pid->kp * err + pid->ki * pid->i + pid->kd * d;
     return clamp_sym(out, pid->out_max);
 }

@@ -70,6 +70,17 @@ static float s_arm_hold_ms = 0.0f;
 /* 速度环目标轮速 (rpm): 遥控直驱期间不参与, 恒为 0 (原地站立) */
 static float s_target_rpm = 0.0f;
 
+/* ========== 轮速统计 (100ms 窗口) ==========
+ * 10ms 窗口的编码器读数是量化跳变 (1 脉冲 = 136 rpm), 会把速度环的
+ * 目标倾角打到限幅 → 电机猛冲。所以按 100ms 窗口统计, 见
+ * balance_read_sensors() 里的说明。
+ * ⚠ 不走 encoder_get_rpm(): 它的快照状态和 UI 编码器页共用, 会被抢。 */
+#define SPD_WIN_MS       100                                  /* 轮速窗口长度 (ms) */
+#define SPD_WIN_CYCLES   (SPD_WIN_MS / CONTROL_PERIOD_MS)    /* 窗口内的控制周期数 */
+static int   s_enc_last_cnt[2] = {0, 0};  /* 上个窗口结束时的编码器计数值 */
+static int   s_enc_win_cnt    = 0;        /* 当前窗口已过的控制周期数 */
+static float s_speed_rpm      = 0.0f;     /* 上个窗口算出的两轮平均轮速 (rpm) */
+
 /* ========== 遥控直驱 (App 方向键) ==========
  * 直驱 = 直接给电机 PWM, 不经过平衡环, 跟 UI 编码器调试页一样。
  * 期间暂停平衡环输出, 状态机也暂停 (车被开着走, 姿态检测没有意义)。 */
@@ -145,6 +156,23 @@ static void balance_save_zero(void)
 }
 
 /**
+ * @brief 算积分累加值的上限 (i_max)
+ * @param ki      积分系数
+ * @param out_max 该环的输出上限
+ * @return 累加值上限
+ * @note  pid 里夹的是**累加值 i**, 而输出项是 Ki·i。
+ *        所以要让积分项不超过输出上限的一半, 累加值上限就得是 (out_max/2)/Ki。
+ *        ⚠ 之前直接写 out_max/2 是错的: 乘上 Ki 之后积分项最大能到
+ *        Ki·out_max/2 (12×15 = 180%), 远超 30% 的输出上限 →
+ *        起立时积分直接把输出顶死, 表现为"猛冲"。
+ */
+static float balance_i_max(float ki, float out_max)
+{
+    if (ki <= 0.01f) return out_max;    /* Ki≈0 时积分不参与运算 */
+    return (out_max * 0.5f) / ki;
+}
+
+/**
  * @brief 从 param 表读出所有控制参数, 配置两个 PID
  * @note  每次控制周期都调一次: 网页拖滑块后下一次运算立刻用新值, 无需重启
  */
@@ -153,18 +181,22 @@ static void balance_load_params(void)
     float out_max    = param_get_float(PARAM_MOTOR_OUT_MAX);
     float spdout_max = param_get_float(PARAM_SPEED_OUT_MAX);
 
+    float bal_kp = param_get_float(PARAM_PID_BAL_KP);
+    float bal_ki = param_get_float(PARAM_PID_BAL_KI);
+    float bal_kd = param_get_float(PARAM_PID_BAL_KD);
+
+    float spd_kp = param_get_float(PARAM_PID_SPD_KP);
+    float spd_ki = param_get_float(PARAM_PID_SPD_KI);
+    float spd_kd = param_get_float(PARAM_PID_SPD_KD);
+
     pid_config(&s_pid_bal,
-               param_get_float(PARAM_PID_BAL_KP),
-               param_get_float(PARAM_PID_BAL_KI),
-               param_get_float(PARAM_PID_BAL_KD),
-               out_max / 2.0f,      /* 积分限幅取输出一半, 保证 Ki 有效又不饱和 */
+               bal_kp, bal_ki, bal_kd,
+               balance_i_max(bal_ki, out_max),   /* 积分项最大 = 输出一半 */
                out_max);
 
     pid_config(&s_pid_spd,
-               param_get_float(PARAM_PID_SPD_KP),
-               param_get_float(PARAM_PID_SPD_KI),
-               param_get_float(PARAM_PID_SPD_KD),
-               spdout_max / 2.0f,   /* 积分限幅 */
+               spd_kp, spd_ki, spd_kd,
+               balance_i_max(spd_ki, spdout_max),
                spdout_max);         /* 输出 = 目标倾角 (°) */
 
     /* 电机死区: init 时先写一次, 避免第一次 enable 前是旧值。
@@ -250,12 +282,40 @@ static void balance_read_sensors(void)
         s_data.trim_comp = 0.0f;
     }
 
-    /* --- 编码器: 两轮平均轮速 (去掉减速比, 得到轮子真实转速) --- */
+    /* --- 编码器: 100ms 窗口统计两轮平均轮速 (去掉减速比, 得到轮子真实转速) ---
+     *
+     * ⚠ 不用 encoder_get_rpm(..., 10ms) 的原因:
+     *   编码器 44 脉冲/转, 10ms 窗口里轮子常常转不到 1 个脉冲,
+     *   读数在 0 和 136 rpm 之间跳 (1 个脉冲 = 136 rpm @10ms 窗口)。
+     *   速度环拿到这种读数, 误差 2 rpm 就把目标倾角打到限幅,
+     *   平衡环随即饱和 → 电机前后猛顶 (起立剧烈抖动的直接来源)。
+     *   100ms 窗口把量化误差降到 1/10, 读数平滑可用。
+     *
+     * ⚠ 自己记快照, 不走 encoder_get_rpm(): 它内部存的是"上次调用时刻",
+     *   和 UI 编码器调试页 (150ms 一读) 是同一份状态, 两边互抢会算出
+     *   错误的瞬时转速。 */
     float gear = param_get_float(PARAM_ENCODER_GEAR);
     if (gear < 0.01f) gear = 0.01f;      /* 防除零 */
-    float rpm1 = encoder_get_rpm(ENCODER_1, CONTROL_PERIOD_MS) / gear;
-    float rpm2 = encoder_get_rpm(ENCODER_2, CONTROL_PERIOD_MS) / gear;
-    s_data.speed = (rpm1 + rpm2) / 2.0f;
+
+    s_enc_win_cnt++;
+    if (s_enc_win_cnt >= SPD_WIN_CYCLES) {
+        s_enc_win_cnt = 0;
+
+        int c1 = encoder_get_count(ENCODER_1);
+        int c2 = encoder_get_count(ENCODER_2);
+        /* 用 int16 取模差值: PCNT 计数到 ±32767 会回绕,
+         * 直接按 int 相减会得到 65535 的假增量 (假的巨大转速) */
+        int d1 = (int16_t)(c1 - s_enc_last_cnt[0]);
+        int d2 = (int16_t)(c2 - s_enc_last_cnt[1]);
+        s_enc_last_cnt[0] = c1;
+        s_enc_last_cnt[1] = c2;
+
+        float win_sec = (float)SPD_WIN_MS / 1000.0f;
+        float rpm1 = ((float)d1 / ENCODER_PULSES_PER_REV) / win_sec * 60.0f / gear;
+        float rpm2 = ((float)d2 / ENCODER_PULSES_PER_REV) / win_sec * 60.0f / gear;
+        s_speed_rpm = (rpm1 + rpm2) / 2.0f;
+    }
+    s_data.speed = s_speed_rpm;
 }
 
 /**
@@ -440,7 +500,8 @@ static void balance_control_step(float dt)
      * 车往前倒 (pitch > 0) 时误差为正, 输出为正 → 电机往"追着倒的方向"转,
      * 把重心拉回来。
      *
-     * ⚠ D 项用**角速度反馈**而不是误差微分 (见 pid_update_rate 的注释) */
+     * ⚠ D 项用**角速度反馈**而不是误差微分 (见 pid_update_rate 的注释),
+     * 且符号为正: 车往前倒得越快, 轮子追得越凶 —— 这才是阻尼。 */
     float bal_err = s_data.pitch - s_data.target_pitch;
     s_data.bal_out = pid_update_rate(&s_pid_bal, bal_err, s_data.gyro, dt);
 
@@ -654,6 +715,13 @@ esp_err_t balance_init(void)
     s_move_dir   = BAL_MOVE_STOP;
     s_move_level = 0;
     s_out_ramp   = BAL_RAMP_START_PCT;
+
+    /* 轮速统计的初始快照: 第一个 100ms 窗口只当基准, 不算速度。
+     * (否则会拿"从 0 开始"的计数差算出一个假的巨大转速) */
+    s_enc_last_cnt[0] = encoder_get_count(ENCODER_1);
+    s_enc_last_cnt[1] = encoder_get_count(ENCODER_2);
+    s_enc_win_cnt    = 0;
+    s_speed_rpm      = 0.0f;
 
     if (!s_mpu_ready) {
         ESP_LOGW(TAG, "MPU9250 不可用, 平衡控制无法工作 (请先接好 IMU)");

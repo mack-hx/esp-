@@ -3,16 +3,19 @@
  * @brief pid_update_rate() 的离线验证 (PC 上 gcc 直接跑, 不依赖硬件)
  *
  * @brief 为什么必须离线验证
- *   D 项的**符号**是这次改动里最容易出错、后果最严重的一处:
- *   符号错了 = 正反馈 = 阻尼变成助推, 车会越晃越厉害直至摔倒。
- *   这种错误在编译期和静态检查里都看不出来, 只能靠数值算一遍。
+ *   D 项的**符号**是最容易出错、后果最严重的一处:
+ *   符号错了 = 负阻尼 = 车越晃越大直至摔倒。
+ *   这种错误在编译期和静态检查里看不出来, 只能靠数值算一遍。
  *
  * @brief 验证的物理判据 (不是"跑通就行")
- *   1) 纯阻尼方向: 位置误差为 0、车在以正角速度摆过时,
- *      输出必须**反号** (即输出 < 0), 否则阻尼在助推。
- *   2) 摆动衰减: 给一个带阻尼的倒立摆, 自由运行若干秒后振幅应单调下降。
+ *   1) D 项方向: 车体往前倒 (rate>0) 时, 电机必须**往倒的方向追得更凶**
+ *      (输出与 rate 同号) —— 这才是阻尼; 往回收是帮着车继续倒。
+ *   2) 闭环阻尼: 用真实控制器驱动"轮+倒立摆"模型自由释放,
+ *      摆幅必须衰减; 把 D 符号取反作对照, 摆幅必须增长。
  *   3) 积分不炸: 阶跃输入下积分应被 i_max 夹住。
- *   4) 误差微分与角速度反馈在"慢变信号"上应接近, "突变"时行为不同。
+ *   4) 首拍不产生假阻尼冲量。
+ *   5) 误差微分与角速度反馈在"慢变信号"上应接近, "突变"时行为不同。
+ *   6) dt 变化时增益保持一致。
  *
  * 运行:
  *   gcc -std=c99 -Wall -Wextra test/test_pid_pc.c user/control/pid.c \
@@ -33,10 +36,10 @@ static int g_fail = 0;
     else      { g_fail++; printf("  \033[31m[FAIL]\033[0m " fmt "\n", ##__VA_ARGS__); } \
 } while (0)
 
-/* ---------- 用例 1: 纯阻尼方向 ---------- */
+/* ---------- 用例 1: D 项方向 ---------- */
 static void test_damping_sign(void)
 {
-    printf("[1] D 项方向: 车在正向前摆 (rate>0) 时输出必须反号\n");
+    printf("[1] D 项方向: 车在往前倒 (rate>0) 时电机必须往倒的方向追得更凶\n");
 
     bal_pid_t pid;
     pid_config(&pid, 0.0f, 0.0f, 5.0f, 100.0f, 100.0f);   /* 只开 Kd */
@@ -44,12 +47,12 @@ static void test_damping_sign(void)
     /* 先跑一拍把 primed 置位 (真实控制里就是上电第一拍) */
     pid_update_rate(&pid, 0.0f, 0.0f, 0.01f);
 
-    /* 误差为 0, 车正以 +50 °/s 向前摆 → 阻尼必须给出负输出 (往回拉) */
+    /* 误差为 0, 车正以 +50 °/s 往前倒 → 输出必须为正 (往前追) */
     float out = pid_update_rate(&pid, 0.0f, 50.0f, 0.01f);
-    CHECK(out < 0.0f, "rate=+50, err=0 → out=%.2f (期望 < 0, 阻尼往回拉)", out);
+    CHECK(out > 0.0f, "rate=+50, err=0 → out=%.2f (期望 > 0, 往前追 = 阻尼)", out);
 
     out = pid_update_rate(&pid, 0.0f, -50.0f, 0.01f);
-    CHECK(out > 0.0f, "rate=-50, err=0 → out=%.2f (期望 > 0)", out);
+    CHECK(out < 0.0f, "rate=-50, err=0 → out=%.2f (期望 < 0)", out);
 
     /* 幅度应线性: 角速度翻倍, 阻尼输出也翻倍。
      * ⚠ Kd 必须小到不触发限幅, 否则两次都被夹到 out_max,
@@ -63,53 +66,90 @@ static void test_damping_sign(void)
     CHECK(fabsf(o2 - 2.0f * o1) < 1e-3f, "线性: out(20)=%.3f ≈ 2×out(10)=%.3f", o2, 2.0f * o1);
 }
 
-/* ---------- 用例 2: 摆动衰减 ----------
- * 简化成"单轴倒立摆 + 轮速闭环"太复杂, 这里直接验证纯阻尼对
- * 一阶摆动模态的抑制: 车体以固有频率摆动, 只靠 Kd 反馈时振幅应衰减。
- * 用离散积分显式模拟: theta'' = -(g/L) sin(theta) - c*theta'
+/* ---------- 用例 2: 闭环阻尼 (轮 + 倒立摆) ----------
+ * 用真实的 pid_update_rate() 驱动一个"轮子 + 倒立摆"模型:
+ *     θ'' = W0²·θ − K·u        (u = 控制器输出 / 100, 正 = 轮子往前追)
+ *     W0² = g/L  (L = 重心离轮轴 0.12m), K = 电机加速度系数
+ * 闭环稳定要求 D 项为正: u 里含 +kd·θ̇ → θ'' 里出现 −K·kd·θ̇ = 阻尼项。
+ * 符号取反就变成负阻尼, 振幅必然增长。
  */
-static void test_damping_decays(void)
+#define PLANT_W0SQ  81.75f     /* (g/L), L = 0.12 m */
+#define PLANT_K     91.8f      /* 电机加速度系数 (100% 输出时的等效值) */
+#define SIM_DT      0.005f     /* 仿真步长 (比控制周期更细) */
+#define CTRL_DT     0.01f      /* 控制周期 10ms */
+
+/**
+ * @brief 跑一次闭环仿真
+ * @param kp     P 系数 (%/°)
+ * @param kd     D 系数 (%/(°/s))
+ * @param d_flip true = 用**错**的 D 符号 (负号), 作对照组
+ * @param early_max [出参] 前 2 秒的最大振幅 (弧度)
+ * @param late_max  [出参] 后 2 秒的最大振幅 (弧度)
+ */
+static void run_closed_loop(float kp, float kd, bool d_flip,
+                            float *early_max, float *late_max)
 {
-    printf("[2] 阻尼能抑制摆动: 振幅应单调衰减\n");
-
-    const float dt = 0.01f;
-    const float g_over_L = 12.0f;     /* 固有频率平方 */
-    const float kd = 1.2f;            /* 阻尼系数 (反馈 = -kd*rate) */
-
     float theta = 6.0f * (float)M_PI / 180.0f;   /* 初始倾角 6° */
     float rate  = 0.0f;
+    float ctrl_dt_acc = 0.0f;
 
-    float first_peak = 0.0f;   /* 第一个局部极大 (峰值) */
-    float last_peak  = 0.0f;   /* 之后每帧的局部极大, 结束时即最后一个 */
-    int   peak_idx   = 0;
-    int   peaks      = 0;
+    bal_pid_t pid;
+    pid_config(&pid, kp, 0.0f, kd, 1000.0f, 100.0f);
+
+    float early = 0.0f, late = 0.0f;
     int   i;
-    bool  was_rising = false;
 
-    for (i = 0; i < 600; i++) {          /* 6 秒 */
-        float acc = -g_over_L * sinf(theta) - kd * rate;
-        rate  += acc * dt;
-        theta += rate * dt;
+    for (i = 0; i < 2000; i++) {          /* 10 秒 */
+        /* --- 控制周期 (每 2 个仿真步算一次) --- */
+        ctrl_dt_acc += SIM_DT;
+        if (ctrl_dt_acc >= CTRL_DT - 1e-6f) {
+            ctrl_dt_acc = 0.0f;
 
-        /* rate 由正转负 = 摆到了极值 = 一个摆动周期的峰值 */
-        float mag = fabsf(theta);
-        if (was_rising && rate < 0.0f && peak_idx > 5) {
-            if (peaks == 0) {
-                first_peak = mag;
-            } else {
-                last_peak = mag;
+            float err_deg  = theta * 180.0f / (float)M_PI;
+            float rate_deg = rate  * 180.0f / (float)M_PI;
+            float cmd = pid_update_rate(&pid, err_deg, rate_deg, CTRL_DT);
+            if (d_flip) {
+                /* 对照组: 手动把 D 项取负 (= 2026-10-25 修之前的错误符号) */
+                cmd = pid.kp * err_deg + pid.ki * pid.i - pid.kd * rate_deg;
+                if (cmd >  pid.out_max) cmd =  pid.out_max;
+                if (cmd < -pid.out_max) cmd = -pid.out_max;
             }
-            peaks++;
+            float u = cmd / 100.0f;        /* 归一化成 -1~1 */
+
+            float thdd = PLANT_W0SQ * theta - PLANT_K * u;
+            rate += thdd * SIM_DT;
+            theta += rate * SIM_DT;
         }
-        was_rising = (rate >= 0.0f);
-        peak_idx++;
+
+        /* 前 2 秒 / 后 2 秒分别记最大振幅: 阻尼正确时后者必须更小 */
+        float mag = fabsf(theta);
+        if (i < 400) {
+            if (mag > early) early = mag;
+        } else if (i >= 1600) {
+            if (mag > late) late = mag;
+        }
     }
 
-    CHECK(peaks >= 3, "捕获到 %d 个摆动峰值 (需要≥3 才能比较首末)", peaks);
-    CHECK(last_peak < first_peak,
-          "首峰 %.3f° → 末峰 %.3f° (期望衰减)", first_peak * 57.29578f, last_peak * 57.29578f);
-    CHECK(fabsf(theta) < fabsf(6.0f * (float)M_PI / 180.0f),
-          "6s 后残留倾角 %.3f° < 初始 6°", theta * 57.29578f);
+    *early_max = early;
+    *late_max  = late;
+}
+
+static void test_closed_loop_damping(void)
+{
+    printf("[2] 闭环阻尼: 真实控制器驱动倒立摆, 振幅必须衰减 (对照: 符号反了必增长)\n");
+
+    float early = 0.0f, late = 0.0f;
+
+    run_closed_loop(12.0f, 1.5f, false, &early, &late);
+    CHECK(late < early,
+          "正确符号: 后 2 秒振幅 %.3f° < 前 2 秒 %.3f° (阻尼生效)",
+          late * 57.29578f, early * 57.29578f);
+
+    float good_late = late;
+    run_closed_loop(12.0f, 1.5f, true, &early, &late);
+    CHECK(late > good_late,
+          "对照 (D 符号取反): 后 2 秒振幅 %.3f° > 正确符号的 %.3f° (负阻尼, 越晃越大)",
+          late * 57.29578f, good_late * 57.29578f);
 }
 
 /* ---------- 用例 3: 积分限幅 ---------- */
@@ -144,7 +184,7 @@ static void test_first_sample_no_kick(void)
 
     /* 第二拍才生效 */
     out = pid_update_rate(&pid, 0.0f, 500.0f, 0.01f);
-    CHECK(out < 0.0f, "第二拍 rate=500 → out=%.1f (期望生效, < 0)", out);
+    CHECK(out > 0.0f, "第二拍 rate=500 → out=%.1f (期望生效, > 0)", out);
 }
 
 /* ---------- 用例 5: 与误差微分的差异 (确认确实换了实现) ---------- */
@@ -199,7 +239,7 @@ int main(void)
 {
     printf("==== pid_update_rate() 离线验证 ====\n\n");
     test_damping_sign();
-    test_damping_decays();
+    test_closed_loop_damping();
     test_integral_clamp();
     test_first_sample_no_kick();
     test_differs_from_error_derivative();

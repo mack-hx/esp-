@@ -101,8 +101,14 @@ float pid_update(bal_pid_t *pid, float err, float dt);
  *   这也是 WL1 的做法: `float even_pwm = angle_pid.update(angle_target, angle.Pitch + bias)`
  *   其内部 D 项写成 `-kd * (measured - prev_actual)`, measured 就是被修正后的姿态角。
  *
- * @note  rate 必须是**俯仰方向**的角速度, 且符号已调正 (车前倾为正)。
- *        符号由 balance.c 的 gyro_sign 参数负责, 本函数不判断方向。
+ * @note  rate 必须是**俯仰方向**的角速度, 且符号与 err **同向** (车前倾为正)。
+ *        符号由 balance.c 的 GYRO_PITCH_SIGN 参数负责, 本函数不判断方向。
+ *
+ * @note  ⚠ D 项符号 (2026-10-25 修正): 取**正号**, 即 out = kp·err + ki·i + **+** kd·rate。
+ *        之前的负号是**负阻尼**, 车必然站不住 (详见 pid.c 实现处的推导):
+ *          车前倾 θ 时轮子要往倒的方向追才接得住 → 轮加速度 a = K1·θ + K2·θ̇,
+ *          闭环稳定要求 K2 > 0; D 项取正号才有 K2 = k·kd > 0。
+ *        直觉: 往前倒得越快, 轮子要追得越凶; "往回收"是帮着车继续倒。
  *
  * @note  首次调用 (primed=false) 时跳过 D 项, 避免上电瞬间拿未初始化的
  *        历史值算出一个假的大阻尼冲量。

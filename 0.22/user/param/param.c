@@ -23,10 +23,13 @@ static const char *TAG = "PARAM";
 #define NVS_NAMESPACE   "param"
 #define NVS_KEY_VALUES  "v"     /* 存所有 float 的 blob */
 #define NVS_KEY_VERSION "ver"   /* 表结构版本, 表变了就忽略旧数据 */
-#define PARAM_DATA_VERSION  7   /* 每次增删参数就 +1
+#define PARAM_DATA_VERSION  8   /* 每次增删参数就 +1
                                  * v2~v5: 0.1 的历史版本 (已作废)
                                  * v6:    0.11 删掉转向环/servo_l/pwm_max/deadband 等
                                  * v7:    0.13 再删 ang_zero/bal_sign/gyro_sign (烘焙成常量)
+                                 * v8:    0.22 平衡环 D 项符号修正 + 速度环默认关,
+                                 *         旧默认值 (Kp40/Ki12/死区8) 必须作废,
+                                 *         否则 NVS 里的旧值会让新代码继续按错的参数跑
                                  * NVS blob 布局变了, 旧数据必须作废 */
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
@@ -35,18 +38,18 @@ static float s_values[PARAM_MAX];
 /* ========== 参数描述表 ========== */
 const param_item_t g_param_items[] = {
     /* ---------- 平衡环 (直立) ---------- */
-    { PARAM_PID_BAL_KP, "bal_kp", "Balance Kp", "",  40.0f,   0.0f,  200.0f,  0.5f, 1, PARAM_GRP_BALANCE,
+    { PARAM_PID_BAL_KP, "bal_kp", "Balance Kp", "",  12.0f,   0.0f,  200.0f,  0.5f, 1, PARAM_GRP_BALANCE,
       "越大越硬。太小扶不倒, 太大高频抖。这是**最需要真机试出来的**参数" },
-    { PARAM_PID_BAL_KI, "bal_ki", "Balance Ki", "",  12.0f,   0.0f,  100.0f,  0.5f, 1, PARAM_GRP_BALANCE,
+    { PARAM_PID_BAL_KI, "bal_ki", "Balance Ki", "",   0.5f,   0.0f,  100.0f,  0.5f, 1, PARAM_GRP_BALANCE,
       "消除配平残余偏差。太大容易积分饱和 (车会先猛冲再回不来)" },
-    { PARAM_PID_BAL_KD, "bal_kd", "Balance Kd", "",   2.0f,   0.0f,   30.0f,  0.1f, 1, PARAM_GRP_BALANCE,
+    { PARAM_PID_BAL_KD, "bal_kd", "Balance Kd", "",   1.5f,   0.0f,   30.0f,  0.1f, 1, PARAM_GRP_BALANCE,
       "角速度阻尼。车晃得停不下来就加大, 出现高频嗡嗡声就减小" },
 
     /* ---------- 速度环 (前进后退) ---------- */
-    { PARAM_PID_SPD_KP, "spd_kp", "Speed Kp",   "",  20.0f,   0.0f,  200.0f,  0.5f, 1, PARAM_GRP_SPEED,
-      "走多快。太大车会猛地窜出去" },
-    { PARAM_PID_SPD_KI, "spd_ki", "Speed Ki",   "",  30.0f,   0.0f,  300.0f,  0.5f, 1, PARAM_GRP_SPEED,
-      "消除稳态速度误差" },
+    { PARAM_PID_SPD_KP, "spd_kp", "Speed Kp",   "",   0.0f,   0.0f,  200.0f,  0.5f, 1, PARAM_GRP_SPEED,
+      "走多快。**默认 0**: 站立时目标轮速恒为 0, 开这个环只会引入噪声" },
+    { PARAM_PID_SPD_KI, "spd_ki", "Speed Ki",   "",   0.0f,   0.0f,  300.0f,  0.5f, 1, PARAM_GRP_SPEED,
+      "消除稳态速度误差。默认 0 (同上)" },
     { PARAM_PID_SPD_KD, "spd_kd", "Speed Kd",   "",   0.0f,   0.0f,   30.0f,  0.1f, 1, PARAM_GRP_SPEED,
       "速度变化阻尼" },
 
@@ -63,8 +66,8 @@ const param_item_t g_param_items[] = {
       "电机转速 / 轮转速。带减速箱的填 >1" },
 
     /* ---------- 电机死区 ---------- */
-    { PARAM_MOTOR_DEADBAND, "deadzone", "Motor Deadband", "%", 8.0f, 0.0f, 30.0f, 1.0f, 0, PARAM_GRP_LIMIT,
-      "电机最小启动 PWM。太小电机转不动 (车会慢慢歪然后突然猛冲), 太大车会一顿一顿" },
+    { PARAM_MOTOR_DEADBAND, "deadzone", "Motor Deadband", "%", 4.0f, 0.0f, 30.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "电机最小启动 PWM。太小电机转不动 (车会慢慢歪然后突然猛冲), 太大车会一顿一顿 (高频哒哒响)" },
 
     /* ---------- 启动门控 ---------- */
     { PARAM_ARM_PITCH,   "arm_pitch", "Arm Pitch",   "°",   8.0f,  1.0f,   30.0f, 1.0f, 0, PARAM_GRP_LIMIT,

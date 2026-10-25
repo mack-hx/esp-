@@ -163,8 +163,10 @@ float encoder_get_rpm(encoder_id_t id, uint32_t interval_ms)
         return 0.0f;
     }
 
-    int delta = cur_cnt - last_cnt;
-    /* 转数 = 脉冲数 / 每转脉冲数, 再换算成每分钟 */
+    /* 增量要用 int16 取模: PCNT 计数到 ±32767 会回绕,
+     * 按 int 直接相减会算出 65535 的假增量 (一次假的巨大转速)。 */
+    int delta = (int16_t)(cur_cnt - last_cnt);
+    /* 转数 = 脉冲数 / 每转脉冲数, 再换算到每分钟 */
     float revs = (float)delta / ENCODER_PULSES_PER_REV;
     return revs * 60.0f / elapsed_sec;
 }

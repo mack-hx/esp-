@@ -17,6 +17,7 @@
 #include "balance.h"
 #include "wifi_sta.h"
 #include "tft_display.h"
+#include "esp_app_desc.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -26,6 +27,7 @@
 #define HOME_ENC_Y      24      // 编码器行 Y
 #define HOME_WIFI_Y     34      // WiFi状态行 Y
 #define HOME_MPU_Y      44      // MPU俯仰角行 Y
+#define HOME_VER_Y      54      // 版本号行 Y (最后一行)
 
 #define HOME_L_LBL_X    2       // 左路标签 X
 #define HOME_L_VAL_X    24      // 左路数值 X (前两行)
@@ -97,10 +99,16 @@ static void ui_home_draw(void)
     /* 擦除足够宽的区域(48像素)确保旧内容被清除 */
     ui_fill_rect(HOME_MPU_VAL_X, HOME_MPU_Y, 48, UI_FONT_H, TFT_COLOR_BLACK);
     ui_draw_string(HOME_MPU_VAL_X, HOME_MPU_Y, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
+
+    /* 最后一行: 版本号
+     * 版本来自 esp_app_desc (编译时由 version.txt 注入), 不用手写常量,
+     * 改版本号只需要改 0.22/version.txt */
+    ui_draw_string(HOME_L_LBL_X, HOME_VER_Y, "Ver:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_L_VAL_X, HOME_VER_Y, esp_app_get_description()->version,
+                   TFT_COLOR_BLUE, TFT_COLOR_BLACK);
 }
 
 /* ========== 页面回调 ========== */
-
 static void page_enter(void)
 {
     ui_home_draw();
