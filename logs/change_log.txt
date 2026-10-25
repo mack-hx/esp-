@@ -279,6 +279,6 @@
 | 推送 tag | ✅ `refs/tags/v0.22` |
 | 源码包 | ✅ `releases/esp_balance_robot-0.22.tar.gz` (294K, 169 个文件) |
 | 新建 release | ✅ `v0.22` (id 423227027), draft=False, 附件 1 个 |
-| GitHub release 总数 | 13 个（v0.1.0 ~ v1.5、v1.6、v0.17、v0.2、v0.21、v0.22）, 旧的**一个没删** |
+| GitHub release 总数 | 12 个（v0.1.0 ~ v1.5、v0.17、v0.2、v0.21、v0.22; v1.6 只有 tag 无 release）, 旧的**一个没删** |
 
 > GitHub 上的旧 release 和旧 tag 一律保留, 发新版本也不删。
