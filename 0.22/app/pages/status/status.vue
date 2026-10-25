@@ -23,6 +23,10 @@
         <text class="chart-info-item">采样点: {{ pitchSeries.length }}</text>
         <text class="chart-info-item">数据延迟: {{ latencyText }}</text>
       </view>
+      <view class="chart-info">
+        <text class="chart-info-item">请求耗时: {{ _rttMs }}ms</text>
+        <text class="chart-info-item">时钟偏差: {{ skewText }}</text>
+      </view>
     </view>
 
     <!-- 参数入口 (调参统一到"参数"页, 那边跟车上的参数表是一一对应的) -->
@@ -106,7 +110,7 @@
 
 <script>
 import { oneApi } from '../../common/oneapi.js'
-import { queryDeviceProperty, queryDevicePropertyHistory } from '../../common/onenet.js'
+import { queryDeviceProperty, queryDevicePropertyHistory, getServerNowMs, getServerSkewMs } from '../../common/onenet.js'
 import { getConfig } from '../../common/config.js'
 
 const MAX_POINTS = 120  // 最多显示120个点
@@ -117,6 +121,13 @@ const PITCH_RANGE = 30  // 显示范围 ±30°
  *   - 每次拉取的时间窗口 (ms), 要盖住"两次拉取之间"新产生的点 */
 const PITCH_POLL_MS   = 120
 const PITCH_WINDOW_MS = 3000
+/* 查询窗口左右各留的余量 (ms)。
+ * 平台的属性历史接口是按时间窗口查的, 如果窗口右端用**手机本地时钟**算,
+ * 而手机时钟慢了几秒 (没开自动对时 / 手动改过时间), 查回来的就全是
+ * 过去的数据 → 表现为"车已经动了, 要七八秒后才看到曲线变化"。
+ * 窗口两端都留足余量, 平台会返回窗口内**最新**的一批点,
+ * 手机时钟偏多少都照样能查到实时数据。 */
+const PITCH_MARGIN_MS = 30000
 /* 重绘周期 (ms):
  *   用定时器而不是 requestAnimationFrame —— App 端的逻辑层没有 DOM,
  *   rAF / document 都是 undefined, 直接调用会抛 ReferenceError。 */
@@ -188,6 +199,8 @@ export default {
       pitchHistory: [],
       pitchSeries: [],
       pitchLatency: null,
+      _lastPointT: 0,   // 最新采样点的平台时间戳 (ms), 用来对齐查询窗口
+      _rttMs: 0,        // 最近一次历史接口请求耗时 (ms), 排查网络慢用
       painter: null,    // 绘图适配器 (见 createPainter), null = 还没初始化好
       _cssW: 0,        // canvas 的 CSS 像素宽 (绘图坐标用)
       _cssH: 0,        // canvas 的 CSS 像素高 (绘图坐标用)
@@ -244,11 +257,21 @@ export default {
     },
     /**
      * @brief 数据延迟文字
-     * @note  最新采样点的平台时间戳与本地时间的差值, 用来判断"曲线跟不跟手"
+     * @note  最新采样点的平台时间戳与平台当前时间的差值, 用来判断"曲线跟不跟手"
      */
     latencyText() {
       if (this.pitchLatency === null || this.pitchLatency === undefined) return '--'
       return this.pitchLatency + 'ms'
+    },
+    /**
+     * @brief 平台时钟与手机本地时钟的偏差文字
+     * @note  正数 = 平台比手机快 (手机本地时钟慢了), 这正是"车动了要好几秒
+     *        才看到变化"的元凶 —— 查询窗口必须以平台时间为准
+     */
+    skewText() {
+      const s = getServerSkewMs()
+      if (!s) return '--'
+      return (s > 0 ? '+' : '') + (s / 1000).toFixed(1) + 's'
     }
   },
   onShow() {
@@ -482,9 +505,17 @@ export default {
      */
     async _pollPitch() {
       if (oneApi.getState().state !== 'ready') return
-      const now = Date.now()
+      const t0 = Date.now()
+      /* 时间窗口基准:
+       *   优先用**平台服务器时间** (HTTP 响应头里的 Date), 没有就用上一次
+       *   拿到的最新采样点的时间戳 (那也是平台时间), 再没有才用本地时间。
+       *   这样手机本地时钟偏几秒甚至几十秒, 都不会查成"过去的数据"。 */
+      const anchor = Math.max(this._lastPointT || 0, getServerNowMs())
+      const endTime   = anchor + PITCH_MARGIN_MS
+      const startTime = anchor - PITCH_WINDOW_MS - PITCH_MARGIN_MS
       try {
-        const res = await queryDevicePropertyHistory('pitch', now - PITCH_WINDOW_MS, now)
+        const res = await queryDevicePropertyHistory('pitch', startTime, endTime)
+        this._rttMs = Date.now() - t0
         if (!res || res.code !== 0 || !res.data || !Array.isArray(res.data.list)) return
         const list = res.data.list
         if (!list.length) return
@@ -512,8 +543,10 @@ export default {
 
         /* 最新点 → 姿态显示 + 延迟 */
         const last = this.pitchSeries[this.pitchSeries.length - 1]
+        this._lastPointT = last.t
         this.pose.pitch = last.v
-        this.pitchLatency = Math.max(0, now - last.t)
+        /* 延迟 = 平台当前时间 − 最新采样点的时间戳 (用平台时间算, 不受手机时钟影响) */
+        this.pitchLatency = Math.max(0, getServerNowMs() - last.t)
         this._bumpSeen()
         this.msgCount++
       } catch (e) {

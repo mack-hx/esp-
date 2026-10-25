@@ -44,6 +44,51 @@ function getApiBase() {
   return API_BASE
 }
 
+/* ===================== 平台服务器时间 =====================
+ * 为什么要这个:
+ *   属性历史接口是按**时间窗口**查的 (start_time / end_time),
+ *   而时间窗口是用**手机本地时钟**算的。手机时钟一旦不准 (手动改过时间、
+ *   没开自动对时、时区设置错乱), 查出来的就全是**过去**的数据,
+ *   表现为"车动了, 要好几秒后曲线才变"。
+ *   平台 HTTP 响应头里有 Date (服务器时间), 拿它当时间基准,
+ *   手机时钟偏多少都不影响查到最新数据。
+ * ⚠ H5 端受 CORS 限制读不到 Date 头 (Date 不是 CORS safelisted 响应头),
+ *   那时退化为本地时间 + 大余量兜底 (见 status.vue 的窗口计算)。 */
+
+/** 平台服务器时间 (Unix 毫秒), 0 = 还没拿到 */
+let _serverNowMs = 0
+/** 平台时间 − 本地时间 (ms), 正数 = 平台比手机快 (手机时钟慢了) */
+let _serverSkewMs = 0
+
+/**
+ * @brief 用响应头里的 Date 更新平台时间基准
+ * @param {string} dateHeader 形如 "Sun, 25 Oct 2026 11:09:56 GMT"
+ * @note Date 头只有秒级精度, 误差 ±500ms, 对本项目够用
+ */
+function updateServerClock(dateHeader) {
+  if (!dateHeader) return
+  const t = Date.parse(dateHeader)
+  if (isNaN(t) || t <= 0) return
+  _serverNowMs = t
+  _serverSkewMs = t - Date.now()
+}
+
+/**
+ * @brief 取平台时间 (Unix 毫秒)
+ * @return 拿到过 Date 头就返回平台时间, 否则退回本地时间
+ */
+export function getServerNowMs() {
+  return _serverNowMs || Date.now()
+}
+
+/**
+ * @brief 取平台时钟与手机本地时钟的偏差 (ms)
+ * @return 正数 = 平台比手机快 (手机时钟慢了); 0 = 没拿到 Date 头, 未知
+ */
+export function getServerSkewMs() {
+  return _serverSkewMs
+}
+
 /* ===================== token 计算 ===================== */
 
 /**
@@ -299,6 +344,8 @@ export function httpRequest(method, path, body) {
       headers,
       body: body ? JSON.stringify(body) : undefined
     }).then(res => {
+      /* 拿平台服务器时间 (H5 端因 CORS 限制通常读不到, 读不到就保持本地时间) */
+      try { updateServerClock(res.headers.get('date')) } catch (e) {}
       if (!res.ok) {
         return res.text().then(text => {
           const err = new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`)
@@ -324,6 +371,11 @@ export function httpRequest(method, path, body) {
       data: body,
       timeout: 15000,
       success: (res) => {
+        /* 拿平台服务器时间 (App 端没有 CORS 限制, 能直接读到 Date 头) */
+        try {
+          const h = res.header || {}
+          updateServerClock(h.Date || h.date || h.DATE)
+        } catch (e) {}
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(res.data)
         } else {
