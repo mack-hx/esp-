@@ -86,6 +86,16 @@ esp_err_t wifi_sta_get_ip(esp_netif_ip_info_t *info);
 esp_err_t wifi_sta_get_ssid(char *buf, uint32_t len);
 
 /**
+ * @brief 获取当前 AP 配网热点的真实 SSID (含 MAC 后缀)
+ * @param buf 输出缓冲区
+ * @param len 缓冲区大小
+ * @return ESP_OK 成功, ESP_ERR_INVALID_STATE 当前不在 AP 模式
+ * @note  真实 SSID = WIFI_STA_AP_SSID + "_" + MAC 后两字节 (大写 hex),
+ *        手机搜热点必须按这个名字找
+ */
+esp_err_t wifi_sta_get_ap_ssid(char *buf, uint32_t len);
+
+/**
  * @brief 切换到 AP 配网模式 (运行时调用，不重启)
  * @note  用于在已连接状态下按K4进入配网模式
  * @return ESP_OK 成功

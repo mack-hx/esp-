@@ -98,7 +98,13 @@ static void draw_data(void)
         if (strlen(ssid) > 16) ssid[16] = '\0';
         ui_draw_string(30, Y_SSID, ssid, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
     } else if (st == WIFI_STA_AP_MODE) {
-        ui_draw_string(30, Y_SSID, "<AP Mode>", TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
+        /* 显示真实热点名 (基础名 + MAC 后两字节), 手机必须按这个名字搜 */
+        if (wifi_sta_get_ap_ssid(ssid, sizeof(ssid)) == ESP_OK) {
+            if (strlen(ssid) > 16) ssid[16] = '\0';
+            ui_draw_string(30, Y_SSID, ssid, TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
+        } else {
+            ui_draw_string(30, Y_SSID, "<AP Mode>", TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
+        }
     } else {
         ui_draw_string(30, Y_SSID, "Not Connected", TFT_COLOR_RED, TFT_COLOR_BLACK);
     }

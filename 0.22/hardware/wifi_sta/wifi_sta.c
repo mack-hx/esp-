@@ -296,6 +296,12 @@ static esp_err_t start_ap_mode(void)
         return ESP_FAIL;
     }
 
+    /* 关键: create_default_wifi_ap() 已经自动把 DHCP server 起来了,
+     * 此时调 esp_netif_set_ip_info() 会返回 ESP_ERR_ESP_NETIF_DHCP_NOT_STOPPED,
+     * 导致整个 AP 启动流程中断 → esp_wifi_start() 永远不被调用 → 热点根本不广播。
+     * 所以必须先停 DHCP 再设 IP (和 wifi_sta_start_ap() 的做法一致)。 */
+    esp_netif_dhcps_stop(s_ap_netif);
+
     /* 固定 IP 192.168.4.1
      * esp_ip4addr_aton() 返回 uint32_t 网络序数值, 赋给 esp_ip4_addr_t 字段 */
     esp_netif_ip_info_t ipinfo = {0};
@@ -304,8 +310,8 @@ static esp_err_t start_ap_mode(void)
     ipinfo.gw.addr      = esp_ip4addr_aton((const char *)WIFI_STA_AP_IP);
     ret = esp_netif_set_ip_info(s_ap_netif, &ipinfo);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "设置 AP IP 失败: %s", esp_err_to_name(ret));
-        return ret;
+        /* 软失败: 继续往下走, 至少保证 esp_wifi_start() 被调用, 热点能广播出来 */
+        ESP_LOGW(TAG, "设置 AP IP 失败: %s (继续, 用默认 192.168.4.1)", esp_err_to_name(ret));
     }
 
     /* 显式启动 DHCP server */
@@ -316,13 +322,16 @@ static esp_err_t start_ap_mode(void)
         ESP_LOGI(TAG, "DHCP server 已启动");
     }
 
-    /* 配置 AP WiFi 参数 - 开放网络无密码 */
+    /* 配置 AP WiFi 参数 - WPA2 + 固定密码 */
     wifi_config_t wc = {0};
     strlcpy((char *)wc.ap.ssid, s_ap_ssid, sizeof(wc.ap.ssid));
     wc.ap.ssid_len = strlen(s_ap_ssid);
     wc.ap.channel = WIFI_STA_AP_CHANNEL;
     wc.ap.max_connection = WIFI_STA_AP_MAX_CONN;
-    wc.ap.authmode = WIFI_AUTH_OPEN;  /* 开放网络 */
+    /* 用 WPA2 + 固定密码 (和 WIFI_STA_AP_PASSWORD / 日志提示保持一致)。
+     * 不用开放网络: 部分手机会隐藏开放热点, 搜不到。 */
+    wc.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    strlcpy((char *)wc.ap.password, WIFI_STA_AP_PASSWORD, sizeof(wc.ap.password));
     wc.ap.beacon_interval = 100;
 
     ret = esp_wifi_set_config(WIFI_IF_AP, &wc);
@@ -331,8 +340,7 @@ static esp_err_t start_ap_mode(void)
         return ret;
     }
 
-    ESP_LOGI(TAG, "配网热点已开: SSID=%s  密码=%s", s_ap_ssid, WIFI_STA_AP_PASSWORD);
-    ESP_LOGI(TAG, "请用手机连此热点, 浏览器打开 http://" WIFI_STA_AP_IP "/");
+    ESP_LOGI(TAG, "配网热点配置完成: SSID=%s  密码=%s", s_ap_ssid, WIFI_STA_AP_PASSWORD);
 
     /* 起配网页 */
     return start_provision_httpd();
@@ -545,6 +553,20 @@ esp_err_t wifi_sta_get_ssid(char *buf, uint32_t len)
  * @brief 启动 AP 模式 + 配网页 (用于运行时切换配网)
  * @note  从 STA 模式切换时会关闭 STA，切换到纯 AP 模式
  */
+/**
+ * @brief 获取当前 AP 配网热点的真实 SSID (含 MAC 后缀)
+ * @param buf 输出缓冲区
+ * @param len 缓冲区大小
+ * @return ESP_OK 成功, ESP_ERR_INVALID_STATE 当前不在 AP 模式
+ */
+esp_err_t wifi_sta_get_ap_ssid(char *buf, uint32_t len)
+{
+    if (buf == NULL || len == 0) return ESP_ERR_INVALID_ARG;
+    if (s_state != WIFI_STA_AP_MODE) return ESP_ERR_INVALID_STATE;
+    strlcpy(buf, s_ap_ssid, len);
+    return ESP_OK;
+}
+
 esp_err_t wifi_sta_start_ap(void)
 {
     ESP_LOGI(TAG, "切换到 AP 配网模式");
@@ -597,13 +619,14 @@ esp_err_t wifi_sta_start_ap(void)
         return ret;
     }
 
-    /* 配置 AP WiFi 参数 - 开放网络无密码 */
+    /* 配置 AP WiFi 参数 - WPA2 + 固定密码 */
     wifi_config_t wc = {0};
     strlcpy((char *)wc.ap.ssid, s_ap_ssid, sizeof(wc.ap.ssid));
     wc.ap.ssid_len = strlen(s_ap_ssid);
     wc.ap.channel = WIFI_STA_AP_CHANNEL;
     wc.ap.max_connection = WIFI_STA_AP_MAX_CONN;
-    wc.ap.authmode = WIFI_AUTH_OPEN;  /* 开放网络 */
+    wc.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    strlcpy((char *)wc.ap.password, WIFI_STA_AP_PASSWORD, sizeof(wc.ap.password));
     wc.ap.beacon_interval = 100;
 
     ret = esp_wifi_set_config(WIFI_IF_AP, &wc);
