@@ -137,8 +137,9 @@ esp_err_t trim_clear(void);
 /**
  * @brief 擦除 NVS 中配平表数据 (仅擦 namespace, 不改内存)
  * @return ESP_OK 成功
- * @note  用于换机械结构后丢弃旧标定数据; 由 balance_init() 在 trim_load() 前调用
- */
+ * @note  用于换机械结构后丢弃旧标定数据。
+ *        ⚠ 2026-10-25 起**不再在每次上电时自动调用** —— 那样配平表永远存不住。
+ *        现在只有显式调用才会擦 (例如换机械结构后手动清一次)。 */
 esp_err_t trim_erase_nvs(void);
 
 /**

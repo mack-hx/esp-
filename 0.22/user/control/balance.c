@@ -706,11 +706,15 @@ esp_err_t balance_init(void)
     balance_load_params();
     balance_reset_pid();
 
-    /* 换机械结构后丢弃旧配平数据, 然后从 NVS 加载 (空表也 OK) */
-    trim_erase_nvs();
+    /* 载入配平表 (空表也 OK, 补偿恒为 0)
+     * ⚠ 2026-10-25 修正: 原来这里每次上电都 trim_erase_nvs() + trim_load(),
+     *   等于"每次上电都把标定好的配平表擦掉" —— 网页上标定半天,
+     *   一断电就回到原点, 配平功能等于没有。
+     *   现在只加载不擦; 换机械结构后要丢弃旧标定数据时,
+     *   再显式调用 trim_erase_nvs() (见 trim.h)。 */
     trim_load();
 
-    /* 配平零点 (跟配平表分开存, 不受 trim_erase_nvs() 影响) */
+    /* 配平零点 (跟配平表分开存, 不受 trim 表的存/取影响) */
     balance_load_zero();
 
     s_state      = BAL_STATE_IDLE;
