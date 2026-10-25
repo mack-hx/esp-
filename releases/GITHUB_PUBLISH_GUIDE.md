@@ -12,8 +12,8 @@
 ## 当前状态
 
 - ✅ 代码已提交到本地 git 并推送到 GitHub
-- ✅ GitHub 上共 11 个 release（v0.1.0 ~ v1.5、v1.6、v0.17、v0.2）
-- ✅ 本地只保留 `0.17/` 和 `0.2/` 两个版本目录
+- ✅ GitHub 上共 12 个 release（v0.1.0 ~ v1.5、v1.6、v0.17、v0.2、v0.21）
+- ✅ 本地只保留 `0.21/` 和 `0.22/` 两个版本目录
 
 ## 推送到 GitHub
 
@@ -72,6 +72,7 @@ gh release create v0.3 \
 
 | Tag | 说明 | 附件 |
 |-----|------|------|
+| v0.21 | 20Hz pitch 高速通道 + LED/电磁铁/微动开关 检查页 | esp_balance_robot-0.21.tar.gz |
 | v0.2 | 三端打通里程碑 | esp_balance_robot-0.2.tar.gz |
 | v0.17 | 原 1.7, 打通三端通信 + 代码整理 | esp_balance_robot-0.17.tar.gz |
 | v1.5 | OneNET SDK 集成 | esp_balance_robot-1.5.tar.gz |
@@ -103,7 +104,7 @@ gh release create v0.3 \
 
 ```bash
 cd /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot
-for v in 0.17 0.2; do
+for v in 0.21 0.22; do
   tar czf releases/esp_balance_robot-$v.tar.gz \
     --exclude='node_modules' --exclude='unpackage' --exclude='.pio' \
     --exclude='.cache' --exclude='.DS_Store' --exclude='.hbuilderx' \
