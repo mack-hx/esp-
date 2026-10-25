@@ -117,6 +117,61 @@ const PITCH_RANGE = 30  // 显示范围 ±30°
  *   - 每次拉取的时间窗口 (ms), 要盖住"两次拉取之间"新产生的点 */
 const PITCH_POLL_MS   = 120
 const PITCH_WINDOW_MS = 3000
+/* 重绘周期 (ms):
+ *   用定时器而不是 requestAnimationFrame —— App 端的逻辑层没有 DOM,
+ *   rAF / document 都是 undefined, 直接调用会抛 ReferenceError。 */
+const REDRAW_MS = 100
+
+/**
+ * @brief 生成绘图适配器, 屏蔽各端 canvas API 的差异
+ * @param ctx  H5: 原生 canvas 2d 上下文; 其它端: uni.createCanvasContext 返回的上下文
+ * @param isH5 true = H5 (原生 API), false = App/小程序 (uni 命令式 API)
+ * @note 所有方法的坐标单位都是 CSS 像素
+ */
+function createPainter(ctx, isH5) {
+  if (isH5) {
+    return {
+      fill:      c => { ctx.fillStyle = c },
+      stroke:    c => { ctx.strokeStyle = c },
+      width:     w => { ctx.lineWidth = w },
+      dash:      d => { ctx.setLineDash(d) },
+      fillRect:  (x, y, w, h) => ctx.fillRect(x, y, w, h),
+      beginPath: () => ctx.beginPath(),
+      moveTo:    (x, y) => ctx.moveTo(x, y),
+      lineTo:    (x, y) => ctx.lineTo(x, y),
+      strokePath:() => ctx.stroke(),
+      /* 画一个实心圆点 */
+      dot: (x, y, r) => { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill() },
+      /* 画一行文字 (y 为基线) */
+      text: (t, x, y, size, align) => {
+        ctx.font = size + 'px sans-serif'
+        ctx.textAlign = align
+        ctx.fillText(t, x, y)
+      },
+      flush: () => {}
+    }
+  }
+  /* App / 小程序: uni 的画布命令 API, 画完必须调 draw() 才真正上屏 */
+  return {
+    fill:      c => ctx.setFillStyle(c),
+    stroke:    c => ctx.setStrokeStyle(c),
+    width:     w => ctx.setLineWidth(w),
+    dash:      d => ctx.setLineDash(d),
+    fillRect:  (x, y, w, h) => ctx.fillRect(x, y, w, h),
+    beginPath: () => ctx.beginPath(),
+    moveTo:    (x, y) => ctx.moveTo(x, y),
+    lineTo:    (x, y) => ctx.lineTo(x, y),
+    strokePath:() => ctx.stroke(),
+    dot: (x, y, r) => { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill() },
+    /* uni 的 fillText 的 y 是文字顶部, 往上挪一点让它跟 H5 的基线一致 */
+    text: (t, x, y, size, align) => {
+      ctx.setFontSize(size)
+      ctx.setTextAlign(align)
+      ctx.fillText(t, x, y - size * 0.8)
+    },
+    flush: () => ctx.draw()
+  }
+}
 
 export default {
   data() {
@@ -133,15 +188,15 @@ export default {
       pitchHistory: [],
       pitchSeries: [],
       pitchLatency: null,
-      ctx: null,
-      canvasWidth: 0,
-      canvasHeight: 0,
-      _cssW: 0,      // canvas 的 CSS 像素宽 (绘图坐标用)
-      _cssH: 0,      // canvas 的 CSS 像素高 (绘图坐标用)
+      painter: null,    // 绘图适配器 (见 createPainter), null = 还没初始化好
+      _cssW: 0,        // canvas 的 CSS 像素宽 (绘图坐标用)
+      _cssH: 0,        // canvas 的 CSS 像素高 (绘图坐标用)
       isDrawing: false,
       _pollTick: null,
       _pitchTick: null,
-      _animationId: null
+      _redrawTick: null,
+      _canvasPending: false, // App 端取画布尺寸的查询是否在进行中
+      _lastDrawKey: ''       // 上次绘制时的数据指纹, 没变就不重复画
     }
   },
   computed: {
@@ -218,15 +273,26 @@ export default {
     if (this._unsubState) this._unsubState()
     if (this._pollTick) clearInterval(this._pollTick)
     if (this._pitchTick) clearInterval(this._pitchTick)
-    if (this._animationId) cancelAnimationFrame(this._animationId)
+    if (this._redrawTick) clearInterval(this._redrawTick)
+    /* 画布上下文在页面隐藏后可能失效, 下次 onShow 重新建 */
+    this.painter = null
+    this._canvasPending = false
   },
   onHide() {
     if (this._pollTick) clearInterval(this._pollTick)
     if (this._pitchTick) clearInterval(this._pitchTick)
-    if (this._animationId) cancelAnimationFrame(this._animationId)
+    if (this._redrawTick) clearInterval(this._redrawTick)
+    this.painter = null
+    this._canvasPending = false
   },
   methods: {
+    /**
+     * @brief 初始化绘图上下文
+     * @note  H5 端: 直接用 DOM 里的 <canvas> 取 2d 上下文
+     *        App/小程序端: 逻辑层没有 DOM, 只能用 uni.createCanvasContext 命令式 API
+     */
     _initCanvas() {
+      if (this.painter) return
       // #ifdef H5
       /* ⚠ uni-app 的 H5 端会把 <canvas canvas-id="xxx"> 渲染成
        *   <canvas class="uni-canvas-canvas">, **不会保留 canvas-id 属性**,
@@ -235,84 +301,134 @@ export default {
       const canvas = document.querySelector('canvas.uni-canvas-canvas') ||
                      document.querySelector('canvas')
       if (canvas) {
-        this.ctx = canvas.getContext('2d')
+        const ctx = canvas.getContext('2d')
         /* canvas.width 是设备像素 (2x), ctx.scale(2,2) 后绘图用 CSS 像素,
-         * 所以 canvasWidth/Height 存的是 CSS 尺寸 (绘制坐标不用除以 2) */
+         * 所以 _cssW/_cssH 存的是 CSS 尺寸 (绘制坐标不用除以 2) */
         const w = canvas.offsetWidth || 300
         const h = canvas.offsetHeight || 150
-        this.canvasWidth = canvas.width = w * 2
-        this.canvasHeight = canvas.height = h * 2
-        this.ctx.scale(2, 2)
+        canvas.width = w * 2
+        canvas.height = h * 2
+        ctx.scale(2, 2)
         this._cssW = w
         this._cssH = h
+        this.painter = createPainter(ctx, true)
       }
+      // #endif
+      // #ifndef H5
+      /* App / 小程序端: 用 uni 的画布命令 API, 尺寸靠节点查询拿到 (CSS 像素) */
+      if (this._canvasPending) return
+      this._canvasPending = true
+      uni.createSelectorQuery()
+        .select('.chart-canvas')
+        .boundingClientRect((rect) => {
+          this._canvasPending = false
+          if (!rect || !rect.width || !rect.height) {
+            /* 查不到节点尺寸时兜底: 用窗口宽度和 rpx 换算估算 */
+            const info = uni.getSystemInfoSync()
+            this._cssW = info.windowWidth - uni.upx2px(80)
+            this._cssH = uni.upx2px(300)
+          } else {
+            this._cssW = rect.width
+            this._cssH = rect.height
+          }
+          this.painter = createPainter(uni.createCanvasContext('pitchCanvas'), false)
+        })
+        .exec()
       // #endif
     },
     
+    /**
+     * @brief 启动重绘循环
+     * @note  用 setInterval 而不是 requestAnimationFrame:
+     *        App 端逻辑层没有 DOM, rAF / document 都是 undefined, 调用会抛
+     *        "ReferenceError: requestAnimationFrame is not defined"。
+     */
     _startDrawLoop() {
-      const draw = () => {
-        /* canvas 可能在页面切换后才渲染出来, 这里兜底再取一次 */
-        if (!this.ctx) this._initCanvas()
-        if (this.pitchHistory.length > 1) {
-          this._drawChart()
-        }
-        this._animationId = requestAnimationFrame(draw)
+      if (this._redrawTick) clearInterval(this._redrawTick)
+      this._redrawTick = setInterval(() => this._redraw(), REDRAW_MS)
+    },
+    
+    /**
+     * @brief 重绘一次曲线 (数据没变就不画, 减少跨层通信)
+     */
+    _redraw() {
+      /* canvas 可能在页面切换后才渲染出来, 这里兜底再取一次
+       * (App 端取尺寸是异步的, 没拿到之前不重复发起查询) */
+      if (!this.painter) {
+        if (!this._canvasPending) this._initCanvas()
+        return
       }
-      draw()
+      /* ⚠ 判断条件要同时看两个数组:
+       *   pitchSeries  = 高速通道 (属性历史接口) 的点, 带时间戳, 是主力
+       *   pitchHistory = 高速通道不通时的兜底 (最新值轮询), 元素少
+       * 早期只判 pitchHistory.length > 1, 而高速通道一直正常 →
+       * pitchHistory 永远只有 1 个元素 → 曲线永远不画 (空白框)。 */
+      if (this.pitchSeries.length <= 1 && this.pitchHistory.length <= 1) return
+      /* 数据指纹: 数据没变就不重复画 (App 端每次 draw 都要跨层通信, 很贵) */
+      const series = this.pitchSeries
+      let key
+      if (series.length > 1) {
+        key = 's' + series.length + ':' + series[series.length - 1].t
+      } else if (this.pitchHistory.length > 1) {
+        key = 'h' + this.pitchHistory.length + ':' + this.pitchHistory[this.pitchHistory.length - 1]
+      } else {
+        return
+      }
+      if (key === this._lastDrawKey) return
+      this._lastDrawKey = key
+      this._drawChart()
     },
     
     _drawChart() {
-      // #ifdef H5
-      if (!this.ctx) return
+      const p = this.painter
+      if (!p) return
       
-      const ctx = this.ctx
-      /* ctx.scale(2,2) 之后绘图坐标用 CSS 像素, 直接用 _cssW/_cssH,
-       * 不要再除以 2 (否则图形只画在左上角 1/4 区域) */
-      const w = this._cssW || this.canvasWidth / 2 || 300
-      const h = this._cssH || this.canvasHeight / 2 || 150
+      /* 绘图坐标统一用 CSS 像素 */
+      const w = this._cssW || 300
+      const h = this._cssH || 150
       const padding = 10
       const chartW = w - padding * 2
       const chartH = h - padding * 2
       
       // 清空画布
-      ctx.fillStyle = '#fafafa'
-      ctx.fillRect(0, 0, w, h)
+      p.fill('#fafafa')
+      p.fillRect(0, 0, w, h)
       
       // 画网格线
-      ctx.strokeStyle = '#e0e0e0'
-      ctx.lineWidth = 0.5
-      ctx.setLineDash([4, 4])
+      p.stroke('#e0e0e0')
+      p.width(0.5)
+      p.dash([4, 4])
       
       // 水平网格
       for (let i = 0; i <= 4; i++) {
         const y = padding + (chartH / 4) * i
-        ctx.beginPath()
-        ctx.moveTo(padding, y)
-        ctx.lineTo(w - padding, y)
-        ctx.stroke()
+        p.beginPath()
+        p.moveTo(padding, y)
+        p.lineTo(w - padding, y)
+        p.strokePath()
       }
       
       // 零线
-      ctx.strokeStyle = '#888'
-      ctx.lineWidth = 1
-      ctx.setLineDash([])
-      ctx.beginPath()
+      p.stroke('#888')
+      p.width(1)
+      p.dash([])
+      p.beginPath()
       const zeroY = padding + chartH / 2
-      ctx.moveTo(padding, zeroY)
-      ctx.lineTo(w - padding, zeroY)
-      ctx.stroke()
+      p.moveTo(padding, zeroY)
+      p.lineTo(w - padding, zeroY)
+      p.strokePath()
       
       // 画折线
       /* 高速通道的点带时间戳 (ms), 按**时间轴**摆位置:
        * 这样即使两次拉取之间漏了几个点, 曲线的疏密也能反映真实采样密度。 */
       const series = this.pitchSeries
-      const points = series.length > 1 ? series.map(p => p.v) : this.pitchHistory
+      const points = series.length > 1 ? series.map(p2 => p2.v) : this.pitchHistory
       if (points.length < 2) return
       
-      ctx.strokeStyle = '#1aad19'
-      ctx.lineWidth = 2
-      ctx.setLineDash([])
-      ctx.beginPath()
+      p.stroke('#1aad19')
+      p.width(2)
+      p.dash([])
+      p.beginPath()
       
       const scaleY = chartH / (PITCH_RANGE * 2)
       /* 时间轴: 以最新点为右端, 往左铺 PITCH_WINDOW_MS 毫秒 */
@@ -332,34 +448,30 @@ export default {
         return padding + i * (chartW / (points.length - 1))
       }
       
-      points.forEach((p, i) => {
+      points.forEach((v, i) => {
         const x = xOf(i)
-        const y = zeroY - p * scaleY
+        const y = zeroY - v * scaleY
         if (i === 0) {
-          ctx.moveTo(x, y)
+          p.moveTo(x, y)
         } else {
-          ctx.lineTo(x, y)
+          p.lineTo(x, y)
         }
       })
-      ctx.stroke()
+      p.strokePath()
       
       // 画数据点
-      ctx.fillStyle = '#1aad19'
-      points.forEach((p, i) => {
-        const x = xOf(i)
-        const y = zeroY - p * scaleY
-        ctx.beginPath()
-        ctx.arc(x, y, 3, 0, Math.PI * 2)
-        ctx.fill()
+      p.fill('#1aad19')
+      points.forEach((v, i) => {
+        p.dot(xOf(i), zeroY - v * scaleY, 3)
       })
       
       // 显示当前值
       const currentPitch = points[points.length - 1]
-      ctx.fillStyle = '#333'
-      ctx.font = '24px sans-serif'
-      ctx.textAlign = 'right'
-      ctx.fillText(currentPitch.toFixed(1) + '°', w - padding - 5, padding + 25)
-      // #endif
+      p.fill('#333')
+      p.text(currentPitch.toFixed(1) + '°', w - padding - 5, padding + 25, 24, 'right')
+      
+      // App/小程序端: 命令要 draw() 才真正上屏
+      p.flush()
     },
 
     /**
