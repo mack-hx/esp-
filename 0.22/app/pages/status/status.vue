@@ -192,6 +192,8 @@ export default {
       motor: { left: 0, right: 0, speed: 0, enc_l: 0, enc_r: 0 },
       deviceState: '--',
       _lastDataAt: 0,      // 最后一次收到平台数据的时间 (本地时钟, ms)
+      _maxGap: 0,          // 最近 3 秒内两次数据到达的最大间隔 (ms)
+      _maxGapAt: 0,        // 上面这个最大值统计到的时刻 (用于 3 秒窗口滑动)
       _tick: 0,            // 每秒自增, 用来让"心跳"读数定时刷新
       msgCount: 0,
       // 折线图数据 (高速通道: 每点带毫秒时间戳)
@@ -257,15 +259,20 @@ export default {
       return `${name} ${level}%`
     },
     /**
-     * @brief 心跳文字: 距离上一次收到平台数据过了多久
-     * @note  依赖 _tick (每秒自增) 才会定时刷新;
-     *        1 秒内显示毫秒, 超过 1 秒显示秒 —— 数据断了会看到数字往上跳
+     * @brief 心跳文字: 链路有多稳
+     * @note  之前这里显示"距上一次收到数据过了多久", 但数据每 120~200ms 就到一批,
+     *        每次到达都被清零 → 读数在 0 和 200ms 之间来回跳, 看着像坏了。
+     *        现在改成:
+     *        - 数据正常时: 最近 3 秒里两次数据到达的**最大间隔** (稳定, 不跳动;
+     *          链路卡顿时这个数会明显变大, 断线恢复后 3 秒内回到正常值)
+     *        - 数据断了 (超过 1 秒没数据): 直接显示"距上次数据多久", 秒数往上跳
+     * @note  依赖 _tick (每秒自增) 和 _lastDataAt 才能定时刷新
      */
     heartbeatText() {
       if (!this._lastDataAt) return '无数据'
       const age = Date.now() - this._lastDataAt
-      if (age < 1000) return age + 'ms'
-      return Math.floor(age / 1000) + 's'
+      if (age > 1000) return (age / 1000).toFixed(1) + 's'
+      return this._maxGap + 'ms'
     },
     /**
      * @brief 数据延迟文字
@@ -615,7 +622,23 @@ export default {
 
     _bumpSeen() {
       /* 记录最后一次收到平台数据的时间, 供"心跳"显示用 */
-      this._lastDataAt = Date.now()
+      const now = Date.now()
+      if (this._lastDataAt) {
+        /* 间隔超过 1 秒就算"掉线"了 (那种情况由上面的 age 读数负责显示),
+         * 不计入"最大间隔"统计, 否则恢复后的第一帧会把掉线时长当成抖动值 */
+        const gap = Math.min(now - this._lastDataAt, 1000)
+        /* 统计最近 3 秒内的最大到达间隔:
+         *   正常链路 ~200ms 上下, 卡顿时会明显变大;
+         *   窗口只用 3 秒, 断线恢复后读数很快回到正常值, 不会一直挂着故障值 */
+        if (!this._maxGap || now - this._maxGapAt > 3000) {
+          this._maxGap = gap
+          this._maxGapAt = now
+        } else if (gap > this._maxGap) {
+          this._maxGap = gap
+          this._maxGapAt = now
+        }
+      }
+      this._lastDataAt = now
     },
 
     fmt(v, dec) {
