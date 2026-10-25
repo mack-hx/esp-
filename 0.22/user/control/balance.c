@@ -261,7 +261,9 @@ static void balance_read_sensors(void)
 
             /* 俯仰方向角速度: 取 MPU 的 X 轴 (车体俯仰的旋转轴),
              * 乘 GYRO_PITCH_SIGN 修正装配方向。详见 mpu9250.c 的
-             * mpu9250_fuse_euler 注释, 以及 balance.h 顶部的方向常量说明。 */
+             * mpu9250_fuse_euler 注释, 以及 balance.h 顶部的方向常量说明。
+             * ⚠ 本工程符号: 前倾 (车头往下) 时 pitch 与角速度**都是负数**,
+             *   实测前倾时 gyro 与 pitch 同号, 所以 GYRO_PITCH_SIGN 取 +1。 */
             float rate = gyro.x * GYRO_PITCH_SIGN;
 
             /* 一阶低通滤高频噪声。系数越小越平滑但延迟越大,
@@ -497,17 +499,20 @@ static void balance_control_step(float dt)
 
     /* --- 内环: 平衡环 → 电机输出 ---
      * 误差 = 实际倾角 - 目标倾角
-     * 车往前倒 (pitch > 0) 时误差为正, 输出为正 → 电机往"追着倒的方向"转,
-     * 把重心拉回来。
+     * 本工程 pitch 的符号: **前倾 (车头往下) 为负** (见 balance.h 的方向常量)。
+     * 所以车往前倒时误差为负 → 平衡输出为负 → 乘 BAL_MOTOR_SIGN(+1) 后
+     * 电机输出仍为负 → 轮子往车头方向跑, 把重心拉回来。
      *
      * ⚠ D 项用**角速度反馈**而不是误差微分 (见 pid_update_rate 的注释),
-     * 且符号为正: 车往前倒得越快, 轮子追得越凶 —— 这才是阻尼。 */
+     * 且与 P 项同号: 车往前倒得越快, 轮子追得越凶 —— 这才是阻尼。 */
     float bal_err = s_data.pitch - s_data.target_pitch;
     s_data.bal_out = pid_update_rate(&s_pid_bal, bal_err, s_data.gyro, dt);
 
     /* --- 执行: 双轮同向输出 ---
      * BAL_MOTOR_SIGN 烘焙在代码里 (0.13 起不在网页上可调):
-     * 改电机装配方向后, 要改的是 balance.h 的宏, 然后重烧固件 */
+     * 改电机装配方向后, 要改的是 balance.h 的宏, 然后重烧固件。
+     * ⚠ 2026-10-25 实测: 这个符号之前取反了 (原 -1), 导致前倾时轮子往后跑,
+     *   车必然往前扑倒。现在是 +1, 详见 balance.h 的方向常量说明。 */
     float out = s_data.bal_out * BAL_MOTOR_SIGN;
 
     float out_max = param_get_float(PARAM_MOTOR_OUT_MAX);

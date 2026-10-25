@@ -23,13 +23,15 @@ static const char *TAG = "PARAM";
 #define NVS_NAMESPACE   "param"
 #define NVS_KEY_VALUES  "v"     /* 存所有 float 的 blob */
 #define NVS_KEY_VERSION "ver"   /* 表结构版本, 表变了就忽略旧数据 */
-#define PARAM_DATA_VERSION  8   /* 每次增删参数就 +1
+#define PARAM_DATA_VERSION  9   /* 每次增删参数就 +1
                                  * v2~v5: 0.1 的历史版本 (已作废)
                                  * v6:    0.11 删掉转向环/servo_l/pwm_max/deadband 等
                                  * v7:    0.13 再删 ang_zero/bal_sign/gyro_sign (烘焙成常量)
                                  * v8:    0.22 平衡环 D 项符号修正 + 速度环默认关,
                                  *         旧默认值 (Kp40/Ki12/死区8) 必须作废,
                                  *         否则 NVS 里的旧值会让新代码继续按错的参数跑
+                                 * v9:    0.22 电机方向修正后 motor_max 默认 30→60,
+                                 *         同样要作废旧 blob
                                  * NVS blob 布局变了, 旧数据必须作废 */
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
@@ -54,8 +56,9 @@ const param_item_t g_param_items[] = {
       "速度变化阻尼" },
 
     /* ---------- 限幅 / 摔倒 / 滤波 / 减速比 ---------- */
-    { PARAM_MOTOR_OUT_MAX, "motor_max", "Motor Out Max", "%", 30.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
-      "电机总输出上限。**默认只给 30% 是故意的**: 调试时宁小勿大, 站起来了再往上加" },
+    { PARAM_MOTOR_OUT_MAX, "motor_max", "Motor Out Max", "%", 60.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "电机总输出上限。2026-10-25 起默认 60%: 方向修正后实测能自己站住, "
+      "但倾角大一点就要更大出力才接得住 (Kp=12 时 5° 就顶格)" },
     { PARAM_SPEED_OUT_MAX, "spdout_max", "Speed Out Max", "°", 40.0f, 0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
       "速度环能给出的最大倾角目标 (°)。车本来就有配平偏差时别调太大" },
     { PARAM_ANGLE_LIMIT, "ang_limit", "Angle Limit", "°", 25.0f,  5.0f,   60.0f, 1.0f, 0, PARAM_GRP_LIMIT,

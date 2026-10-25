@@ -135,8 +135,18 @@ void app_main(void)
                  PCF8574_SCL_GPIO, PCF8574_SDA_GPIO, PCF8574_INT_GPIO);
     }
 
-    /* 7. 初始化 MPU9250 (允许失败: 模块可能未接, UI 会显示 "NOT READY") */
-    esp_err_t mpu_ret = mpu9250_init();
+    /* 7. 初始化 MPU9250 (允许失败: 模块可能未接, UI 会显示 "NOT READY")
+     * ⚠ 重试 10 次: 上电瞬间 IMU 的供电/内部时钟可能还没稳,
+     *   单次读 WHO_AM_I 失败就放弃, 会让整次上电都处于"MPU 不可用"状态
+     *   (实测过一次: 第 1 次读失败, 500ms 后重试就正常了)。 */
+    esp_err_t mpu_ret = ESP_FAIL;
+    for (int i = 0; i < 10 && mpu_ret != ESP_OK; i++) {
+        mpu_ret = mpu9250_init();
+        if (mpu_ret != ESP_OK) {
+            ESP_LOGW(TAG, "MPU9250 初始化失败 (第 %d 次), 500ms 后重试", i + 1);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+    }
     if (mpu_ret != ESP_OK) {
         ESP_LOGE(TAG, "MPU9250 初始化失败 (模块未接或 I2C 故障), UI 仍可正常工作");
         ESP_LOGE(TAG, "请检查 MPU9250 模块接线 (SCL=GPIO%d, SDA=GPIO%d, VCC, GND, AD0)",
