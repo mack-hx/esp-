@@ -12,7 +12,7 @@
 ## 当前状态
 
 - ✅ 代码已提交到本地 git 并推送到 GitHub
-- ✅ GitHub 上共 12 个 release（v0.1.0 ~ v1.5、v0.17、v0.2、v0.21、v0.22；v1.6 只有 tag 没有 release）
+- ✅ GitHub 上共 13 个 release（v0.1.0 ~ v1.5、v0.17、v0.2、v0.21、v0.22、v0.30；v1.6 只有 tag 没有 release）
 - ✅ 本地只保留 `0.22/` 和 `0.30/` 两个版本目录
 - ✅ `releases/` 里只放最新两版的源码包
 
