@@ -235,6 +235,64 @@ static void test_dt_invariance(void)
           "dt=10ms → %.4f, dt=12ms → %.4f (期望一致)", out_a, out_b);
 }
 
+/* ---------- 用例 7: 抗积分饱和 (2026-10-26) ----------
+ * 输出顶在限幅上时, 误差继续同向积分会让 i 越攒越大;
+ * 等误差反向, 系统要先把这段"退积分"走完才能响应 → 输出长时间卡在限幅上。
+ * 现象: 车先站住, 站一会儿后积分顶死, 然后开始高频抖。
+ */
+static void test_anti_windup(void)
+{
+    printf("[7] 输出饱和时冻结积分 (抗积分饱和)\n");
+
+    bal_pid_t pid;
+    pid_config(&pid, 0.0f, 1.0f, 0.0f, 1000.0f, 10.0f);   /* i_max=1000, out_max=10 */
+
+    /* 恒定误差 +1.0 → 输出很快顶到 +10, 此后积分必须冻结 */
+    float out = 0.0f;
+    for (int i = 0; i < 5000; i++) {
+        out = pid_update_rate(&pid, 1.0f, 0.0f, 0.01f);
+    }
+    CHECK(fabsf(out - 10.0f) < 0.01f, "恒定误差 → out=%.3f (期望顶在 +10)", out);
+    CHECK(pid.i < 12.0f,
+          "积分被冻结在 i=%.3f (期望 ≈10 = out_max/Ki; 无抗饱和时会攒到 i_max=1000)", pid.i);
+
+    /* 误差反向: 积分要能退回来 (不能被永久冻住)。
+     * err=-1 每拍让 i 减 0.01, 1200 拍后 i 从 +10 走到 -10 (被限幅夹住)。 */
+    for (int i = 0; i < 1200; i++) {
+        out = pid_update_rate(&pid, -1.0f, 0.0f, 0.01f);
+    }
+    CHECK(pid.i < 0.0f, "误差反向后积分退回到 i=%.3f (期望 < 0)", pid.i);
+    CHECK(out < 0.0f, "误差反向后输出 out=%.3f (期望 < 0, 响应恢复)", out);
+}
+
+/* ---------- 用例 8: 运行中改参数不清积分 ----------
+ * App 上拖 Kp 滑块必须立刻生效, 但不能把已经攒起来的积分清掉
+ * (清掉的话积分项会从 0 重新爬, 输出出现台阶)。
+ */
+static void test_set_gains_keeps_integral(void)
+{
+    printf("[8] pid_set_gains() 只改系数, 保留积分历史\n");
+
+    bal_pid_t pid;
+    pid_config(&pid, 0.0f, 1.0f, 0.0f, 100.0f, 100.0f);
+
+    for (int i = 0; i < 50; i++) pid_update_rate(&pid, 1.0f, 0.0f, 0.01f);
+    float i_before = pid.i;
+    CHECK(i_before > 0.4f, "积分已攒到 i=%.3f (期望 ≈0.5)", i_before);
+
+    /* 运行中改参数 (模拟 App 拖滑块) */
+    pid_set_gains(&pid, 20.0f, 2.0f, 1.5f, 100.0f, 60.0f);
+    CHECK(fabsf(pid.i - i_before) < 1e-6f,
+          "改参数后积分保持 i=%.3f (期望 %.3f, 不能被清掉)", pid.i, i_before);
+    CHECK(pid.kp == 20.0f && pid.ki == 2.0f && pid.kd == 1.5f && pid.out_max == 60.0f,
+          "新系数已生效: kp=%.1f ki=%.1f kd=%.1f out_max=%.1f",
+          (double)pid.kp, (double)pid.ki, (double)pid.kd, (double)pid.out_max);
+
+    /* 改参数后误差不变, 输出应按新系数立刻变化 (参数实时生效) */
+    float out = pid_update_rate(&pid, 1.0f, 0.0f, 0.01f);
+    CHECK(out > 20.0f, "新 Kp 立刻生效: err=1° → out=%.2f (期望 > 20)", out);
+}
+
 int main(void)
 {
     printf("==== pid_update_rate() 离线验证 ====\n\n");
@@ -244,6 +302,8 @@ int main(void)
     test_first_sample_no_kick();
     test_differs_from_error_derivative();
     test_dt_invariance();
+    test_anti_windup();
+    test_set_gains_keeps_integral();
 
     printf("\n==== %d/%d 通过, %d 失败 ====\n",
            g_pass + g_fail, g_pass + g_fail, g_fail);

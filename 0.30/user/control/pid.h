@@ -56,6 +56,26 @@ void pid_config(bal_pid_t *pid, float kp, float ki, float kd,
                 float i_max, float out_max);
 
 /**
+ * @brief 只改系数, **保留**积分和微分历史
+ * @param pid     PID 结构指针
+ * @param kp      比例系数
+ * @param ki      积分系数
+ * @param kd      微分系数
+ * @param i_max   积分累积限幅 (绝对值, <=0 表示不限制)
+ * @param out_max 输出限幅 (绝对值, <=0 表示不限制)
+ *
+ * @brief 为什么需要它 (2026-10-26)
+ *   App / 网页上拖滑块改 Kp 之后, 必须**立刻**作用到正在跑的 PID 上。
+ *   之前 balance.c 只在启动时调 pid_config() 一次, 而 pid_config() 里
+ *   带着 pid_reset() (清积分), 所以要么用 pid_config (积分被清, 每周期
+ *   调用会让积分永远为 0), 要么参数改了不生效 (App 上把 Kp 拖到 0 也没用)。
+ *   → 分成两个函数: pid_config   = 改系数 + 清历史 (启动/切换模式用)
+ *                    pid_set_gains = 只改系数       (运行中改参数用)
+ */
+void pid_set_gains(bal_pid_t *pid, float kp, float ki, float kd,
+                   float i_max, float out_max);
+
+/**
  * @brief 清空积分和微分历史 (上电 / 摔倒恢复 / 切模式时调用)
  * @note  不清积分的话, 上一次摔倒前累积的积分会让电机一启动就猛冲一下
  * @param pid PID 结构指针

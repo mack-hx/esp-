@@ -21,14 +21,44 @@ static float clamp_sym(float v, float limit)
     return v;
 }
 
-void pid_config(bal_pid_t *pid, float kp, float ki, float kd,
-                float i_max, float out_max)
+/**
+ * @brief 判断"输出已饱和且误差还在往同一方向推" → 此时不能再积分
+ * @param pid   PID 结构指针
+ * @param out   当前完整输出 (含积分项)
+ * @param err   当前误差
+ * @return true=本周期应冻结积分
+ *
+ * @note  抗积分饱和 (anti-windup) 的标准做法:
+ *   输出顶在限幅上时, 误差继续同向积分, 累积值 i 会越攒越大;
+ *   等误差反向, 系统要先把这段"退积分"走完才能响应 → 输出长时间卡在
+ *   限幅上 (车表现为一直猛冲 / 回不来)。
+ *   实测表现 (2026-10-26): 车先站住, 站一会儿后积分慢慢顶死,
+ *   然后开始高频抖动 —— 因为积分项一直在满输出附近来回横跳。
+ */
+static bool pid_windup_blocked(const bal_pid_t *pid, float out, float err)
+{
+    if (pid->out_max <= 0.0f) return false;   /* 输出不限幅 → 不需要抗饱和 */
+    if (out >=  pid->out_max && err > 0.0f) return true;   /* 顶上限, 误差还在往上推 */
+    if (out <= -pid->out_max && err < 0.0f) return true;   /* 顶下限, 误差还在往下推 */
+    return false;
+}
+
+void pid_set_gains(bal_pid_t *pid, float kp, float ki, float kd,
+                   float i_max, float out_max)
 {
     pid->kp      = kp;
     pid->ki      = ki;
     pid->kd      = kd;
     pid->i_max   = i_max;
     pid->out_max = out_max;
+    /* ⚠ 不碰 i / prev_err / primed: 运行中改参数不能把积分清掉,
+     *   否则每次改参数都会让积分项重新从 0 累积, 输出会出现台阶。 */
+}
+
+void pid_config(bal_pid_t *pid, float kp, float ki, float kd,
+                float i_max, float out_max)
+{
+    pid_set_gains(pid, kp, ki, kd, i_max, out_max);
     pid_reset(pid);
 }
 
@@ -54,10 +84,16 @@ float pid_update(bal_pid_t *pid, float err, float dt)
     pid->primed   = true;
 
     /* --- 积分项 (带累积限幅, 防积分饱和) --- */
-    pid->i = clamp_sym(pid->i + err * dt, pid->i_max);
+    float i_new = clamp_sym(pid->i + err * dt, pid->i_max);
+
+    /* 抗积分饱和: 输出已顶到限幅且误差还在同向 → 冻结积分 */
+    float out = pid->kp * err + pid->ki * pid->i + pid->kd * d;
+    if (!pid_windup_blocked(pid, out, err)) {
+        pid->i = i_new;
+    }
 
     /* --- 输出 --- */
-    float out = pid->kp * err + pid->ki * pid->i + pid->kd * d;
+    out = pid->kp * err + pid->ki * pid->i + pid->kd * d;
     return clamp_sym(out, pid->out_max);
 }
 
@@ -81,7 +117,13 @@ float pid_update_rate(bal_pid_t *pid, float err, float rate, float dt)
     pid->prev_err = err;
     pid->primed   = true;
 
-    pid->i = clamp_sym(pid->i + err * dt, pid->i_max);
+    /* 抗积分饱和: 输出已顶到限幅且误差还在同向 → 冻结积分
+     * (说明见 pid_windup_blocked 的注释) */
+    float i_new = clamp_sym(pid->i + err * dt, pid->i_max);
+    float out_now = pid->kp * err + pid->ki * pid->i + pid->kd * d;
+    if (!pid_windup_blocked(pid, out_now, err)) {
+        pid->i = i_new;
+    }
 
     /* ⚠ D 项与 P 项**同号** (2026-10-25 修正, 之前是负号 = 负阻尼, 车必然站不住)
      *

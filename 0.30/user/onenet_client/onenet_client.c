@@ -1252,11 +1252,14 @@ esp_err_t mqtt_client_start(void)
         return err;
     }
 
-    /* 3. 起两个后台任务 (增大栈避免溢出) */
-    xTaskCreate(publish_task, "onenet_pub", 8192, NULL, 5, &s_pub_task);
+    /* 3. 起两个后台任务 (增大栈避免溢出)
+     * ⚠ 优先级必须低于平衡控制任务 (prio 7): 上报任务跑 WiFi/MQTT,
+     *   一旦抢占控制任务, 控制周期就会抖 (dt 突然变大), 表现为
+     *   "站一会之后开始高频抖" (2026-10-26) */
+    xTaskCreate(publish_task, "onenet_pub", 8192, NULL, 4, &s_pub_task);
     /* 高速通道: 俯仰角 20Hz */
-    xTaskCreate(publish_fast_task, "onenet_fast", 4096, NULL, 6, &s_pub_fast);
-    xTaskCreate(desired_pull_task, "onenet_desired", 4096, NULL, 4, &s_desired_pull);
+    xTaskCreate(publish_fast_task, "onenet_fast", 4096, NULL, 5, &s_pub_fast);
+    xTaskCreate(desired_pull_task, "onenet_desired", 4096, NULL, 3, &s_desired_pull);
 
     return ESP_OK;
 }

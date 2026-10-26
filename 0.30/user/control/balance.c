@@ -109,6 +109,18 @@ static bool  s_calib_active = false;
 #define BAL_NVS_NS        "bal"
 #define BAL_NVS_KEY_ZERO  "pz"
 
+/* ========== 起立时的自动配平零点微调 (°) ==========
+ * 起立时如果车相对"上次标定的姿态"几乎没变 (|pitch| 在这个范围内),
+ * 就重新采一次零点并落盘:
+ *   - 顺带修掉加速度计零偏 + 陀螺零偏随温度的漂移 (每次上电 pitch 都不一样)
+ *   - 结果写进 NVS, 断电不丢 → 下次上电直接沿用
+ * ⚠ 容差就是"允许修正的最大角度", 故意取小 (1°):
+ *   零点定的是**平衡点**, 差 1° 以上就意味着车会带着一个倾角站立,
+ *   慢慢往一边跑。所以这里只允许"微调"传感器漂移, 不允许重新定义平衡点 ——
+ *   真正的重新定义走 App 的「配平」按钮 (手动配平永远覆盖, 不受此容差限制)。
+ *   偏差超过 1° 时不动零点, 只在日志里提示用户按「配平」。 */
+#define BAL_AUTO_ZERO_TOL 1.0f
+
 /* ================= 内部辅助 ================= */
 
 /**
@@ -174,7 +186,13 @@ static float balance_i_max(float ki, float out_max)
 
 /**
  * @brief 从 param 表读出所有控制参数, 配置两个 PID
- * @note  每次控制周期都调一次: 网页拖滑块后下一次运算立刻用新值, 无需重启
+ * @note  **每个控制周期都调一次**: 网页/App 上拖滑块后, 下一次运算立刻用新值,
+ *        不用重启。
+ *        ⚠ 2026-10-26 修正: 之前这个函数只在启动时调一次, 而且用的是
+ *          pid_config() (带 pid_reset(), 会清积分) —— 结果 App 上把
+ *          bal_kp 拖到 0 也**完全不生效**, 用户误以为"降 Kp 没用"。
+ *          现在改用 pid_set_gains() (只改系数, 保留积分/微分历史),
+ *          并且每周期调用, 参数改动立刻生效。
  */
 static void balance_load_params(void)
 {
@@ -189,19 +207,15 @@ static void balance_load_params(void)
     float spd_ki = param_get_float(PARAM_PID_SPD_KI);
     float spd_kd = param_get_float(PARAM_PID_SPD_KD);
 
-    pid_config(&s_pid_bal,
-               bal_kp, bal_ki, bal_kd,
-               balance_i_max(bal_ki, out_max),   /* 积分项最大 = 输出一半 */
-               out_max);
+    pid_set_gains(&s_pid_bal,
+                  bal_kp, bal_ki, bal_kd,
+                  balance_i_max(bal_ki, out_max),   /* 积分项最大 = 输出一半 */
+                  out_max);
 
-    pid_config(&s_pid_spd,
-               spd_kp, spd_ki, spd_kd,
-               balance_i_max(spd_ki, spdout_max),
-               spdout_max);         /* 输出 = 目标倾角 (°) */
-
-    /* 电机死区: init 时先写一次, 避免第一次 enable 前是旧值。
-     * 控制任务每周期也会重写, 这里只是让初值就是对的。 */
-    motor_set_deadband((int8_t)param_get_float(PARAM_MOTOR_DEADBAND));
+    pid_set_gains(&s_pid_spd,
+                  spd_kp, spd_ki, spd_kd,
+                  balance_i_max(spd_ki, spdout_max),
+                  spdout_max);         /* 输出 = 目标倾角 (°) */
 }
 
 /**
@@ -482,6 +496,11 @@ static void balance_state_machine(float dt)
  */
 static void balance_control_step(float dt)
 {
+    /* --- 实时读取调参表 ---
+     * App / 网页上改的 Kp/Ki/Kd/限幅/死区, 在**下一个控制周期**就生效。
+     * (2026-10-26 修正: 之前只在启动时读一次, App 上改参数完全没用) */
+    balance_load_params();
+
     /* --- 起立软启动: 输出限幅慢慢放开到 100% ---
      * 刚起立时车还歪着, PID 输出会直接顶格 → 电机猛冲。
      * 这里先把限幅压在 BAL_RAMP_START_PCT, 再按 BAL_RAMP_TIME_MS 放开。 */
@@ -750,8 +769,12 @@ esp_err_t balance_init(void)
         return ESP_OK;    /* 已经起过了 */
     }
 
-    /* 增大任务栈: 平衡控制涉及大量浮点运算, 需要足够空间避免溢出 */
-    BaseType_t ret = xTaskCreate(balance_task, "bal", 8192, NULL, 6, NULL);
+    /* 增大任务栈: 平衡控制涉及大量浮点运算, 需要足够空间避免溢出
+     * ⚠ 优先级 7 (2026-10-26): 必须高于所有网络/上报任务
+     *   (OneNet 高速上报 5/6、MQTT 客户端 5), 否则 WiFi 收发或 MQTT 发布会
+     *   抢占控制任务 → 控制周期抖动 (dt 突然变大) → 阻尼相位失配 →
+     *   表现为"站一会之后开始高频抖"。 */
+    BaseType_t ret = xTaskCreate(balance_task, "bal", 8192, NULL, 7, NULL);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "控制任务创建失败");
         return ESP_FAIL;
@@ -786,6 +809,23 @@ esp_err_t balance_set_enable(bool on)
         s_state   = BAL_STATE_STANDBY;
         s_enabled = true;
         s_out_ramp = BAL_RAMP_START_PCT;   /* 起立软启动: 输出限幅从缓开始 */
+
+        /* --- 自动微调配平零点 (断电保存) ---
+         * 车相对上次标定的姿态几乎没变时, 重新采一次零点并落盘:
+         *   - 修掉加速度计/陀螺零偏随温度的漂移 → 每次上电 pitch 一致
+         *   - 零点写进 NVS → 断电不丢
+         * 偏差超过 1° 说明零点已经不准了 (或者车没扶到平衡点),
+         * 这时不动零点, 只提示用户按 App 的「配平」重新定义。 */
+        if (fabsf(pitch) <= BAL_AUTO_ZERO_TOL) {
+            ESP_LOGI(TAG, "起立: pitch=%.2f° 与上次标定一致, 自动微调配平零点",
+                     (double)pitch);
+            balance_calibrate();
+        } else {
+            ESP_LOGW(TAG, "起立: pitch=%.2f° 偏离上次标定的姿态 (>%.1f°), "
+                          "不自动改零点 —— 请把车扶到平衡点后按 App 的「配平」按钮",
+                     (double)pitch, (double)BAL_AUTO_ZERO_TOL);
+        }
+
         ESP_LOGI(TAG, "平衡控制已启动, 等待连续稳定 %.0fms 后输出 "
                       "(需 |pitch|<%.0f° 且 |角速度|<%.0f°/s)",
                  (double)param_get_float(PARAM_ARM_TIME),

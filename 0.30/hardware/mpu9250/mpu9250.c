@@ -12,6 +12,8 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <string.h>
 #include <math.h>
 
@@ -20,8 +22,94 @@ static const char *TAG = "MPU9250";
 /* 陀螺仪零点偏移 */
 static mpu9250_axis_t gyro_offset = {0, 0, 0};
 
+/* ========== 陀螺零偏的 NVS 存放位置 ==========
+ * namespace "imu", key "gof": 三轴零偏, 单位 0.001 °/s, 3 个 int16
+ *
+ * @brief 为什么必须存下来 (2026-10-26)
+ *   零偏会进两个地方:
+ *     1) 陀螺积分 → 互补滤波里的姿态角 (被 1/(1-alpha)≈49 倍放大的那一部分)
+ *     2) 平衡环 D 项 → 一个**恒定**的力矩输出 (零偏 1°/s × Kd 1.5 = 1.5% 常数)
+ *   每次上电都重新标定的话, 只要标定时手在抖 / 车没放稳, 零偏就是随机的 →
+ *   每次上电的 pitch 和电机输出都不一样 (用户反馈: "pitch 每次上电重启后就不对")。
+ *   存进 NVS 之后每次上电用同一个零偏 → 一致, 而且断电不丢。
+ *   换 IMU 或觉得零偏不对时, 用 MPU 调试页的 K2 重新标定 (标完也会自动存盘)。 */
+#define MPU_NVS_NS            "imu"
+#define MPU_NVS_KEY_GYRO      "gof"
+/* 零偏绝对值超过这个数就当作数据不可信 (重新标定) */
+#define MPU_GYRO_OFFSET_MAX   5.0f
+/* 标定时判定"设备在动"的阈值 (°/s): 超过就丢掉这个样本 */
+#define MPU_GYRO_MOTION_THR   2.0f
+
 /* 初始化是否成功 (供外部查询, 避免反复尝试初始化失败的模块) */
 static bool s_ready = false;
+
+/* ================= 陀螺零偏的持久化 ================= */
+
+/**
+ * @brief 把当前陀螺零偏写进 NVS
+ * @note  存成 3 个 int16 (单位 0.001 °/s), 避免 float 的对齐问题
+ */
+static void mpu9250_save_gyro_offset(void)
+{
+    nvs_handle_t h;
+    esp_err_t ret = nvs_open(MPU_NVS_NS, NVS_READWRITE, &h);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "陀螺零偏保存失败: NVS 打开失败 (%s)", esp_err_to_name(ret));
+        return;
+    }
+    int16_t v[3] = {
+        (int16_t)lrintf(gyro_offset.x * 1000.0f),
+        (int16_t)lrintf(gyro_offset.y * 1000.0f),
+        (int16_t)lrintf(gyro_offset.z * 1000.0f),
+    };
+    ret = nvs_set_blob(h, MPU_NVS_KEY_GYRO, v, sizeof(v));
+    if (ret == ESP_OK) ret = nvs_commit(h);
+    nvs_close(h);
+
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "陀螺零偏已保存: (%.3f, %.3f, %.3f) °/s",
+                 (double)gyro_offset.x, (double)gyro_offset.y, (double)gyro_offset.z);
+    } else {
+        ESP_LOGE(TAG, "陀螺零偏保存失败: %s", esp_err_to_name(ret));
+    }
+}
+
+/**
+ * @brief 从 NVS 读回陀螺零偏
+ * @return true=读到了可信的零偏 (已写进 gyro_offset); false=没有/不可信
+ */
+static bool mpu9250_load_gyro_offset(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(MPU_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    int16_t v[3] = {0, 0, 0};
+    size_t len = sizeof(v);
+    esp_err_t ret = nvs_get_blob(h, MPU_NVS_KEY_GYRO, v, &len);
+    nvs_close(h);
+
+    if (ret != ESP_OK || len != sizeof(v)) {
+        return false;
+    }
+
+    mpu9250_axis_t off = {
+        v[0] / 1000.0f,
+        v[1] / 1000.0f,
+        v[2] / 1000.0f,
+    };
+    /* 零偏不该有这么大, 超了说明数据是脏的 → 当作没有, 重新标定 */
+    if (fabsf(off.x) > MPU_GYRO_OFFSET_MAX ||
+        fabsf(off.y) > MPU_GYRO_OFFSET_MAX ||
+        fabsf(off.z) > MPU_GYRO_OFFSET_MAX) {
+        ESP_LOGW(TAG, "NVS 里的陀螺零偏不合理 (%.3f, %.3f, %.3f), 重新标定",
+                 (double)off.x, (double)off.y, (double)off.z);
+        return false;
+    }
+
+    gyro_offset = off;
+    return true;
+}
 
 /* 当前量程配置 */
 static mpu9250_accel_fs_t current_accel_fs = ACCEL_FS_2G;
@@ -74,6 +162,9 @@ static SemaphoreHandle_t s_i2c_mutex = NULL;
  * ⚠ 以前 dt 硬编码 0.01f, 控制周期一改陀螺仪积分就错且无任何提示。
  *    改成自己测: 两次调用之间实际过了多久就用多久。 */
 static int64_t s_filt_last_us = 0;
+
+/* 互补滤波是否已经出过第一帧 (第一帧直接用加速度角当初值) */
+static bool s_filt_primed = false;
 
 /**
  * @brief 获取 I2C 总线锁
@@ -228,15 +319,25 @@ esp_err_t mpu9250_init(void)
     
     ESP_LOGI(TAG, "IMU 初始化完成 (加速度+陀螺配置就绪)");
     s_ready = true;
-    
-    // 校准陀螺仪
-    ESP_LOGI(TAG, "开始校准陀螺仪,请保持设备静止...");
-    ret = mpu9250_calibrate_gyro(100);
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "陀螺仪校准完成: offset(%.3f, %.3f, %.3f)", 
-                 gyro_offset.x, gyro_offset.y, gyro_offset.z);
+
+    /* 校准陀螺仪:
+     * 优先用 NVS 里存好的零偏 (每次上电用同一个 → pitch 每次上电一致),
+     * 没有才现场标定 (要求设备静止), 标定完自动存盘。 */
+    if (mpu9250_load_gyro_offset()) {
+        ESP_LOGI(TAG, "已载入陀螺仪零偏 (NVS): (%.3f, %.3f, %.3f)",
+                 (double)gyro_offset.x, (double)gyro_offset.y, (double)gyro_offset.z);
+    } else {
+        ESP_LOGI(TAG, "开始校准陀螺仪,请保持设备静止...");
+        ret = mpu9250_calibrate_gyro(100);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "陀螺仪校准完成: offset(%.3f, %.3f, %.3f)",
+                     (double)gyro_offset.x, (double)gyro_offset.y, (double)gyro_offset.z);
+        } else {
+            ESP_LOGW(TAG, "陀螺仪校准未成功 (设备可能在动), 零偏暂用 0; "
+                          "可在 MPU 调试页按 K2 重新标定");
+        }
     }
-    
+
     return ESP_OK;
 }
 
@@ -277,6 +378,32 @@ esp_err_t mpu9250_set_gyro_fs(mpu9250_gyro_fs_t fs)
         gyro_scale = 131.0f / (1 << fs);
     }
     return ret;
+}
+
+/**
+ * @brief 读取**未经零偏补偿**的原始陀螺仪读数 (°/s)
+ * @param gyro [出参] 三轴原始角速度
+ * @return ESP_OK 成功
+ * @note  标定零偏必须用原始值: mpu9250_read_gyro() 已经把旧零偏扣掉了,
+ *        再拿它去算"新零偏"会算成残差 (二次相减), 越校越歪。
+ */
+static esp_err_t mpu9250_read_raw_gyro(mpu9250_axis_t *gyro)
+{
+    uint8_t raw[6];
+
+    mpu9250_lock();
+    esp_err_t ret = mpu9250_read_reg(MPU9250_GYRO_XOUT_H, raw, 6);
+    mpu9250_unlock();
+    if (ret != ESP_OK) return ret;
+
+    int16_t gx = (int16_t)((raw[0] << 8) | raw[1]);
+    int16_t gy = (int16_t)((raw[2] << 8) | raw[3]);
+    int16_t gz = (int16_t)((raw[4] << 8) | raw[5]);
+
+    gyro->x = gx / gyro_scale;
+    gyro->y = gy / gyro_scale;
+    gyro->z = gz / gyro_scale;
+    return ESP_OK;
 }
 
 /**
@@ -400,6 +527,20 @@ static void mpu9250_fuse_euler(const mpu9250_data_t *data, euler_angle_t *out)
      * 粗略值仅供观察: 左右倾时重力在 X↔Y 之间转移 */
     float accel_roll  = atan2f(data->accel.x, -data->accel.y) * 180.0f / M_PI;
 
+    /* ---------- 首帧: 直接用加速度算出的角度当初值 (2026-10-26) ----------
+     * 以前 current_angle 从 0 开始, 要靠互补滤波慢慢收敛 (时间常数 ~0.5s),
+     * 结果上电后这半秒里 pitch 读数是错的 (用户反馈"pitch 每次上电重启后就不对"),
+     * 如果这时候刚好起立, 控制器会拿着一个错的姿态角输出。
+     * 现在首帧直接用加速度角, 读数从第一帧就是对的。 */
+    if (!s_filt_primed) {
+        current_angle.pitch = accel_pitch;
+        current_angle.roll  = accel_roll;
+        current_angle.yaw   = 0.0f;
+        s_filt_primed = true;
+        *out = current_angle;
+        return;
+    }
+
     /* 陀螺仪积分: dt 用两次调用之间的真实间隔
      * ⚠ 跨设备复位 / 长时间空档时 dt 会异常大, 积分会炸, 这里夹住上限 */
     int64_t now_us = esp_timer_get_time();
@@ -466,29 +607,59 @@ esp_err_t mpu9250_get_euler_angle(euler_angle_t *angle)
 
 /**
  * @brief 校准陀螺仪零点
+ * @param samples 采样次数
+ * @return ESP_OK 成功; ESP_ERR_INVALID_STATE 采样期间设备在动, 标定失败
+ * @note  ⚠ 2026-10-26 改动:
+ *   1) 用**原始**读数 (不扣旧零偏) 计算新零偏 —— 之前用已补偿过的读数,
+ *      二次标定时算出来的是残差, 越校越歪;
+ *   2) 剔除采样期间"设备在动"的样本 (任一轴 > 2°/s): 标定时手在抖 /
+ *      车没放稳的话, 采到的是运动而不是零偏, 直接平均会得到一个假的零偏,
+ *      表现为每次上电 pitch 都不一样;
+ *   3) 标定成功后**自动存进 NVS**, 断电不丢。
  */
 esp_err_t mpu9250_calibrate_gyro(uint16_t samples)
 {
     float sum_x = 0, sum_y = 0, sum_z = 0;
-    
+    uint16_t used = 0;
+
     for (uint16_t i = 0; i < samples; i++) {
-        mpu9250_axis_t gyro;
-        esp_err_t ret = mpu9250_read_gyro(&gyro);
+        mpu9250_axis_t g;
+        esp_err_t ret = mpu9250_read_raw_gyro(&g);
         if (ret != ESP_OK) {
             return ret;
         }
-        
-        sum_x += gyro.x;
-        sum_y += gyro.y;
-        sum_z += gyro.z;
-        
+
+        if (fabsf(g.x) > MPU_GYRO_MOTION_THR ||
+            fabsf(g.y) > MPU_GYRO_MOTION_THR ||
+            fabsf(g.z) > MPU_GYRO_MOTION_THR) {
+            /* 设备在动 → 这个样本丢掉 (但照常延时, 保持采样节奏) */
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
+        sum_x += g.x;
+        sum_y += g.y;
+        sum_z += g.z;
+        used++;
+
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-    
-    gyro_offset.x = sum_x / samples;
-    gyro_offset.y = sum_y / samples;
-    gyro_offset.z = sum_z / samples;
-    
+
+    /* 有效的样本太少 → 说明采样期间一直在动, 不能拿这种数据当零偏 */
+    if (used < samples / 2) {
+        ESP_LOGE(TAG, "陀螺仪校准失败: 采样期间检测到运动 "
+                      "(%u/%u 个样本被剔除), 请把设备放稳再校准",
+                 (unsigned)(samples - used), (unsigned)samples);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    gyro_offset.x = sum_x / used;
+    gyro_offset.y = sum_y / used;
+    gyro_offset.z = sum_z / used;
+
+    /* 存盘: 下次上电直接用这个零偏, 保证每次上电一致 */
+    mpu9250_save_gyro_offset();
+
     return ESP_OK;
 }
 
@@ -513,5 +684,8 @@ esp_err_t mpu9250_reset(void)
     esp_err_t ret = mpu9250_write_reg(MPU9250_PWR_MGMT_1, 0x80);
     mpu9250_unlock();
     vTaskDelay(pdMS_TO_TICKS(100));
+    /* 复位后姿态角的历史值作废: 下一帧重新用加速度角初始化 */
+    s_filt_primed = false;
+    s_filt_last_us = 0;
     return ret;
 }
