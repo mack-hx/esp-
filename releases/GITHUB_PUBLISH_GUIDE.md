@@ -13,7 +13,7 @@
 
 - ✅ 代码已提交到本地 git 并推送到 GitHub
 - ✅ GitHub 上共 12 个 release（v0.1.0 ~ v1.5、v0.17、v0.2、v0.21、v0.22；v1.6 只有 tag 没有 release）
-- ✅ 本地只保留 `0.21/` 和 `0.22/` 两个版本目录
+- ✅ 本地只保留 `0.22/` 和 `0.30/` 两个版本目录
 - ✅ `releases/` 里只放最新两版的源码包
 
 ## 推送到 GitHub
@@ -73,6 +73,7 @@ gh release create v0.3 \
 
 | Tag | 说明 | 附件 |
 |-----|------|------|
+| v0.30 | 新迭代基线 (收编平衡控制三处致命修复 + App 状态页修复) | esp_balance_robot-0.30.tar.gz |
 | v0.22 | 新迭代基线（0.21 的干净复制, 仅版本号不同） | esp_balance_robot-0.22.tar.gz |
 | v0.21 | 20Hz pitch 高速通道 + LED/电磁铁/微动开关 检查页 | esp_balance_robot-0.21.tar.gz |
 | v0.2 | 三端打通里程碑 | esp_balance_robot-0.2.tar.gz |
@@ -106,7 +107,7 @@ gh release create v0.3 \
 
 ```bash
 cd /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot
-for v in 0.21 0.22; do
+for v in 0.22 0.30; do
   tar czf releases/esp_balance_robot-$v.tar.gz \
     --exclude='node_modules' --exclude='unpackage' --exclude='.pio' \
     --exclude='.cache' --exclude='.DS_Store' --exclude='.hbuilderx' \
