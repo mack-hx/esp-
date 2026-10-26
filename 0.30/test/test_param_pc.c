@@ -62,6 +62,13 @@ static void test_defaults(void)
     CHECK(near(param_get_float(PARAM_MOTOR_OUT_MAX), 60.0f, 1e-6f), "motor_max 默认应 60");
     CHECK(near(param_get_float(PARAM_MOTOR_DEADBAND), 4.0f, 1e-6f), "deadzone 默认应 4");
 
+    /* gyro_lpf 默认必须 0.8 (2026-10-26 "一碰就剧烈抖" 的修复):
+     * 这个低通是加在 D 项 (唯一的阻尼源) 上的, 系数越小延迟越大。
+     * 0.2 → 时间常数 50ms → 3Hz 处丢 54° 相位 → 扰动一来就过冲。
+     * MPU 自带的 41Hz 数字低通已经够了, 这里不需要再滤。 */
+    CHECK(near(param_get_float(PARAM_GYRO_LPF), 0.8f, 1e-6f),
+          "gyro_lpf 默认应 0.8 (低通延迟会削弱阻尼)");
+
     /* 每一项的 def 都必须真的被填进去 (漏一项就是白板默认值) */
     for (int i = 0; i < param_count(); i++) {
         const param_item_t *it = param_get_item((param_id_t)i);
@@ -117,7 +124,10 @@ static void test_from_json(void)
     /* 未知 key 夹在中间: 它后面的正常参数必须照样被读到。
      * 这是本次 bug 的同类风险: App 多带一个 "_v" 就把后面的参数全丢了 */
     param_reset_default();
-    ret = param_from_json("{\"_v\":10,\"bal_kp\":15}");
+    char json[128];
+    snprintf(json, sizeof(json), "{\"_v\":%d,\"bal_kp\":15}",
+             param_get_data_version());
+    ret = param_from_json(json);
     CHECK(ret == ESP_OK, "带未知 key 的 JSON 应返回 OK");
     CHECK(near(param_get_float(PARAM_PID_BAL_KP), 15.0f, 1e-6f),
           "未知 key 后面的参数仍要生效 (实际 %.2f)",
@@ -224,8 +234,14 @@ static void test_stale_flag(void)
     CHECK(n > 0 && strstr(buf, "\"_w\":1") != NULL,
           "map JSON 应带上 \"_w\":1 提示标记");
 
-    /* 新版 App 下发 (带 _v = 当前版本) → 标记自动清掉 */
-    param_from_json("{\"_v\":10,\"bal_kp\":12}");
+    /* 新版 App 下发 (带 _v = 当前版本) → 标记自动清掉
+     * ⚠ 版本号从 param_get_data_version() 取, 不要写死数字:
+     *   参数表版本一改 (PARAM_DATA_VERSION +1), 写死的版本就变成"旧版 App",
+     *   测试会以很难看懂的方式失败。 */
+    char json[128];
+    snprintf(json, sizeof(json), "{\"_v\":%d,\"bal_kp\":12}",
+             param_get_data_version());
+    param_from_json(json);
     CHECK(!param_stale_write(), "带正确 _v 的下发应清掉标记");
 
     /* App 版本比车端旧 → 重新标记 */
@@ -233,7 +249,9 @@ static void test_stale_flag(void)
     CHECK(param_stale_write(), "带旧版本号 _v 的下发应重新标记");
 
     /* 新版 App 恢复默认 (带 _v) → 也不该被当成旧版 */
-    param_from_json("{\"_reset\":true,\"_v\":10}");
+    snprintf(json, sizeof(json), "{\"_reset\":true,\"_v\":%d}",
+             param_get_data_version());
+    param_from_json(json);
     CHECK(!param_stale_write(), "带 _v 的恢复默认不应被标记");
 
     /* 标记状态下的 map JSON 长度仍然要够短 (平台限 512) */

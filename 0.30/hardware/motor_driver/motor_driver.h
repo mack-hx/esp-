@@ -124,8 +124,11 @@ esp_err_t motor_brake_all(void);
  * @param deadzone 最小启动占空比 (0~MOTOR_DEADBAND_MAX, 单位 %; 0=不补偿)
  * @return ESP_OK 成功
  * @note  直流电机在极小占空比下转不动, 对平衡车表现为"慢慢爬行 + 突跳"。
- *        本函数把**非零**输出抬到至少 deadzone, 消除该现象。
+ *        本函数把**非零**输出**加上** deadzone 的占空比, 抵消硬件死区,
+ *        让小输出也能得到连续、可控的力矩。
  * @note  0 输出与制动**不受影响** (停车必须真的停)。
+ * @note  deadzone 应填电机真正能转起来的最小占空比 (硬件死区),
+ *        填偏了都会带来抖动。
  * @note  超范围自动夹到 [0, MOTOR_DEADBAND_MAX]。
  */
 esp_err_t motor_set_deadband(int8_t deadzone);

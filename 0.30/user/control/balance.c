@@ -36,6 +36,16 @@
 
 static const char *TAG = "BALANCE";
 
+/* ========== 控制回路跟踪 (调试用, 默认关闭) ==========
+ * 打开后每 100ms 打印一次控制回路的关键量 (姿态角/角速度/输出/目标/周期),
+ * 用来在真机上看"抖"到底是姿态读数在抖、还是控制器在抖、还是周期在抖。
+ * 打开: 把下面的 0 改成 1 重新编译烧录。
+ * ⚠ 开了之后串口会被刷屏, 别在正式使用时开着。 */
+#define BAL_TRACE_ENABLE  0
+#if BAL_TRACE_ENABLE
+#define BAL_TRACE_PERIOD_MS 100
+#endif
+
 /* ================= 模块内部状态 ================= */
 
 static bal_pid_t s_pid_bal;      /* 姿态误差 → 电机输出 (%) */
@@ -715,6 +725,19 @@ static void balance_task(void *arg)
         taskENTER_CRITICAL(&s_data_mux);
         s_data_pub = s_data;
         taskEXIT_CRITICAL(&s_data_mux);
+
+#if BAL_TRACE_ENABLE
+        /* 调试跟踪: 姿态角 / 角速度 / 输出 / 目标倾角 / 实测周期 */
+        static TickType_t s_trace_tick = 0;
+        TickType_t now_t = xTaskGetTickCount();
+        if (now_t - s_trace_tick >= pdMS_TO_TICKS(BAL_TRACE_PERIOD_MS)) {
+            s_trace_tick = now_t;
+            ESP_LOGI(TAG, "TRACE pitch=%.2f gyro=%.1f out=%.1f tgt=%.2f dt=%.1fms st=%d",
+                     (double)s_data.pitch, (double)s_data.gyro,
+                     (double)s_data.bal_out, (double)s_data.target_pitch,
+                     (double)(dt * 1000.0f), (int)s_state);
+        }
+#endif
     }
 }
 
@@ -771,10 +794,18 @@ esp_err_t balance_init(void)
 
     /* 增大任务栈: 平衡控制涉及大量浮点运算, 需要足够空间避免溢出
      * ⚠ 优先级 7 (2026-10-26): 必须高于所有网络/上报任务
-     *   (OneNet 高速上报 5/6、MQTT 客户端 5), 否则 WiFi 收发或 MQTT 发布会
+     *   (OneNet 高速上报 5/4、MQTT 客户端 5), 否则 WiFi 收发或 MQTT 发布会
      *   抢占控制任务 → 控制周期抖动 (dt 突然变大) → 阻尼相位失配 →
-     *   表现为"站一会之后开始高频抖"。 */
-    BaseType_t ret = xTaskCreate(balance_task, "bal", 8192, NULL, 7, NULL);
+     *   表现为"站一会之后开始高频抖"。
+     *
+     * ⚠ 2026-10-26 追加: **绑到 core 1**
+     *   IDF 的 WiFi 任务优先级 23 且固定跑在 core 0, lwIP 的 tcpip 任务
+     *   优先级 18 (默认两个 core 都能跑)。它们一忙就会抢占优先级 7 的
+     *   控制任务 → 控制周期从 10ms 变成 20~30ms → 反馈相位错位 →
+     *   "一碰 / 一让走 (App 一发指令, MQTT 立刻高频上报) 就剧烈抖"。
+     *   把控制任务绑到 core 1, 网络栈留在 core 0, 互不干扰。
+     *   (lwIP 绑 core 0 见 sdkconfig 的 CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0) */
+    BaseType_t ret = xTaskCreatePinnedToCore(balance_task, "bal", 8192, NULL, 7, NULL, 1);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "控制任务创建失败");
         return ESP_FAIL;

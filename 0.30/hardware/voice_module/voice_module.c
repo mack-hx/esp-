@@ -80,8 +80,11 @@ esp_err_t voice_module_init(void)
                        -1, -1);
     if (ret != ESP_OK) return ret;
 
-    // 创建接收处理任务
-    xTaskCreate(voice_event_task, "voice_uart", 2048, NULL, 10, NULL);
+    /* 创建接收处理任务
+     * ⚠ 优先级 6 (2026-10-26): 原来用 10, 比平衡控制任务 (7) 还高 →
+     *   语音模块一说话就抢占控制任务 → 控制周期抖动 → 车抖。
+     *   压到 6: 仍比网络任务 (3~5) 高, 但不抢平衡环。 */
+    xTaskCreate(voice_event_task, "voice_uart", 2048, NULL, 6, NULL);
 
     ESP_LOGI(TAG, "CI-03T 语音模块初始化成功 (TX=%d, RX=%d, %d bps)",
              VOICE_TXD_GPIO, VOICE_RXD_GPIO, VOICE_UART_BAUDRATE);

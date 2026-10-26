@@ -3,7 +3,7 @@
  * @brief 1:1 镜像 ESP32 端 param.c 的参数定义 (16 项)
  * @date 2026-10-26
  *
- * 数据来源: 0.30/user/param/param.c (PARAM_DATA_VERSION 10)
+ * 数据来源: 0.30/user/param/param.c (PARAM_DATA_VERSION 11)
  * 改了 param.c 就要同步这个文件, 否则 App 显示的滑块范围/默认值会跟车端对不上.
  *
  * ⚠ 2026-10-26 踩过的坑 (不要再犯):
@@ -22,7 +22,7 @@
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 10
+export const PARAM_VER = 11
 
 export const PARAM_GROUPS = {
   0: { key: 'balance', label: '平衡环' },
@@ -54,12 +54,12 @@ export const PARAM_DEFS = [
     hint: '速度环能给出的最大倾角目标 (°)。车本来就有配平偏差时别调太大' },
   { id: 8,  key: 'ang_limit',   label: 'Angle Limit',   unit: '°', def: 25, min: 5, max: 60,  step: 1, dec: 0, grp: 2,
     hint: '超过这个倾角判定摔倒, 立刻停电机' },
-  { id: 9,  key: 'gyro_lpf',    label: 'Gyro LPF',      unit: '',  def: 0.2, min: 0, max: 1,  step: 0.01, dec: 2, grp: 2,
-    hint: '陀螺仪低通滤波系数 (0~1)。越小越平滑但延迟越大, 延迟大了阻尼会变弱' },
+  { id: 9,  key: 'gyro_lpf',    label: 'Gyro LPF',      unit: '',  def: 0.8, min: 0, max: 1,  step: 0.01, dec: 2, grp: 2,
+    hint: '陀螺仪低通滤波系数 (0~1)。越小越平滑但延迟越大 —— 延迟大了阻尼会变弱, 车一碰就剧烈抖' },
   { id: 10, key: 'gear',        label: 'Gear Ratio',    unit: '',  def: 1.0, min: 0.1, max: 50, step: 0.1,  dec: 1, grp: 2,
     hint: '电机转速 / 轮转速。带减速箱的填 >1' },
   { id: 11, key: 'deadzone',    label: 'Motor Deadband',unit: '%', def: 4,   min: 0, max: 30,   step: 1,    dec: 0, grp: 2,
-    hint: '电机最小启动 PWM。太小电机转不动 (车会慢慢歪然后突然猛冲), 太大车会一顿一顿 (高频哒哒响)' },
+    hint: '电机最小启动 PWM (硬件死区)。要填轮子刚能转起来的那个占空比: 填小了补偿不够会突然猛冲, 填大了平衡点附近空转抖动' },
   { id: 12, key: 'arm_pitch',   label: 'Arm Pitch',     unit: '°', def: 8,   min: 1, max: 30,   step: 1,    dec: 0, grp: 2,
     hint: '启动门控: 倾角小于这个值才允许输出。防止歪着启动直接摔' },
   { id: 13, key: 'arm_rate',    label: 'Arm Rate',      unit: '°/s',def: 20, min: 2, max: 100,  step: 1,    dec: 0, grp: 2,

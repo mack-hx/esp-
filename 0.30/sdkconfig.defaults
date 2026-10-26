@@ -50,3 +50,11 @@ CONFIG_LWIP_LOCAL_HOSTNAME="balance-robot"
 CONFIG_MQTT_PROTOCOL_311=y
 # 关闭 WebSocket, 减少未用代码体积
 CONFIG_MQTT_TRANSPORT_WEBSOCKET_DISABLED=y
+
+# ---- 实时性: 把网络协议栈赶出 core 1 (2026-10-26) ----
+# 平衡控制任务 (优先级 7, 绑在 core 1) 的周期是 10ms, 一次都不能被抢。
+# lwIP 的 tcpip 任务优先级 18, 默认两个 core 都能跑 → 收发 MQTT 时会抢占
+# core 1 上的控制任务 → 控制周期抖到 20~30ms → 车"一碰/一走就剧烈抖"。
+# WiFi 任务本来就固定在 core 0 (CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_0),
+# 所以把 tcpip 任务也绑到 core 0, core 1 就只剩控制任务和低优先级任务。
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
