@@ -205,6 +205,214 @@ class Sim:
         }
 
 
+# ================= 行走仿真 (小车 + 倒立摆 + 速度环) =================
+#
+# 为什么要单独一个模型
+#   bal_sim.py 的摆是**定轴**的 (没有轮子的位置/速度), 所以它只能验证
+#   "站着稳不稳", 验证不了"走"。
+#   行走必须知道车往哪走了: 目标轮速 → 目标倾角 → 车加速 → 速度变了 → 倾角回收。
+#   这里把车当成一个真正的小车 (位置 x / 速度 v), 就能把速度环整个跑起来。
+#
+# 符号约定 (跟固件一致, 见 user/control/balance.c 的注释)
+#   θ  = 车体倾角, **前倾 (车头往下) 为负** (固件的 pitch, 单位 °)
+#   x  = 车的位置, **+x = 车尾方向** (电机输出为正 → 轮子往车尾 → 车往 +x 加速)
+#   → 前进速度 v_fwd = −ẋ
+#   → 平衡环: out = Kp·(θ−θ_target) + Ki·i + Kd·θ̇
+#   → 速度环: err = 实测前进转速 − 目标转速;  θ_target = PID(err)
+#              (走慢了 → err<0 → θ_target<0 → 前倾 → 加速前进 ✓)
+#
+# 摆的运动方程 (L = 摆长, a = 轮子的等效加速度)
+#   θ'' = (g/L)·sin θ − a        a = L·ẍ
+#
+# 编码器 (固件: 300ms 滑动窗口, 44 脉冲/转 → 量化台阶 4.55 rpm)
+#   实测转速 = 量化(窗口内平均转速)
+
+
+class WalkSim(Sim):
+    """会真的跑起来的车 (轮式倒立摆) + 串级控制 (速度环 → 目标倾角 → 平衡环)
+
+    与定轴模型 (Sim) 的关系 —— **故意保持一致**, 这样"平衡环能站住"这件事
+    在两个模型里是同一套数学, 差别只是: 定轴模型把车的平动丢掉了,
+    这里把它补回来。
+
+      定轴:  θ̈ = (g/L)·sinθ − a_w        (a_w = 轮加速度, 正 = 往 +x)
+      行走:  θ̈ = (g/L)·sinθ − a_w        ← 一样 (θ 的动力学完全没变)
+             ẍ  = L·a_w                  ← 车往轮子跑的方向平动
+             轮速 (前进为正) = −ẋ·60/(2πr)
+
+    也就是说: 定轴模型里的 "a_w" 本来就等于 ẍ/L (L = 质心高),
+    行走模型只是把被丢掉的平动速度补回来。
+
+    符号 (跟固件一致):
+      θ > 0  = 车体往 +x 倾 (x = 车尾方向), pitch 同号
+      前进为正 → 轮速 rpm_fwd = −ẋ·60/(2πr)
+
+    编码器 (跟固件一致): **每 300ms 才更新一次**, 用这 300ms 里的累计脉冲
+    算速度, 量化台阶 = 60/(44·0.3) = 4.5 rpm。测速的滞后是速度环的头号敌人。
+    """
+
+    def __init__(self, kp=12.0, ki=0.5, kd=1.5, out_max=60.0,
+                 spd_kp=0.06, spd_ki=0.01, spd_kd=0.0,
+                 spdout_max=4.0, spd_deadband=5.0,
+                 ramp_up=15.0, ramp_down=30.0,
+                 wheel_r=0.08, enc_res=4.545, enc_win_s=0.3,
+                 **kw):
+        super().__init__(kp, ki, kd, out_max=out_max, **kw)
+        self.spd_kp, self.spd_ki, self.spd_kd = spd_kp, spd_ki, spd_kd
+        self.spdout_max = spdout_max      # 目标倾角上限 (°)
+        self.spd_deadband = spd_deadband  # 速度误差死区 (rpm)
+        self.ramp_up, self.ramp_down = ramp_up, ramp_down
+        self.wheel_r = wheel_r            # 轮半径 (m)
+        self.enc_res = enc_res            # 编码器量化台阶 (rpm)
+        self.enc_win_s = enc_win_s        # 测速窗口 (s)
+        # 速度环的积分上限: 跟固件一样 = (输出上限/2)/Ki
+        self.spd_i_max = (spdout_max * 0.5 / spd_ki) if spd_ki > 0 else 0.0
+        self._spd_prev = None
+
+    def run_walk(self, target_rpm=24.0, seconds=12.0, t_start=1.0,
+                 push_deg_s=0.0, push_at=3.0):
+        """走一段路: t_start 时目标转速跳到 target_rpm"""
+        theta = 0.0            # 倾角 (rad)
+        rate = 0.0            # 角速度 (rad/s)
+        i = 0.0               # 平衡环积分
+        spd_i = 0.0           # 速度环积分
+        rate_f = 0.0          # 陀螺低通后的角速度 (°/s)
+        a_w = 0.0             # 轮加速度 (rad/s²), 正 = 往 +x
+        v = 0.0               # 车速度 (m/s), 正 = 车尾方向
+        pitch_est = None
+        tgt = 0.0             # 目标前进转速 (rpm)
+        theta_target = 0.0    # 速度环给出的目标倾角 (°)
+        meas_rpm = 0.0        # 编码器测出来的前进转速 (rpm)
+        enc_sum = 0.0         # 当前测速窗口里累计的 rpm·秒
+        enc_t = 0.0           # 测速窗口已过时间 (s)
+        pushed = False
+        outs, thetas, spds, tgts = [], [], [], []
+        tgt_leans, ests = [], []
+        lean_steady = []
+        lean_ripple = []
+        fell = False
+
+        for t in range(int(seconds / self.dt)):
+            tsec = t * self.dt
+
+            # ---- 指令: t_start 之后目标转速生效, 目标按斜坡逼近 ----
+            cmd_rpm = target_rpm if tsec >= t_start else 0.0
+            step = (self.ramp_up if cmd_rpm > tgt else self.ramp_down) * self.dt
+            d = cmd_rpm - tgt
+            tgt += step if abs(d) > step else d
+
+            # ---- IMU: 陀螺积分 + 加速度角 + 互补滤波 (跟固件同款) ----
+            raw_rate = math.degrees(rate)
+            if pitch_est is None:
+                pitch_est = self._accel_pitch(theta, 0.0)
+            else:
+                pitch_est += raw_rate * self.dt
+                acc_pitch = self._accel_pitch(theta, a_w)
+                tw = self._trust(theta, a_w)
+                pitch_est += (1.0 - self.alpha) * tw * (acc_pitch - pitch_est)
+            rate_f += self.gyro_lpf * (raw_rate - rate_f)
+
+            # ---- 编码器: 300ms 窗口, 窗口结束才更新读数 (阶梯状) ----
+            rpm_fwd_true = -v * 60.0 / (2.0 * math.pi * self.wheel_r)
+            enc_sum += rpm_fwd_true * self.dt
+            enc_t += self.dt
+            if enc_t >= self.enc_win_s:
+                avg = enc_sum / enc_t
+                meas_rpm = round(avg / self.enc_res) * self.enc_res
+                enc_sum = 0.0
+                enc_t = 0.0
+
+            # ---- 速度环: 误差 = 实测 − 目标 (前进为正) ----
+            spd_err = meas_rpm - tgt
+            if abs(spd_err) < self.spd_deadband:
+                spd_err = 0.0
+            if self._spd_prev is None:
+                d_spd = 0.0
+            else:
+                d_spd = (spd_err - self._spd_prev) / self.dt
+            self._spd_prev = spd_err
+            spd_i_new = max(-self.spd_i_max,
+                            min(self.spd_i_max, spd_i + spd_err * self.dt)) \
+                if self.spd_i_max else spd_i + spd_err * self.dt
+            out_now = self.spd_kp * spd_err + self.spd_ki * spd_i \
+                + self.spd_kd * d_spd
+            if not (out_now >= self.spdout_max and spd_err > 0) and \
+               not (out_now <= -self.spdout_max and spd_err < 0):
+                spd_i = spd_i_new
+            theta_target = self.spd_kp * spd_err + self.spd_ki * spd_i \
+                + self.spd_kd * d_spd
+            theta_target = max(-self.spdout_max,
+                               min(self.spdout_max, theta_target))
+
+            # ---- 平衡环 (固件 pid_update_rate: D 项用角速度, 正号) ----
+            err_deg = pitch_est - theta_target
+            d_term = self.d_sign * rate_f
+            i_new = max(-self.i_max, min(self.i_max, i + err_deg * self.dt)) \
+                if self.i_max else i + err_deg * self.dt
+            out_now = self.kp * err_deg + self.ki * i + self.kd * d_term
+            if not (out_now >= self.out_max and err_deg > 0) and \
+               not (out_now <= -self.out_max and err_deg < 0):
+                i = i_new
+            out = self.kp * err_deg + self.ki * i + self.kd * d_term
+            out = max(-self.out_max, min(self.out_max, out))
+
+            # ---- 输出 → 电机 → 轮加速度 → 车平动 + 车体摆动 ----
+            duty = self._duty(out)
+            a_cmd = self._accel_cmd(duty)
+            alpha_m = self.dt / max(self.tau, 1e-6)
+            a_w += (a_cmd - a_w) * min(alpha_m, 1.0)
+
+            thdd = (G / self.L) * math.sin(theta) - a_w
+            rate += thdd * self.dt
+            theta += rate * self.dt
+            v += self.L * a_w * self.dt          # ẍ = L·a_w
+
+            if push_deg_s and not pushed and tsec >= push_at:
+                rate += math.radians(push_deg_s)
+                pushed = True
+
+            outs.append(out)
+            thetas.append(math.degrees(theta))
+            spds.append(meas_rpm)
+            tgts.append(tgt)
+            tgt_leans.append(theta_target)
+            ests.append(pitch_est)
+            if tsec > seconds - 1.0:
+                lean_steady.append(math.degrees(theta))
+            if tsec > seconds - 3.0:
+                lean_ripple.append(math.degrees(theta))
+
+            if abs(math.degrees(theta)) > 45:      # 摔了
+                fell = True
+                break
+
+        tail = thetas[-int(0.5 / self.dt):] or thetas[-1:]
+        return {
+            "fell": fell,
+            "final_speed": spds[-1] if spds else 0.0,
+            "target": tgt,
+            "peak_angle": max(abs(t) for t in thetas) if thetas else 0.0,
+            "tail_max": max(abs(t) for t in tail),
+            "lean_steady": sum(lean_steady) / len(lean_steady) if lean_steady else 0.0,
+            "lean_ripple": (max(lean_ripple) - min(lean_ripple)) if lean_ripple else 0.0,
+            "out_max_used": max(abs(o) for o in outs) if outs else 0.0,
+            "rms": math.sqrt(sum(o * o for o in outs) / max(1, len(outs))),
+            "final": thetas[-1] if thetas else 0.0,
+            "lean_cmd": tgt_leans[-1] if tgt_leans else 0.0,
+            "trace": {"t": list(range(len(thetas))), "theta": thetas,
+                      "tgt_lean": tgt_leans, "est": ests,
+                      "out": outs, "meas": spds, "tgt": tgts},
+        }
+
+
+def fmt_walk(r):
+    if r["fell"]:
+        return "摔了!"
+    return (f"末速 {r['final_speed']:6.1f} rpm (目标 {r['target']:5.1f})  "
+            f"稳态倾角 {r['lean_steady']:+5.2f}°  倾角波动 {r['lean_ripple']:5.2f}°  "
+            f"峰值角 {r['peak_angle']:5.2f}°  输出峰值 {r['out_max_used']:5.1f}%")
+
+
 def fmt(r):
     if r["fell"]:
         return "摔了!"
@@ -220,8 +428,8 @@ def main():
     ap.add_argument("--kd", type=float, default=1.5)
     ap.add_argument("--out-max", type=float, default=60.0)
     ap.add_argument("--motor-sign", type=float, default=+1.0)
-    ap.add_argument("--dz-fw", type=float, default=4.0, help="固件里配的死区补偿 (%)")
-    ap.add_argument("--dz-true", type=float, default=12.0, help="电机硬件真实死区 (%)")
+    ap.add_argument("--dz-fw", type=float, default=4.0, help="固件里配的死区补偿 (百分比)")
+    ap.add_argument("--dz-true", type=float, default=12.0, help="电机硬件真实死区 (百分比)")
     ap.add_argument("--dz-mode", choices=["raise", "add"], default="add")
     ap.add_argument("--tau", type=float, default=0.05, help="电机一阶滞后 (s)")
     ap.add_argument("--gyro-lpf", type=float, default=0.8)
@@ -232,6 +440,18 @@ def main():
     ap.add_argument("--push", type=float, default=0.0, help="第 1 秒加的角速度冲量 (°/s)")
     ap.add_argument("--theta0", type=float, default=8.0, help="初始倾角 (°)")
     ap.add_argument("--scan", action="store_true")
+    ap.add_argument("--walk", action="store_true", help="行走仿真 (小车+速度环)")
+    ap.add_argument("--walk-rpm", type=float, default=24.0, help="行走目标轮速 (rpm)")
+    ap.add_argument("--spd-kp", type=float, default=0.06, help="速度环 Kp (°/rpm)")
+    ap.add_argument("--spd-ki", type=float, default=0.01, help="速度环 Ki")
+    ap.add_argument("--spd-kd", type=float, default=0.0, help="速度环 Kd")
+    ap.add_argument("--walk-scan", action="store_true", help="扫描速度环增益")
+    ap.add_argument("--walk-lean-max", type=float, default=4.0,
+                    help="走路时允许的最大目标倾角 (°)")
+    ap.add_argument("--walk-deadband", type=float, default=5.0,
+                    help="速度误差死区 (rpm, 要 ≥ 编码器量化台阶 4.5)")
+    ap.add_argument("--walk-ramp", type=float, default=15.0,
+                    help="目标轮速斜坡 (rpm/s)")
     args = ap.parse_args()
 
     common = dict(out_max=args.out_max, dz_fw=args.dz_fw, dz_true=args.dz_true,
@@ -273,6 +493,73 @@ def main():
     go(mk(contam=contam, trust=trust, d_sign=-1), "D 符号取负(对照)")
     go(mk(contam=contam, trust=trust, motor_sign=-args.motor_sign), "电机方向取反(对照)")
     print()
+
+    # ================= 行走仿真 =================
+    if args.walk or args.walk_scan:
+        wbase = dict(dz_fw=args.dz_fw, dz_true=args.dz_true, tau=args.tau,
+                     gyro_lpf=args.gyro_lpf, alpha=args.alpha,
+                     contam=contam, trust=trust, motor_sign=args.motor_sign,
+                     kp=args.kp, ki=args.ki, kd=args.kd, out_max=args.out_max,
+                     dz_mode=args.dz_mode)
+
+        def wmk(**kw):
+            d = dict(wbase)
+            d.update(kw)
+            return WalkSim(**d)
+
+        print("=" * 92)
+        print(f"行走仿真: 目标轮速 {args.walk_rpm:.0f} rpm, 速度环 "
+              f"Kp={args.spd_kp} Ki={args.spd_ki} Kd={args.spd_kd}, "
+              f"目标倾角上限 {args.walk_lean_max}°, 死区 {args.walk_deadband} rpm, "
+              f"斜坡 {args.walk_ramp} rpm/s")
+        print("=" * 92)
+        for rpm in (12.0, 24.0, 36.0, 48.0):
+            r = wmk(spd_kp=args.spd_kp, spd_ki=args.spd_ki,
+                    spd_kd=args.spd_kd, spdout_max=args.walk_lean_max,
+                    spd_deadband=args.walk_deadband,
+                    ramp_up=args.walk_ramp, ramp_down=args.walk_ramp * 2
+                    ).run_walk(target_rpm=rpm)
+            print(f"  目标 {rpm:5.1f} rpm  {fmt_walk(r)}")
+
+        # 对照组: 速度环方向取反 (如果实车跑反了, 就是这个符号错了)
+        r = wmk(spd_kp=-args.spd_kp, spd_ki=-args.spd_ki,
+                spd_kd=args.spd_kd, spdout_max=args.walk_lean_max,
+                spd_deadband=args.walk_deadband,
+                ramp_up=args.walk_ramp, ramp_down=args.walk_ramp * 2
+                ).run_walk(target_rpm=args.walk_rpm)
+        print(f"  [对照] 速度环符号取反  {fmt_walk(r)}")
+
+        # 对照组: 走的时候被推一下
+        r = wmk(spd_kp=args.spd_kp, spd_ki=args.spd_ki,
+                spd_kd=args.spd_kd, spdout_max=args.walk_lean_max,
+                spd_deadband=args.walk_deadband,
+                ramp_up=args.walk_ramp, ramp_down=args.walk_ramp * 2
+                ).run_walk(target_rpm=args.walk_rpm,
+                           push_deg_s=25.0, push_at=4.0)
+        print(f"  [对照] 走的时候被推 25°/s  {fmt_walk(r)}")
+        print()
+
+    if args.walk_scan:
+        print("速度环增益扫描 (目标 24 rpm, 看能不能走到 + 会不会摔):")
+        print(f"  {'spd_kp':>7} {'spd_ki':>7}  {'末速':>7}  {'稳态倾角':>9}  "
+              f"{'倾角波动':>9}  {'峰值角':>7}")
+        for skp in (0.02, 0.05, 0.10, 0.15, 0.25):
+            for ski in (0.0, 0.01, 0.02, 0.05):
+                r = WalkSim(spd_kp=skp, spd_ki=ski, spd_kd=0.0,
+                            dz_fw=args.dz_fw, dz_true=args.dz_true,
+                            tau=args.tau, gyro_lpf=args.gyro_lpf,
+                            alpha=args.alpha, contam=contam, trust=trust,
+                            motor_sign=args.motor_sign, dz_mode=args.dz_mode,
+                            spdout_max=args.walk_lean_max,
+                            spd_deadband=args.walk_deadband,
+                            ramp_up=args.walk_ramp, ramp_down=args.walk_ramp * 2,
+                            kp=args.kp, ki=args.ki, kd=args.kd,
+                            out_max=args.out_max).run_walk(target_rpm=24.0)
+                print(f"  {skp:7.2f} {ski:7.2f}  {r['final_speed']:7.1f}  "
+                      f"{r['lean_steady']:9.2f}  {r['lean_ripple']:9.2f}  "
+                      f"{r['peak_angle']:7.2f}"
+                      + ("   摔了!" if r["fell"] else ""))
+        print()
 
     if args.scan:
         print("参数扫描 (D 符号=正, 污染开, 门控开):")

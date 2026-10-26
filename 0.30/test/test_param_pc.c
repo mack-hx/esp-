@@ -51,13 +51,25 @@ static void test_defaults(void)
     param_reset_default();
 
     /* 这几个是 2026-10-26 出事的关键参数:
-     * 速度环默认必须全 0 (站着不动时目标轮速恒为 0, 开这个环只会引入噪声),
+     * 速度环默认非 0 (App 方向键改走速度环了: 目标轮速 → 目标倾角 → 平衡环,
+     *   增益还是 0 的话方向键等于没反应),
      * 输出上限默认 60% (方向修正后实测 30% 接不住车身) */
     CHECK(near(param_get_float(PARAM_PID_BAL_KP), 12.0f, 1e-6f), "bal_kp 默认应 12");
     CHECK(near(param_get_float(PARAM_PID_BAL_KI),  0.5f, 1e-6f), "bal_ki 默认应 0.5");
     CHECK(near(param_get_float(PARAM_PID_BAL_KD),  1.5f, 1e-6f), "bal_kd 默认应 1.5");
-    CHECK(near(param_get_float(PARAM_PID_SPD_KP),  0.0f, 1e-6f), "spd_kp 默认应 0");
-    CHECK(near(param_get_float(PARAM_PID_SPD_KI),  0.0f, 1e-6f), "spd_ki 默认应 0");
+    /* 速度环增益: 具体数值用 g_param_items 里的 def 比对 (不在这里写死),
+     * 免得调完默认值忘了改测试。写死的值只用来卡住"别又调回激进值":
+     *   0.15/0.05 在仿真里会让车身倾角波动中位 10.7° (走起来就是剧烈抖)。 */
+    CHECK(near(param_get_float(PARAM_PID_SPD_KP),
+               param_get_item(PARAM_PID_SPD_KP)->def, 1e-6f), "spd_kp 默认应等于 def");
+    CHECK(near(param_get_float(PARAM_PID_SPD_KI),
+               param_get_item(PARAM_PID_SPD_KI)->def, 1e-6f), "spd_ki 默认应等于 def");
+    CHECK(param_get_float(PARAM_PID_SPD_KP) <= 0.10f,
+          "spd_kp 默认不该超过 0.10 (太大走起来会剧烈摇), 实际 %.3f",
+          (double)param_get_float(PARAM_PID_SPD_KP));
+    CHECK(param_get_float(PARAM_PID_SPD_KI) <= 0.02f,
+          "spd_ki 默认不该超过 0.02 (太大容易积分饱和), 实际 %.3f",
+          (double)param_get_float(PARAM_PID_SPD_KI));
     CHECK(near(param_get_float(PARAM_PID_SPD_KD),  0.0f, 1e-6f), "spd_kd 默认应 0");
     CHECK(near(param_get_float(PARAM_MOTOR_OUT_MAX), 60.0f, 1e-6f), "motor_max 默认应 60");
     CHECK(near(param_get_float(PARAM_MOTOR_DEADBAND), 4.0f, 1e-6f), "deadzone 默认应 4");
@@ -156,10 +168,15 @@ static void test_reset_key(void)
     /* App 现在下发 {"_reset":true} */
     esp_err_t ret = param_from_json("{\"_reset\":true}");
     CHECK(ret == ESP_OK, "_reset 应返回 OK");
-    CHECK(near(param_get_float(PARAM_PID_SPD_KP), 0.0f, 1e-6f),
-          "reset 后 spd_kp 应回到默认 0 (实际 %.2f)",
+    /* 跟 g_param_items 里的 def 比, 不写死数值 (默认值会随仿真结果调整) */
+    CHECK(near(param_get_float(PARAM_PID_SPD_KP),
+               param_get_item(PARAM_PID_SPD_KP)->def, 1e-6f),
+          "reset 后 spd_kp 应回到默认 (实际 %.3f)",
           (double)param_get_float(PARAM_PID_SPD_KP));
-    CHECK(near(param_get_float(PARAM_PID_SPD_KI), 0.0f, 1e-6f), "reset 后 spd_ki 应为 0");
+    CHECK(near(param_get_float(PARAM_PID_SPD_KI),
+               param_get_item(PARAM_PID_SPD_KI)->def, 1e-6f),
+          "reset 后 spd_ki 应回到默认 (实际 %.3f)",
+          (double)param_get_float(PARAM_PID_SPD_KI));
     CHECK(near(param_get_float(PARAM_MOTOR_OUT_MAX), 60.0f, 1e-6f),
           "reset 后 motor_max 应回到默认 60");
     CHECK(near(param_get_float(PARAM_PID_BAL_KP), 12.0f, 1e-6f),
@@ -169,7 +186,8 @@ static void test_reset_key(void)
     param_set_float(PARAM_PID_SPD_KP, 20.0f);
     ret = param_from_json("{\"_reset\":1}");
     CHECK(ret == ESP_OK, "_reset:1 应返回 OK");
-    CHECK(near(param_get_float(PARAM_PID_SPD_KP), 0.0f, 1e-6f), "_reset:1 也应重置");
+    CHECK(near(param_get_float(PARAM_PID_SPD_KP),
+               param_get_item(PARAM_PID_SPD_KP)->def, 1e-6f), "_reset:1 也应重置");
 
     /* _reset:0 表示"不重置" */
     param_set_float(PARAM_PID_SPD_KP, 20.0f);
@@ -182,8 +200,9 @@ static void test_reset_key(void)
     CHECK(ret == ESP_OK, "_reset + 其它键应返回 OK");
     CHECK(near(param_get_float(PARAM_PID_BAL_KP), 22.0f, 1e-6f),
           "_reset 后面的 bal_kp 应为 22");
-    CHECK(near(param_get_float(PARAM_PID_SPD_KP), 0.0f, 1e-6f),
-          "_reset 后 spd_kp 应为默认 0");
+    CHECK(near(param_get_float(PARAM_PID_SPD_KP),
+               param_get_item(PARAM_PID_SPD_KP)->def, 1e-6f),
+          "_reset 后 spd_kp 应为默认值");
 }
 
 /* ================= 用例 5: map JSON 带版本号 ================= */

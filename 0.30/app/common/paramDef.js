@@ -3,7 +3,7 @@
  * @brief 1:1 镜像 ESP32 端 param.c 的参数定义 (16 项)
  * @date 2026-10-26
  *
- * 数据来源: 0.30/user/param/param.c (PARAM_DATA_VERSION 11)
+ * 数据来源: 0.30/user/param/param.c (PARAM_DATA_VERSION 13)
  * 改了 param.c 就要同步这个文件, 否则 App 显示的滑块范围/默认值会跟车端对不上.
  *
  * ⚠ 2026-10-26 踩过的坑 (不要再犯):
@@ -22,7 +22,7 @@
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 11
+export const PARAM_VER = 13
 
 export const PARAM_GROUPS = {
   0: { key: 'balance', label: '平衡环' },
@@ -39,13 +39,13 @@ export const PARAM_DEFS = [
   { id: 2,  key: 'bal_kd',      label: 'Balance Kd', unit: '',  def: 1.5,   min: 0,  max: 30,   step: 0.1,  dec: 1, grp: 0,
     hint: '角速度阻尼。车晃得停不下来就加大, 出现高频嗡嗡声就减小' },
 
-  // 速度环
-  { id: 3,  key: 'spd_kp',      label: 'Speed Kp',   unit: '',  def: 0.0,   min: 0,  max: 200,  step: 0.5,  dec: 1, grp: 1,
-    hint: '走多快。**默认 0**: 站立时目标轮速恒为 0, 开这个环只会引入噪声' },
-  { id: 4,  key: 'spd_ki',      label: 'Speed Ki',   unit: '',  def: 0.0,   min: 0,  max: 300,  step: 0.5,  dec: 1, grp: 1,
-    hint: '消除稳态速度误差。默认 0 (同上)' },
+  // 速度环 (App 方向键就走这个环: 目标轮速 → 目标倾角 → 平衡环)
+  { id: 3,  key: 'spd_kp',      label: 'Speed Kp',   unit: '',  def: 0.06,  min: 0,  max: 200,  step: 0.01, dec: 2, grp: 1,
+    hint: '走多快 (°/rpm)。App 方向键走的就是这个环, 平衡环全程不撒手。目标倾角被限制在 4° 以内, 调太大只会让车左右猛摇' },
+  { id: 4,  key: 'spd_ki',      label: 'Speed Ki',   unit: '',  def: 0.01,  min: 0,  max: 300,  step: 0.005, dec: 3, grp: 1,
+    hint: '消除稳态速度误差 (走不到目标速度时慢慢补倾角)。太大容易积分饱和, 也会让车越走越歪' },
   { id: 5,  key: 'spd_kd',      label: 'Speed Kd',   unit: '',  def: 0.0,   min: 0,  max: 30,   step: 0.1,  dec: 1, grp: 1,
-    hint: '速度变化阻尼' },
+    hint: '速度变化阻尼。默认 0: 编码器量化台阶会让 D 项噪声很大' },
 
   // 限幅 / 安全
   { id: 6,  key: 'motor_max',   label: 'Motor Out Max', unit: '%',  def: 60, min: 0, max: 100, step: 1, dec: 0, grp: 2,

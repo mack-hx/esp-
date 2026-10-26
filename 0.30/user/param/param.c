@@ -29,7 +29,7 @@ static const char *TAG = "PARAM";
 #define NVS_KEY_VERSION "ver"   /* 表结构版本, 表变了就忽略旧数据 */
 #define NVS_KEY_STALE   "stale" /* 标记: 最近一次写参数来自旧版 App */
 #endif
-#define PARAM_DATA_VERSION  11  /* 每次增删参数就 +1
+#define PARAM_DATA_VERSION  13  /* 每次增删参数就 +1
                                  * v2~v5: 0.1 的历史版本 (已作废)
                                  * v6:    0.11 删掉转向环/servo_l/pwm_max/deadband 等
                                  * v7:    0.13 再删 ang_zero/bal_sign/gyro_sign (烘焙成常量)
@@ -46,6 +46,15 @@ static const char *TAG = "PARAM";
                                  *         0.2→0.8 (陀螺低通的延迟加在 D 项上 = 加在
                                  *         唯一的阻尼源上), 死区补偿方式也改了。
                                  *         blob 里的旧值会让新代码继续用 0.2 → 再作废一次
+                                 * v12:   0.30 App 方向键改走速度环: 速度环默认增益从 0
+                                 *         改成 spd_kp=0.15 / spd_ki=0.05 (之前是 0,
+                                 *         速度环等于没开, 方向键只能走直驱)。
+                                 *         blob 里的旧值会让方向键没反应 → 再作废一次
+                                 * v13:   0.30 速度环增益按仿真结果调保守:
+                                 *         spd_kp 0.15→0.06, spd_ki 0.05→0.01,
+                                 *         走路时目标倾角上限 12°→4°。
+                                 *         (0.15/0.05 仿真里车身倾角波动中位 10.7°,
+                                 *          走起来就是"剧烈抖")
                                  * NVS blob 布局变了, 旧数据必须作废 */
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
@@ -69,12 +78,15 @@ const param_item_t g_param_items[] = {
       "角速度阻尼。车晃得停不下来就加大, 出现高频嗡嗡声就减小" },
 
     /* ---------- 速度环 (前进后退) ---------- */
-    { PARAM_PID_SPD_KP, "spd_kp", "Speed Kp",   "",   0.0f,   0.0f,  200.0f,  0.5f, 1, PARAM_GRP_SPEED,
-      "走多快。**默认 0**: 站立时目标轮速恒为 0, 开这个环只会引入噪声" },
-    { PARAM_PID_SPD_KI, "spd_ki", "Speed Ki",   "",   0.0f,   0.0f,  300.0f,  0.5f, 1, PARAM_GRP_SPEED,
-      "消除稳态速度误差。默认 0 (同上)" },
-    { PARAM_PID_SPD_KD, "spd_kd", "Speed Kd",   "",   0.0f,   0.0f,   30.0f,  0.1f, 1, PARAM_GRP_SPEED,
-      "速度变化阻尼" },
+    { PARAM_PID_SPD_KP, "spd_kp", "Speed Kp",   "",   0.06f,   0.0f,  200.0f,  0.5f, 2, PARAM_GRP_SPEED,
+      "走多快 (°/rpm)。App 方向键就走这个环: 目标轮速 → 目标倾角 → "
+      "平衡环 (平衡环全程不撒手)。调大走得快, 但目标倾角被限制在 4° 以内 "
+      "(安全阀), 调太大只会让车左右猛摇" },
+    { PARAM_PID_SPD_KI, "spd_ki", "Speed Ki",   "",   0.01f,   0.0f,  300.0f,  0.5f, 2, PARAM_GRP_SPEED,
+      "消除稳态速度误差 (走不到目标速度时慢慢补倾角)。太大容易积分饱和, "
+      "也会让车越走越歪" },
+    { PARAM_PID_SPD_KD, "spd_kd", "Speed Kd",   "",   0.0f,    0.0f,   30.0f,  0.1f, 2, PARAM_GRP_SPEED,
+      "速度变化阻尼。默认 0: 编码器量化台阶会让 D 项噪声很大" },
 
     /* ---------- 限幅 / 摔倒 / 滤波 / 减速比 ---------- */
     { PARAM_MOTOR_OUT_MAX, "motor_max", "Motor Out Max", "%", 60.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
