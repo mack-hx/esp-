@@ -12,7 +12,7 @@
 
 怎么跑
 ------
-  cd 1.1
+  cd 0.30
   gcc -std=c99 -Wall -Wextra test/test_trim_pc.c user/trim/trim.c \
       -o /tmp/trim_test -I test -I user/trim -DTRIM_OFFLINE_TEST
   /tmp/trim_test
@@ -21,7 +21,16 @@
       -o /tmp/pid_test -I test -I user/control
   /tmp/pid_test
 
+  gcc -std=c99 -Wall -Wextra test/test_param_pc.c user/param/param.c \
+      -o /tmp/param_test -I test -I user/param -DPARAM_OFFLINE_TEST
+  /tmp/param_test
+
 全部通过时退出码为 0。
+
+> ⚠ macOS 上如果报 "tapi error: malformed file" / "unknown architecture",
+>   是 CommandLineTools 装的那个 SDK 库文件坏了, 换个 SDK 路径即可:
+>   `gcc ... -isysroot $(xcrun --show-sdk-path)` (或指定 `.../SDKs/MacOSX26.5.sdk`)。
+>   这种情况跟代码无关, 换路径能编过就行。
 
 
 关键约定

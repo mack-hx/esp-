@@ -2,12 +2,17 @@
   <view class="container">
     <!-- 顶部: 版本/数据来源 -->
     <view class="top-bar">
-      <text class="top-text">参数表 v7 · 共 {{ paramCount }} 项</text>
+      <text class="top-text">参数表 v{{ appVer }} · 共 {{ paramCount }} 项</text>
       <view class="top-actions">
         <view class="top-btn" @click="onRefresh">拉取</view>
         <view class="top-btn btn-primary" @click="onSave">保存</view>
         <view class="top-btn btn-warn" @click="onReset">恢复默认</view>
       </view>
+    </view>
+
+    <!-- 车端参数表版本与 App 不一致: 提示用户别下发 -->
+    <view v-if="deviceVer && deviceVer !== appVer" class="dirty-tip">
+      <text>车端参数表 v{{ deviceVer }} 与本 App v{{ appVer }} 不一致，参数可能对不上，请先更新 App</text>
     </view>
 
     <!-- 改动提示 -->
@@ -54,7 +59,7 @@
 </template>
 
 <script>
-import { PARAM_DEFS, PARAM_GROUPS, getDefaultValues } from '../../common/paramDef.js'
+import { PARAM_DEFS, PARAM_GROUPS, PARAM_VER, getDefaultValues } from '../../common/paramDef.js'
 import { controller } from '../../utils/control.js'
 import { oneApi } from '../../common/oneapi.js'
 
@@ -64,11 +69,15 @@ export default {
       values: getDefaultValues(),
       // 工作副本: 用户拖动滑块先改这里, 点保存才回写
       dirtyValues: getDefaultValues(),
-      dirty: false
+      dirty: false,
+      // 车端返回的参数表版本号 (0 = 还没拉取过)
+      deviceVer: 0
     }
   },
   computed: {
     paramCount() { return PARAM_DEFS.length },
+    /* App 内置的参数表版本 (模板里用来跟车端版本对比) */
+    appVer() { return PARAM_VER },
     groupList() {
       const groups = {}
       PARAM_DEFS.forEach(d => {
@@ -141,20 +150,49 @@ export default {
         uni.showToast({ title: '保存失败: ' + e.message, icon: 'none' })
       }
     },
+    /**
+     * @brief 恢复默认: 由**车端**执行, App 不再下发本地默认值表
+     * @note  2026-10-26: 以前这里把 App 内置的默认值整份下发, 而那份表
+     *        停留在 v7 (spd_kp=20/spd_ki=30/motor_max=30/deadzone=8),
+     *        把车端调好的参数覆盖掉 → 速度环被意外打开, 车只朝一个方向转。
+     *        现在下发 {"_reset":true}, 车端用自己的 param.c 默认表恢复。
+     */
     onReset() {
+      if (oneApi.getState().state !== 'ready') {
+        uni.showToast({ title: '未连接 OneNet', icon: 'none' })
+        return
+      }
       uni.showModal({
         title: '恢复默认',
-        content: '把所有参数恢复为出厂默认值? 还没点"保存"的话不会下发到 ESP32',
-        success: (res) => {
-          if (res.confirm) {
-            this.dirtyValues = getDefaultValues()
-            this.dirty = true
+        content: '让 ESP32 把所有参数恢复为出厂默认值并保存?',
+        success: async (res) => {
+          if (!res.confirm) return
+          try {
+            uni.showLoading({ title: '恢复中...' })
+            const ok = await controller.resetParams()
+            uni.hideLoading()
+            if (!ok) {
+              uni.showToast({ title: '恢复失败', icon: 'none' })
+              return
+            }
+            /* 恢复完立刻拉一次, 显示车端真实的值 */
+            const values = await controller.getParams()
+            if (values) this._applyValues(values)
+            uni.showToast({ title: '已恢复默认', icon: 'success' })
+          } catch (e) {
+            uni.hideLoading()
+            if (e && e.auth) oneApi.markError(e.message)
+            uni.showToast({ title: '恢复失败: ' + e.message, icon: 'none' })
           }
         }
       })
     },
     _applyValues(obj) {
       // obj 是 {key: value} 形式, 跟 dirtyValues 结构一致
+      // 车端会附带 "_v" = 参数表版本号, 用来判断 App 的默认值表是不是过期
+      if (obj._v !== undefined && obj._v !== null) {
+        this.deviceVer = Number(obj._v)
+      }
       const next = Object.assign({}, this.values)
       PARAM_DEFS.forEach(d => {
         if (obj[d.key] !== undefined && obj[d.key] !== null) {

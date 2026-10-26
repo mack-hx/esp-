@@ -12,18 +12,23 @@
 #include "param.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
+
+#ifndef PARAM_OFFLINE_TEST
 #include <nvs_flash.h>
 #include <nvs.h>
 #include <esp_log.h>
-
 static const char *TAG = "PARAM";
+#endif
 
 /* ========== 存储常量 ========== */
+#ifndef PARAM_OFFLINE_TEST
 #define NVS_NAMESPACE   "param"
 #define NVS_KEY_VALUES  "v"     /* 存所有 float 的 blob */
 #define NVS_KEY_VERSION "ver"   /* 表结构版本, 表变了就忽略旧数据 */
-#define PARAM_DATA_VERSION  9   /* 每次增删参数就 +1
+#endif
+#define PARAM_DATA_VERSION  10  /* 每次增删参数就 +1
                                  * v2~v5: 0.1 的历史版本 (已作废)
                                  * v6:    0.11 删掉转向环/servo_l/pwm_max/deadband 等
                                  * v7:    0.13 再删 ang_zero/bal_sign/gyro_sign (烘焙成常量)
@@ -32,6 +37,10 @@ static const char *TAG = "PARAM";
                                  *         否则 NVS 里的旧值会让新代码继续按错的参数跑
                                  * v9:    0.30 电机方向修正后 motor_max 默认 30→60,
                                  *         同样要作废旧 blob
+                                 * v10:   0.30 App 的"恢复默认"曾把 v7 的旧默认值
+                                 *         (spd_kp=20/spd_ki=30/motor_max=30/deadzone=8)
+                                 *         写回车端并落盘 → 速度环被意外打开, 车一直朝一个
+                                 *         方向跑。这里再作废一次 blob, 让这些坏值失效
                                  * NVS blob 布局变了, 旧数据必须作废 */
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
@@ -102,6 +111,8 @@ esp_err_t param_reset_default(void)
     return ESP_OK;
 }
 
+#ifndef PARAM_OFFLINE_TEST   /* 离线测试不编译 NVS 这段, 见 test/test_param_pc.c */
+
 esp_err_t param_load(void)
 {
     param_reset_default();
@@ -120,6 +131,9 @@ esp_err_t param_load(void)
     if (nvs_get_u16(h, NVS_KEY_VERSION, &ver) != ESP_OK || ver != PARAM_DATA_VERSION) {
         ESP_LOGW(TAG, "参数表版本不匹配 (%u != %d), 用默认值", ver, PARAM_DATA_VERSION);
         nvs_close(h);
+        /* 顺手把默认值写回去: 不然这份旧 blob 会一直留在 NVS 里,
+         * 每次开机都刷这条告警。写回去之后状态就收敛了。 */
+        param_save();
         return ESP_OK;
     }
 
@@ -165,10 +179,22 @@ esp_err_t param_save(void)
     return ret;
 }
 
+#endif // PARAM_OFFLINE_TEST
+
 const param_item_t *param_get_item(param_id_t id)
 {
     if ((int)id < 0 || (int)id >= PARAM_ITEM_COUNT) return NULL;
     return &g_param_items[id];
+}
+
+uint8_t param_count(void)
+{
+    return PARAM_ITEM_COUNT;
+}
+
+uint16_t param_get_data_version(void)
+{
+    return PARAM_DATA_VERSION;
 }
 
 float param_get_float(param_id_t id)
@@ -238,6 +264,17 @@ int param_to_map_json(char *buf, uint32_t len)
         n += w;
     }
 
+    /* 带上参数表版本号, 让 App 能判断自己内置的默认值表是不是过期了。
+     * 2026-10-26: App 的"恢复默认"下发的是 App 本地的旧默认值 (v7 那一套:
+     * spd_kp=20/spd_ki=30/motor_max=30/deadzone=8), 把车端调好的参数覆盖掉,
+     * 速度环被意外打开 → 车一直朝一个方向跑。
+     * App 拿到这个版本号, 跟自己内置的不一致就该提示用户, 而不是闷头下发。 */
+    {
+        int w = snprintf(buf + n, len - n, ",\"_v\":%d", PARAM_DATA_VERSION);
+        if (w <= 0 || (uint32_t)(n + w) >= len) return n;
+        n += w;
+    }
+
     if ((uint32_t)(n + 2) < len) {
         buf[n++] = '}';
         buf[n]   = '\0';
@@ -247,7 +284,14 @@ int param_to_map_json(char *buf, uint32_t len)
 
 /* ================= JSON 解析 (只认 "key": 数字 这种最简形式) =================
  * 不用 cJSON / mbedtls: 调参数据全是 ASCII 数字 + 引号, 手写扫描 60 行搞定,
- * 省一个组件依赖。格式示例: {"bal_kp":12.5,"bal_ki":3,"servo_c":75} */
+ * 省一个组件依赖。格式示例: {"bal_kp":12.5,"bal_ki":3,"servo_c":75}
+ *
+ * ⚠ 特殊键 "_reset": 值为 1 / true 时, 先把整张表恢复成**车端自己的默认值**,
+ *   再继续应用后面的其它键。
+ *   2026-10-26: App 的"恢复默认"以前是把 App 内置的默认值表整份下发,
+ *   而那份表早就跟车端脱节 (还是 v7 的老值), 结果把调好的参数覆盖成
+ *   "速度环开着 + 输出上限 30%" → 车只朝一个方向转, 根本稳不住。
+ *   改成让车端自己恢复默认值, App 就再也不会下发过期数据。 */
 esp_err_t param_from_json(const char *json)
 {
     if (json == NULL) return ESP_ERR_INVALID_ARG;
@@ -275,6 +319,28 @@ esp_err_t param_from_json(const char *json)
         memcpy(name, key, klen);
         name[klen] = '\0';
 
+        /* --- 特殊键: "_reset" → 用车端默认值整表重置 --- */
+        if (strcmp(name, "_reset") == 0) {
+            if (strncmp(p, "true", 4) == 0) {
+                param_reset_default();
+                applied++;
+                p += 4;
+            } else {
+                char *endp = NULL;
+                float v = strtof(p, &endp);
+                if (endp == p) break;           /* 数值非法 */
+                if (v != 0.0f) {
+                    param_reset_default();
+                    applied++;
+                }
+                p = endp;
+            }
+            continue;
+        }
+
+        /* 未知 key (比如 "_v" 版本号) 直接忽略: 下面的 for 循环找不到同名参数
+         * 就什么也不做, p 停在数值处, 外层 while 继续找下一个引号。 */
+
         for (int i = 0; i < PARAM_ITEM_COUNT; i++) {
             if (strcmp(g_param_items[i].key, name) != 0) continue;
 
@@ -288,6 +354,8 @@ esp_err_t param_from_json(const char *json)
         }
     }
 
+#ifndef PARAM_OFFLINE_TEST
     ESP_LOGI(TAG, "批量设置参数 %d 个", applied);
+#endif
     return (applied > 0) ? ESP_OK : ESP_ERR_INVALID_ARG;
 }

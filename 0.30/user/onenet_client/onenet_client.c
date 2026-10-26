@@ -36,6 +36,7 @@
 #include "mbedtls/base64.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 #include <time.h>
 
@@ -1071,6 +1072,31 @@ static void handle_service_invoke(const char *topic, int topic_len, const char *
             static char inner[1024];   /* 静态区, 不占 MQTT 任务栈 */
             if (json_find_string(json, "values", inner, sizeof(inner)) && inner[0]) {
                 ESP_LOGI(TAG, "param_set: %s", inner);
+
+                /* 版本对账: App 会在 values 里带 "_v" 说明它内置的参数表版本。
+                 * 不一致 = App 的默认值表过期了, 它下发的可能是老参数。
+                 * 2026-10-26 出过这个问题: App 还停在 v7 的默认值, 点一次
+                 * "恢复默认"就把速度环打开 (spd_kp=20/spd_ki=30), 车只朝一个
+                 * 方向转根本稳不住。这里明确告警, 方便看日志定位。 */
+                uint16_t my_ver = param_get_data_version();
+                const char *vp = strstr(inner, "\"_v\"");
+                if (vp == NULL) {
+                    ESP_LOGW(TAG, "param_set: 下发的参数里没有版本号, "
+                                  "可能来自旧版 App (车端参数表 v%u)",
+                             (unsigned)my_ver);
+                } else {
+                    /* vp 指向 "_v" 那一段, 后面是 :数字。
+                     * ⚠ atoi 不能直接用在 ":10" 上 (atoi 遇到非数字就返回 0),
+                     *   必须先跳过冒号。 */
+                    const char *colon = strchr(vp, ':');
+                    int app_ver = colon ? atoi(colon + 1) : 0;
+                    if (app_ver != (int)my_ver) {
+                        ESP_LOGW(TAG, "param_set: ⚠ App 参数表 v%d != 车端 v%u, "
+                                      "下发的默认值可能过期! 请重新打包 App",
+                                 app_ver, (unsigned)my_ver);
+                    }
+                }
+
                 ok = (param_from_json(inner) == ESP_OK);
             } else {
                 ESP_LOGW(TAG, "param_set: 没找到 values 参数");

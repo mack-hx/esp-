@@ -75,6 +75,48 @@
 > ⚠ 陀螺零偏现在存在 NVS 里, 换 IMU 或觉得零偏不对时, 用屏上 **MPU9250 页按 K2** 重新标定
 > (标完自动存盘)。首次烧录新固件时 NVS 里没有零偏, 开机标定一次即可 (要求设备静止)。
 
+### 七、2026-10-26 追加修复 (反馈: "点了恢复默认后, 车只朝一个方向转, 根本稳不住")
+
+**根因不在控制算法, 在 App 的"恢复默认"**。
+
+App 的"恢复默认"以前是把 **App 内置的默认值表整份下发**到车端, 而那份表早就跟
+车端脱节了 —— 还停在 v7 的旧值:
+
+| 参数 | App 旧默认 (v7) | 车端默认 (v9) | 后果 |
+|---|---|---|---|
+| `spd_kp` | **20** | 0 | 速度环被意外打开 |
+| `spd_ki` | **30** | 0 | 同上, 且积分锁死方向 |
+| `bal_ki` | **12** | 0.5 | 积分顶死, 先猛冲再回不来 |
+| `motor_max` | **30** | 60 | 出力不够接不住车身 |
+| `deadzone` | **8** | 4 | 死区太大, 一顿一顿 |
+
+量化一下"速度环被打开"有多致命:
+
+- 轮速用 **100ms 窗口**统计, 编码器 44 脉冲/转 → **1 个脉冲 = 13.6 rpm** 的量化台阶
+- `spd_kp=20` → 一个脉冲的误差就产生 `20 × 13.6 = 273°` 的目标倾角需求
+  (限幅只有 40°) → **基本每个控制周期都在限幅上**, 平衡环跟着饱和 → 电机前后猛顶
+- `spd_ki=30` → 积分项最大 20°, **方向由误差符号决定, 会锁死在一个方向**
+  → 这就是"只朝一个方向转、根本稳不住"的原因
+
+而且这些坏值被 `param_save()` 写进了 NVS, **断电重启也不会自己恢复**。
+
+**修复 (三层, 从根上避免这类问题)**:
+
+| 层 | 改动 | 文件 |
+|---|---|---|
+| App | 默认值表同步到车端现状 (Kp 12 / Ki 0.5 / 速度环全 0 / 输出上限 60% / 死区 4%) | `app/common/paramDef.js` |
+| App | "恢复默认"改成下发 `{"_reset":true}`, **由车端用自己的 `param.c` 默认表恢复**, App 不再下发本地默认值 | `app/utils/control.js` / `app/pages/params/params.vue` |
+| 车端 | `param_from_json()` 认 `_reset` 特殊键; `param_get` 的 JSON 带上 `_v` 版本号; App 写参数时带 `_v`, 车端版本对不上就在串口告警 | `user/param/param.c` / `user/onenet_client/onenet_client.c` |
+| 车端 | `PARAM_DATA_VERSION` 9 → **10**: 让 NVS 里那批坏值 (旧默认值) 彻底作废, 烧录后自动回到正确默认值 | `user/param/param.c` |
+
+配套新增 `test/test_param_pc.c` (离线单元测试 **89/89 通过**), 覆盖:
+默认值表一致性、范围钳位、NaN/Inf 拒绝、JSON 批量设置、未知 key 不吃掉后面的参数、
+`_reset` 恢复默认、`_v` 版本号与长度限制。
+
+> ⚠ **烧录新固件后必须重新打包 App**。旧 App 的默认值表仍是 v7 那套,
+> 再点一次"恢复默认"会把坏值重新写回去 (车端串口会打
+> `param_set: ⚠ App 参数表 v7 != 车端 v10` 的告警)。
+
 ### 0.30 这一版要做的事
 
 按项目规则, **新问题和新功能都在最新版本工程里解决**, 0.22 是历史版本, 不再改动。
@@ -363,8 +405,10 @@ IDLE ──(启动)──> STANDBY ──(连续稳定 arm_time)──> BALANCIN
 (`http://192.168.4.1` 那个页面在 0.14 就删了, 0.2 里只剩 AP 配网页)。
 
 - App "参数"页: 拉取 (显示车上的真实值) → 改滑块 → 保存 → 落盘 NVS
-- 参数表 16 项, 定义见 `user/param/param.c` (`PARAM_DATA_VERSION 9`),
+- 参数表 16 项, 定义见 `user/param/param.c` (`PARAM_DATA_VERSION 10`),
   App 侧镜像在 `app/common/paramDef.js` —— **改了一边必须同步另一边**
+- App 的"恢复默认"由**车端执行** (下发 `{"_reset":true}`), 不用 App 本地的默认值表,
+  免得两边默认值脱节把车参数改坏 (2026-10-26 出过这个事故, 见上文第七节)
 - 屏上也能看状态 (菜单 → 平衡控制页), 但不能改参数
 
 ## 离线单元测试
@@ -376,9 +420,12 @@ gcc -std=c99 -Wall -Wextra test/test_trim_pc.c user/trim/trim.c \
 
 gcc -std=c99 -Wall -Wextra test/test_pid_pc.c user/control/pid.c \
     -o /tmp/pid_test -I test -I user/control && /tmp/pid_test
+
+gcc -std=c99 -Wall -Wextra test/test_param_pc.c user/param/param.c \
+    -o /tmp/param_test -I test -I user/param -DPARAM_OFFLINE_TEST && /tmp/param_test
 ```
 
-`trim` 67 断言 / `pid` 14 断言, 全通过时退出码 0。
+`trim` 67 断言 / `pid` 21 断言 / `param` 89 断言, 全通过时退出码 0。
 
 ## 编译与烧录
 

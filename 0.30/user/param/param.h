@@ -23,7 +23,12 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+
+#ifndef PARAM_OFFLINE_TEST
 #include "esp_err.h"
+#else
+#include "param_offline.h"   /* 离线测试用的最小 esp_err_t 桩头 */
+#endif
 
 /* ========== 参数分组 (网页按分组折叠显示) ========== */
 typedef enum {
@@ -112,6 +117,23 @@ esp_err_t param_save(void);
  * @return ESP_OK 成功
  */
 esp_err_t param_reset_default(void);
+
+/**
+ * @brief 取参数表条目总数
+ * @return 条目数
+ * @note  PARAM_ITEM_COUNT 宏在 param.c 外面用不了
+ *        (g_param_items 在头文件里只是 extern 的不完整数组类型, sizeof 编译不过),
+ *        所以对外提供这个函数。
+ */
+uint8_t param_count(void);
+
+/**
+ * @brief 取当前参数表结构版本号 (PARAM_DATA_VERSION)
+ * @return 版本号
+ * @note  App 下发参数时可以带上 "_v" 字段说明它内置的参数表版本,
+ *        车端比对一下就知道对方是不是过期版本 (见 onenet_client.c 的 param_set 分支)。
+ */
+uint16_t param_get_data_version(void);
 
 /**
  * @brief 读取一个浮点参数

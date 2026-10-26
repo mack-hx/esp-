@@ -26,6 +26,7 @@
 
 import { oneApi } from '../common/oneapi.js'
 import { setDesiredProperty, invokeService } from '../common/onenet.js'
+import { PARAM_VER } from '../common/paramDef.js'
 
 /** 移动指令的属性名 (物模型里必须存在这个标识符) */
 const MOVE_PROP = 'speed'
@@ -201,8 +202,34 @@ class Controller {
   async setParams(values) {
     if (!this._check()) return false
     try {
+      /* 物模型 input: values (string), 所以要 stringify。
+       * 带上 "_v" = App 内置的参数表版本号, 车端比对不一致就告警
+       * (见 onenet_client.c 的 param_set 分支)。 */
+      const payload = Object.assign({}, values, { _v: PARAM_VER })
+      const r1 = await invokeService('param_set', { values: JSON.stringify(payload) })
+      if (!r1) return false
+      const r2 = await invokeService('param_save', {})
+      return !!r2
+    } catch (e) {
+      this.reportError(e)
+      throw e
+    }
+  }
+
+  /**
+   * @brief 让**车端**把参数恢复成它自己的出厂默认值 (并落盘)
+   * @return {Promise<boolean>} 是否成功
+   * @note  2026-10-26: 以前"恢复默认"是把 App 内置的默认值表整份下发,
+   *        而那份表早就跟车端脱节 (还是 v7 的老值), 结果把调好的参数覆盖成
+   *        "速度环开着 + 输出上限 30%" → 车只朝一个方向转, 根本稳不住。
+   *        现在改成下发 {"_reset":true}, 由车端 param_reset_default() 恢复,
+   *        默认值永远以车端 param.c 的表为准。
+   */
+  async resetParams() {
+    if (!this._check()) return false
+    try {
       /* 物模型 input: values (string), 所以要 stringify */
-      const r1 = await invokeService('param_set', { values: JSON.stringify(values) })
+      const r1 = await invokeService('param_set', { values: JSON.stringify({ _reset: true }) })
       if (!r1) return false
       const r2 = await invokeService('param_save', {})
       return !!r2
