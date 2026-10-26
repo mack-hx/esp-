@@ -15,6 +15,11 @@
       <text>车端参数表 v{{ deviceVer }} 与本 App v{{ appVer }} 不一致，参数可能对不上，请先更新 App</text>
     </view>
 
+    <!-- 车端提示: 最近一次写参数来自旧版 App, 参数可能已被改坏 -->
+    <view v-if="staleWarn" class="dirty-tip">
+      <text>车端检测到旧版 App 下发过参数，当前参数可能被改坏，建议点“恢复默认”</text>
+    </view>
+
     <!-- 改动提示 -->
     <view v-if="dirty" class="dirty-tip">
       <text>有 {{ dirtyCount }} 项未保存</text>
@@ -71,7 +76,9 @@ export default {
       dirtyValues: getDefaultValues(),
       dirty: false,
       // 车端返回的参数表版本号 (0 = 还没拉取过)
-      deviceVer: 0
+      deviceVer: 0,
+      // 车端提示: 最近一次写参数来自旧版 App ("_w" = 1)
+      staleWarn: false
     }
   },
   computed: {
@@ -193,6 +200,8 @@ export default {
       if (obj._v !== undefined && obj._v !== null) {
         this.deviceVer = Number(obj._v)
       }
+      // 车端会附带 "_w" = 1 表示"最近一次写参数来自旧版 App", 只提示不拦截
+      this.staleWarn = (obj._w !== undefined && obj._w !== null && Number(obj._w) > 0)
       const next = Object.assign({}, this.values)
       PARAM_DEFS.forEach(d => {
         if (obj[d.key] !== undefined && obj[d.key] !== null) {

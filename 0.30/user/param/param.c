@@ -27,6 +27,7 @@ static const char *TAG = "PARAM";
 #define NVS_NAMESPACE   "param"
 #define NVS_KEY_VALUES  "v"     /* 存所有 float 的 blob */
 #define NVS_KEY_VERSION "ver"   /* 表结构版本, 表变了就忽略旧数据 */
+#define NVS_KEY_STALE   "stale" /* 标记: 最近一次写参数来自旧版 App */
 #endif
 #define PARAM_DATA_VERSION  10  /* 每次增删参数就 +1
                                  * v2~v5: 0.1 的历史版本 (已作废)
@@ -45,6 +46,13 @@ static const char *TAG = "PARAM";
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
 static float s_values[PARAM_MAX];
+
+/* 标记: 最近一次参数写入来自"过期版本的 App" (下发里没有 "_v", 或 "_v" 比车端版本旧)。
+ * 只做提示用, **不拦截写入** (2026-10-26 用户要求: 提示即可, 不拒绝)。
+ * 这个标记随 param_get 的 "_w" 字段带给 App, App 参数页据此显示黄色提示条,
+ * 用户就知道"参数可能被旧版 App 改坏了, 建议点一次恢复默认"。
+ * 标记会跟参数一起存进 NVS, 断电重启也保留 (旧 App 写完还会调 param_save)。 */
+static bool s_stale_write = false;
 
 /* ========== 参数描述表 ========== */
 const param_item_t g_param_items[] = {
@@ -149,6 +157,13 @@ esp_err_t param_load(void)
     for (int i = 0; i < PARAM_ITEM_COUNT; i++) {
         s_values[i] = tmp[i];
     }
+
+    /* 读"旧版 App 写过参数"的提示标记 (没有这个键 = 正常, 标记为 0) */
+    uint8_t stale = 0;
+    if (nvs_get_u8(h, NVS_KEY_STALE, &stale) == ESP_OK) {
+        s_stale_write = (stale != 0);
+    }
+
     nvs_close(h);
 
     ESP_LOGI(TAG, "已从 NVS 载入 %d 个参数", PARAM_ITEM_COUNT);
@@ -165,6 +180,9 @@ esp_err_t param_save(void)
     if (ret == ESP_OK) {
         uint16_t ver = PARAM_DATA_VERSION;
         ret = nvs_set_u16(h, NVS_KEY_VERSION, ver);
+    }
+    if (ret == ESP_OK) {
+        ret = nvs_set_u8(h, NVS_KEY_STALE, s_stale_write ? 1 : 0);
     }
     if (ret == ESP_OK) {
         ret = nvs_commit(h);
@@ -195,6 +213,16 @@ uint8_t param_count(void)
 uint16_t param_get_data_version(void)
 {
     return PARAM_DATA_VERSION;
+}
+
+void param_mark_stale_write(bool on)
+{
+    s_stale_write = on;
+}
+
+bool param_stale_write(void)
+{
+    return s_stale_write;
 }
 
 float param_get_float(param_id_t id)
@@ -275,6 +303,14 @@ int param_to_map_json(char *buf, uint32_t len)
         n += w;
     }
 
+    /* 提示标记: 最近一次写参数来自旧版 App (只提示, 车端不拦截)。
+     * App 拿到 "_w" 就在参数页显示提示条, 让用户去点"恢复默认"。 */
+    if (s_stale_write) {
+        int w = snprintf(buf + n, len - n, ",\"_w\":1");
+        if (w <= 0 || (uint32_t)(n + w) >= len) return n;
+        n += w;
+    }
+
     if ((uint32_t)(n + 2) < len) {
         buf[n++] = '}';
         buf[n]   = '\0';
@@ -338,7 +374,18 @@ esp_err_t param_from_json(const char *json)
             continue;
         }
 
-        /* 未知 key (比如 "_v" 版本号) 直接忽略: 下面的 for 循环找不到同名参数
+        /* --- 特殊键: "_v" → App 内置的参数表版本号, 只用来判断是不是旧版 App --- */
+        if (strcmp(name, "_v") == 0) {
+            char *endp = NULL;
+            float v = strtof(p, &endp);
+            if (endp == p) break;               /* 数值非法 */
+            /* 版本比车端旧 → 标记一下 (只提示, 不拒绝写入) */
+            s_stale_write = ((int)v < PARAM_DATA_VERSION);
+            p = endp;
+            continue;
+        }
+
+        /* 未知 key (比如其它保留键) 直接忽略: 下面的 for 循环找不到同名参数
          * 就什么也不做, p 停在数值处, 外层 while 继续找下一个引号。 */
 
         for (int i = 0; i < PARAM_ITEM_COUNT; i++) {

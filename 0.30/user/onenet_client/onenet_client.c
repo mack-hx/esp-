@@ -1084,6 +1084,10 @@ static void handle_service_invoke(const char *topic, int topic_len, const char *
                     ESP_LOGW(TAG, "param_set: 下发的参数里没有版本号, "
                                   "可能来自旧版 App (车端参数表 v%u)",
                              (unsigned)my_ver);
+                    /* 只提示不拦截: 打个标记, App 参数页会显示提示条,
+                     * 提醒用户"参数可能被旧版 App 改坏, 建议恢复默认"。
+                     * (版本号存在时, 由 param_from_json 里的 "_v" 分支统一处理) */
+                    param_mark_stale_write(true);
                 } else {
                     /* vp 指向 "_v" 那一段, 后面是 :数字。
                      * ⚠ atoi 不能直接用在 ":10" 上 (atoi 遇到非数字就返回 0),

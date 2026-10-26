@@ -208,6 +208,41 @@ static void test_map_json(void)
           (unsigned)param_get_data_version());
 }
 
+/* ================= 用例 6: 旧版 App 写参数的提示标记 ================= */
+static void test_stale_flag(void)
+{
+    banner("旧版 App 提示标记: 只提示不拦截, 标记随 _v 自动消解");
+    param_reset_default();
+    param_mark_stale_write(false);
+
+    /* 没有 "_v" 的下发 (旧版 App) → 由上层 (onenet_client) 打标记 */
+    param_mark_stale_write(true);
+    CHECK(param_stale_write(), "旧版 App 写过参数后标记应为真");
+
+    char buf[512];
+    int n = param_to_map_json(buf, sizeof(buf));
+    CHECK(n > 0 && strstr(buf, "\"_w\":1") != NULL,
+          "map JSON 应带上 \"_w\":1 提示标记");
+
+    /* 新版 App 下发 (带 _v = 当前版本) → 标记自动清掉 */
+    param_from_json("{\"_v\":10,\"bal_kp\":12}");
+    CHECK(!param_stale_write(), "带正确 _v 的下发应清掉标记");
+
+    /* App 版本比车端旧 → 重新标记 */
+    param_from_json("{\"_v\":7,\"bal_kp\":12}");
+    CHECK(param_stale_write(), "带旧版本号 _v 的下发应重新标记");
+
+    /* 新版 App 恢复默认 (带 _v) → 也不该被当成旧版 */
+    param_from_json("{\"_reset\":true,\"_v\":10}");
+    CHECK(!param_stale_write(), "带 _v 的恢复默认不应被标记");
+
+    /* 标记状态下的 map JSON 长度仍然要够短 (平台限 512) */
+    param_mark_stale_write(true);
+    n = param_to_map_json(buf, sizeof(buf));
+    CHECK(n > 0 && n < 512, "带标记的 map JSON 长度 %d 应小于 512", n);
+    param_mark_stale_write(false);
+}
+
 int main(void)
 {
     printf("参数表 param.c 离线测试\n");
@@ -217,6 +252,7 @@ int main(void)
     test_from_json();
     test_reset_key();
     test_map_json();
+    test_stale_flag();
 
     printf("\n========== %d 通过, %d 失败 ==========\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

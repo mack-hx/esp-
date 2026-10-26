@@ -228,8 +228,14 @@ class Controller {
   async resetParams() {
     if (!this._check()) return false
     try {
-      /* 物模型 input: values (string), 所以要 stringify */
-      const r1 = await invokeService('param_set', { values: JSON.stringify({ _reset: true }) })
+      /* 物模型 input: values (string), 所以要 stringify。
+       * 带上 "_v" = App 内置的参数表版本号, 车端比对不一致就告警
+       * (见 onenet_client.c 的 param_set 分支)。
+       * ⚠ 恢复默认也必须带 "_v": 车端把"没有版本号"当成"旧版 App"标记,
+       *   会给用户弹提示条说参数可能被旧版 App 改坏。 */
+      const r1 = await invokeService('param_set', {
+        values: JSON.stringify({ _reset: true, _v: PARAM_VER })
+      })
       if (!r1) return false
       const r2 = await invokeService('param_save', {})
       return !!r2

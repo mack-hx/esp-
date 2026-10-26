@@ -136,6 +136,21 @@ uint8_t param_count(void);
 uint16_t param_get_data_version(void);
 
 /**
+ * @brief 标记"最近一次参数写入来自旧版 App"
+ * @param on true=标记 (会随 param_get 的 "_w" 字段提示给 App), false=清除
+ * @note  车端**只提示不拦截** (2026-10-26 用户决定): 下发的参数照样生效,
+ *        但 App 参数页会出现提示条, 提醒用户参数可能被旧版 App 改坏。
+ *        标记会随 param_save() 存进 NVS, 断电重启也保留。
+ */
+void param_mark_stale_write(bool on);
+
+/**
+ * @brief 查询"旧版 App 写过参数"这个标记
+ * @return true=最近一次写入来自旧版 App
+ */
+bool param_stale_write(void);
+
+/**
  * @brief 读取一个浮点参数
  * @param id 参数 ID
  * @return 参数值
