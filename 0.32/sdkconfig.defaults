@@ -58,3 +58,17 @@ CONFIG_MQTT_TRANSPORT_WEBSOCKET_DISABLED=y
 # WiFi 任务本来就固定在 core 0 (CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_0),
 # 所以把 tcpip 任务也绑到 core 0, core 1 就只剩控制任务和低优先级任务。
 CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+
+# ---- 控制台波特率 230400 ----
+# 100Hz 的 TRACE 输出 = 100 行/s x 约 125 字节 = 12.5KB/s,
+# 115200 只有 11.5KB/s → 装不下, 会丢行, 采样率就假了。
+#
+# ⚠ 必须同时开 ESP_CONSOLE_UART_CUSTOM: "ESP_CONSOLE_UART_BAUDRATE"
+#   这个符号只有 CUSTOM 打开时才有 prompt, 否则 kconfig 把它当
+#   "不可见符号" → 每次编译都被重置回默认 115200 (改 sdkconfig 也白改)。
+# 引脚保持 ESP32-S3 的默认 UART0 (TX=GPIO43 / RX=GPIO44), 跟原来一样。
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_0=y
+CONFIG_ESP_CONSOLE_UART_TX_GPIO=43
+CONFIG_ESP_CONSOLE_UART_RX_GPIO=44
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=230400

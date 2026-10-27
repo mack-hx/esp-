@@ -3,7 +3,7 @@
  * @brief 1:1 镜像 ESP32 端 param.c 的参数定义 (20 项)
  * @date 2026-10-26
  *
- * 数据来源: 0.31/user/param/param.c (PARAM_DATA_VERSION 15)
+ * 数据来源: 0.32/user/param/param.c (PARAM_DATA_VERSION 17)
  * 改了 param.c 就要同步这个文件, 否则 App 显示的滑块范围/默认值会跟车端对不上.
  *
  * ⚠ 2026-10-26 踩过的坑 (不要再犯):
@@ -40,6 +40,12 @@
  *   - 参数总数不变 (还是 20 项), 只是默认值变了
  *   ⚠ NVS blob 的内容变了, 车端会自动作废旧数据 (param.c 的 PARAM_DATA_VERSION 已 +1)
  *
+ * @note v17 (0.32) 的变更:
+ *   - bal_kd 的默认值 1.5 → **0.4** (车端 param.c 早就改了, 但 App 这边
+ *     还停在 1.5 → App 下发的还是 1.5 → 车继续满幅打摆)
+ *   - PARAM_VER 16 → 17: 车端作废旧 NVS blob, 所有参数回到出厂默认
+ *   ⚠ 这条很重要: 用户在 0.31 之前调过的参数会丢, 重新烧录后要重新配平。
+ *
  * @note 0.31 收尾 (2026-10-26, 同一版内改动, 版本号不变):
  *   - spd_kp / spd_ki / spd_kd 的 step 从 0.5/0.5/0.1 改成 **0.01**
  *     (车端 param_set_float() 按 step 吸附, step 太粗会把中间值吸掉, App 上调不动)
@@ -49,7 +55,7 @@
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 16
+export const PARAM_VER = 17
 
 export const PARAM_GROUPS = {
   0: { key: 'balance', label: '平衡环' },
@@ -63,8 +69,8 @@ export const PARAM_DEFS = [
     hint: '越大越硬。太小扶不倒, 太大高频抖。这是**最需要真机试出来的**参数' },
   { id: 1,  key: 'bal_ki',      label: 'Balance Ki', unit: '',  def: 0.5,   min: 0,  max: 100,  step: 0.5,  dec: 1, grp: 0,
     hint: '消除配平残余偏差。太大容易积分饱和 (车会先猛冲再回不来)' },
-  { id: 2,  key: 'bal_kd',      label: 'Balance Kd', unit: '',  def: 1.5,   min: 0,  max: 30,   step: 0.1,  dec: 1, grp: 0,
-    hint: '角速度阻尼。车晃得停不下来就加大, 出现高频嗡嗡声就减小' },
+  { id: 2,  key: 'bal_kd',      label: 'Balance Kd', unit: '',  def: 0.4,   min: 0,  max: 30,   step: 0.1,  dec: 1, grp: 0,
+    hint: '角速度阻尼。⚠ 默认 0.4, **不要再加大**: >1 会激起 8~12Hz 满幅打摆自激 (真机实测: kd=1.5 时输出常驻 ±60% 打摆, kd=0.4 时输出标准差 0.12%, 死稳)。想找回阻尼余量要给 D 路加陷波, 不是加大 kd' },
 
   // 速度环 (App 方向键就走这个环: 目标轮速 → 目标倾角 → 平衡环)
   // ⚠ 2026-10-26: 这三项的 step 从 0.5/0.5/0.1 改成 0.01。

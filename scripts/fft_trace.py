@@ -18,19 +18,27 @@ if not rows:
     sys.exit(1)
 
 # 表头里的列名 (t_ms 是第一列, 后面是各字段)
+# ⚠ 跟固件 user/trace/trace.c 的 trace_print_one() 和 capture_trace.py 一一对应
 names = (header[1:] if header and header[0] == "t_ms" else
-         ["t", "pitch", "gyro", "out", "tgt", "spd_tgt", "spd",
-          "yaw", "pos", "pos_out", "dt", "st"])
+         ["pitch", "gyro", "out", "tgt", "spd", "yaw", "pos",
+          "pos_out", "kd", "dt", "st"])
 t = np.array([float(r[0]) for r in rows]) / 1000.0
-cols = {name: np.array([float(r[i]) for r in rows])
-        for i, name in enumerate(names) if i < len(rows[0])}
+# ⚠ 列号要跳过第 0 列 (t_ms): names 里的第 0 个是 pitch, 它在 row 里的下标是 1。
+#   原来写成 enumerate(names) 直接当下标用 → 整张表**错位一列**,
+#   st 读到的是 pos_out, 于是永远找不到 BALANCING 段。
+cols = {name: np.array([float(r[i + 1]) for r in rows])
+        for i, name in enumerate(names) if i + 1 < len(rows[0])}
 
-# 取 BALANCING 且输出有明显动作的连续段
+# 取 BALANCING 的连续段 (按状态切, 不用"输出幅度"当门槛)
+#
+# ⚠ 2026-10-27 修: 原来用 "|out| > 5" 当门槛, 但**振荡信号的输出本来
+#   就在 0 附近来回穿** (比如 out 在 ±48% 之间摆, 有一半帧 |out| < 5),
+#   于是每一段振荡被切成几十个碎片, 每片都不到 40 帧 → 脚本报告"找到 0 段抖动",
+#   **恰恰在真正抖的时候什么都不输出**。改成按状态切连续段。
 st = cols["st"]
-act = (st == 2) & (np.abs(cols["out"]) > 5)
 segs, cur = [], []
 for i in range(len(st)):
-    if act[i]:
+    if st[i] == 2:
         cur.append(i)
     elif cur:
         segs.append(cur)
@@ -38,7 +46,7 @@ for i in range(len(st)):
 if cur:
     segs.append(cur)
 
-print(f"总帧数 {len(rows)}, 找到 {len(segs)} 段抖动")
+print(f"总帧数 {len(rows)}, 找到 {len(segs)} 段 BALANCING")
 for si, seg in enumerate(segs):
     if len(seg) < 40:
         continue
@@ -50,7 +58,7 @@ for si, seg in enumerate(segs):
     print(f"\n=== 段{si}: {len(seg)} 帧, {dur:.1f}s, "
           f"输出峰峰 {cols['out'][idx].max()-cols['out'][idx].min():.0f}% ===")
     fs = 1.0 / np.mean(np.diff(tt))
-    print(f"采样率 {fs:.1f} Hz (名义 50Hz), Nyquist {fs/2:.1f} Hz")
+    print(f"采样率 {fs:.1f} Hz, Nyquist {fs/2:.1f} Hz")
     for name in ["pitch", "gyro", "out"]:
         x = cols[name][idx]
         x = x - x.mean()
@@ -66,7 +74,7 @@ for si, seg in enumerate(segs):
     # 陀螺积分 vs 姿态角变化 (物理一致性)
     g = cols["gyro"][idx]
     p = cols["pitch"][idx]
-    integ = np.trapz(g, tt)
+    integ = np.trapezoid(g, tt) if hasattr(np, "trapezoid") else np.trapz(g, tt)
     dpx = p[-1] - p[0]
     print(f"  一致性: ∫gyro={integ:+.1f}°  Δpitch={dpx:+.1f}°  "
           f"比值={integ/dpx if abs(dpx)>0.5 else float('nan'):.1f} (物理上应≈1)")

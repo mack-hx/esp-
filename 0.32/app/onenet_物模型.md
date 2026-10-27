@@ -74,8 +74,8 @@ App 的方向键要同时表达"方向"和"档位", 但物模型里能写的属�
 
 - 档位表 (`20/40/60/80`) 与车上"编码器调试"页 (`ui_encoder.c`) 同源,
   都取自 `hardware/motor_driver/motor_driver.c` 的 `motor_spd_levels[]`。
-- 设备端解码在 `0.31/user/onenet_client/onenet_client.c` 的 `apply_move_cmd()`;
-  App 端编码在 `0.31/app/utils/control.js` 的 `_dirToCmd()`, 两边一一对应。
+- 设备端解码在 `0.32/user/onenet_client/onenet_client.c` 的 `apply_move_cmd()`;
+  App 端编码在 `0.32/app/utils/control.js` 的 `_dirToCmd()`, 两边一一对应。
 - ⚠ 2026-10-26: 设备收到后**不再直驱**, 而是走**速度环**:
   目标轮速 → 目标倾角 → 平衡环, 平衡环全程在线。
   (以前是直接给 PWM, 平衡环整个暂停 —— 车站着的时候一推, 松手时车已经歪了,

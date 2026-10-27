@@ -75,5 +75,5 @@ npm run dev:h5          # 浏览器访问 http://localhost:8080
 
 ## 版本
 
-- App 版本: 0.31.0 (跟 ESP32 固件版本号对齐)
-- 参数表版本: 与 `0.31/user/param/param.c` 的 `PARAM_DATA_VERSION` 一致 (当前 **14**, 共 17 项)
+- App 版本: 0.32.0 (跟 ESP32 固件版本号对齐)
+- 参数表版本: 与 `0.32/user/param/param.c` 的 `PARAM_DATA_VERSION` 一致 (当前 **17**, 共 20 项)

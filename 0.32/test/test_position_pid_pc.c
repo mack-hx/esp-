@@ -8,7 +8,7 @@
  *   3) 死区内积分衰减 —— 跟速度环同一个坑 (积分冻结 → 车永久偏移)
  *
  * 编译运行:
- *   cd 0.31
+ *   cd 0.32
  *   gcc -std=c99 -Wall -Wextra test/test_position_pid_pc.c \
  *       user/pid/position_pid.c user/pid/pid.c \
  *       -o /tmp/position_pid_test -I test -I user/pid -I user/param -lm

@@ -3,7 +3,7 @@
  * @brief 参数表 param.c 的离线单元测试 (PC 上直接 gcc 跑, 不依赖硬件)
  *
  * @note  编译运行:
- *      cd 0.30
+ *      cd 0.32
  *      gcc -std=c99 -Wall -Wextra test/test_param_pc.c user/param/param.c \
  *          -o /tmp/param_test -I test -I user/param -DPARAM_OFFLINE_TEST
  *      /tmp/param_test
@@ -56,7 +56,24 @@ static void test_defaults(void)
      * 输出上限默认 60% (方向修正后实测 30% 接不住车身) */
     CHECK(near(param_get_float(PARAM_PID_BAL_KP), 12.0f, 1e-6f), "bal_kp 默认应 12");
     CHECK(near(param_get_float(PARAM_PID_BAL_KI),  0.5f, 1e-6f), "bal_ki 默认应 0.5");
-    CHECK(near(param_get_float(PARAM_PID_BAL_KD),  1.5f, 1e-6f), "bal_kd 默认应 1.5");
+    CHECK(near(param_get_float(PARAM_PID_BAL_KD),  0.4f, 1e-6f), "bal_kd 默认应 0.4");
+    /* ⚠ bal_kd 是 0.32 的重点: 默认值必须跟 App 侧 paramDef.js 一致。
+     * 真机实测 (kd=1.5): 平衡内环出现饱和极限环, 输出常驻 ±60% 打摆,
+     * 陀螺读到机身 8~12Hz 摆动 → D 项放大 → 自激, 车站不住。
+     * kd=0.4 实测: 输出标准差 0.12%, 饱和帧 0% → 死稳。
+     * 断言写死 0.4 是为了"别又把默认值调回去" —— 调参走 App, 别动默认值。 */
+    CHECK(near(param_get_item(PARAM_PID_BAL_KD)->def, 0.4f, 1e-6f),
+          "bal_kd 的 def 应为 0.4 (实际 %.2f)",
+          (double)param_get_item(PARAM_PID_BAL_KD)->def);
+    /* 位置环默认必须关 (0.31 的结论): pos_kp / pos_ki = 0。
+     * 位置环默认开会引起站直时前后摆 (位置环是 0.30→0.31 唯一新增的闭环)。 */
+    CHECK(near(param_get_float(PARAM_POS_KP), 0.0f, 1e-6f), "pos_kp 默认应 0 (位置环默认关)");
+    CHECK(near(param_get_float(PARAM_POS_KI), 0.0f, 1e-6f), "pos_ki 默认应 0 (位置环默认关)");
+    /* pos_kp 的 step 是 0.1 → 显示小数位必须是 1 (App 侧也是 1)。
+     * ⚠ 之前车端写的是 2, 两边不一致 —— scripts/check_param_sync.py 能查出来。 */
+    CHECK(param_get_item(PARAM_POS_KP)->decimals == 1,
+          "pos_kp 的 decimals 应为 1 (step=0.1), 实际 %u",
+          (unsigned)param_get_item(PARAM_POS_KP)->decimals);
     /* 速度环增益: 具体数值用 g_param_items 里的 def 比对 (不在这里写死),
      * 免得调完默认值忘了改测试。写死的值只用来卡住"别又调回激进值":
      *   0.15/0.05 在仿真里会让车身倾角波动中位 10.7° (走起来就是剧烈抖)。 */

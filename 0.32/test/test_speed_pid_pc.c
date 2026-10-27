@@ -10,7 +10,7 @@
  *        所以本测试只覆盖速度环的**纯运算逻辑**。
  *
  * 编译运行:
- *   cd 0.31
+ *   cd 0.32
  *   gcc -std=c99 -Wall -Wextra test/test_speed_pid_pc.c \
  *       user/pid/speed_pid.c user/pid/pid.c \
  *       -o /tmp/speed_pid_test -I test -I user/pid -I user/param -lm

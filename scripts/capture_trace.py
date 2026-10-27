@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""抓 ESP32 串口的 BALANCE TRACE 行, 存成 CSV 方便分析。
+"""抓 ESP32 串口的 TRACE 行, 存成 CSV 方便分析。
 
 两种数据分开存:
-  <输出文件>.csv   所有实时 TRACE 行 (带抓包时刻)
-  <输出文件>.dump.csv 固件回灌的那一段 (摔倒/关闭平衡时自动打印的最近 30 秒)
+  <输出文件>.csv       所有实时 TRACE 行
+  <输出文件>.dump.csv  固件回灌的那一段 (摔倒/关闭平衡时自动打印的历史)
 
-用法: python3 scripts/capture_trace.py [秒数] [输出文件前缀]
+用法:
+  python3 scripts/capture_trace.py [秒数] [输出文件前缀] [串口设备]
+例:
+  python3 scripts/capture_trace.py 60 /tmp/trace /dev/cu.usbmodem21133401
+
+⚠ 串口波特率必须跟固件一致 = 230400 (100Hz × 约 125 字节 = 12.5KB/s,
+  115200 装不下, 会丢行 → 采样率就假了)。
 """
 import os
 import re
@@ -14,17 +20,40 @@ import time
 
 import serial
 
-PORT = "/dev/cu.usbmodem21133401"
+# 串口设备: 优先用命令行参数, 其次环境变量 TRACE_PORT, 最后自动挑一个
+def pick_port(arg):
+    if arg:
+        return arg
+    env = os.environ.get("TRACE_PORT")
+    if env:
+        return env
+    import glob
+    cands = sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/tty.usbmodem*"))
+    if not cands:
+        sys.exit("找不到串口设备 (用参数或 TRACE_PORT 指定, 如 /dev/cu.usbmodem2101)")
+    return cands[0]
+
+
+PORT = pick_port(sys.argv[3] if len(sys.argv) > 3 else None)
 SECS = int(sys.argv[1]) if len(sys.argv) > 1 else 120
 BASE = sys.argv[2] if len(sys.argv) > 2 else "/tmp/trace"
+BAUD = 230400
 
-pat = re.compile(
-    r"TRACE t=([\d.]+) pitch=(-?[\d.]+) gyro=(-?[\d.]+) out=(-?[\d.]+) "
-    r"spd=(-?[\d.]+) kd=(-?[\d.]+) dt=([\d.]+) st=(\d+)"
-)
-HEAD = "t_ms,pitch,gyro,out,spd,kd,dt,st\n"
+# CSV 表头 (跟固件 trace.c 的 trace_print_one() 一一对应)
+HEAD = "t_ms,pitch,gyro,out,tgt,spd,yaw,pos,pos_out,kd,dt,st\n"
 
-s = serial.Serial(PORT, 230400, timeout=0.5)
+# 字段顺序必须跟 HEAD (除 t_ms) 一致
+FIELDS = ["pitch", "gyro", "out", "tgt", "spd", "yaw", "pos", "pos_out", "kd", "dt", "st"]
+# 用 "key=value" 通用解析, 固件加字段时脚本不用改 (只认 HEAD 里有的)
+pat = re.compile(r"(\w+)=(-?[\d.]+)")
+
+
+def open_port():
+    return serial.Serial(PORT, BAUD, timeout=0.5)
+
+
+s = open_port()
+print("串口 %s @ %d baud, 抓 %d 秒" % (PORT, BAUD, SECS), flush=True)
 t0 = time.time()
 n = 0
 in_dump = False
@@ -45,7 +74,7 @@ with open(BASE + ".csv", "w") as f, open(BASE + ".dump.csv", "w") as fd:
             except Exception:
                 pass
             try:
-                s = serial.Serial(PORT, 230400, timeout=0.5)
+                s = open_port()
             except Exception as e2:
                 print("重连失败: %s" % e2, flush=True)
                 time.sleep(3)
@@ -65,18 +94,18 @@ with open(BASE + ".csv", "w") as f, open(BASE + ".dump.csv", "w") as fd:
             if "TRACE DUMP END" in line:
                 in_dump = False
                 continue
-            m = pat.search(line)
-            if not m:
+            if "TRACE" not in line:
                 continue
-            n += 1
-            g = list(m.groups())
+            kv = dict(pat.findall(line))
+            if "t" not in kv:
+                continue
             # 第一列: 固件自己的 esp_timer 时刻 (ms), 没有就退回主机抓包时刻
-            if g[0] is not None:
-                t_ms = f"{float(g[0]) * 1000:.0f}"
-                g = g[1:]
-            else:
-                t_ms = f"{(time.time()-t0)*1000:.0f}"
-            row = t_ms + "," + ",".join(g) + "\n"
+            t_ms = f"{float(kv['t']) * 1000:.0f}"
+            try:
+                row = t_ms + "," + ",".join(kv[f] for f in FIELDS) + "\n"
+            except KeyError:
+                continue      # 字段不全的行 (半行/旧固件格式) → 跳过
+            n += 1
             f.write(row)
             f.flush()
             if in_dump:

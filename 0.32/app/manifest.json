@@ -2,8 +2,8 @@
     "name" : "esp_balance_robot",
     "appid" : "__UNI__EBR001",
     "description" : "ESP32-S3R8N8 平衡轮腿机械狗 配套 App",
-    "versionName" : "0.31.0",
-    "versionCode" : "141",
+    "versionName" : "0.32.0",
+    "versionCode" : "142",
     "transformPx" : false,
     "app-plus" : {
         "usingComponents" : true,
