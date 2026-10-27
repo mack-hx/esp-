@@ -8,7 +8,8 @@
 
 ## 1. 当前在做什么
 
-**状态**：0.31 版本收尾阶段，代码已完工，等待提交 Git / 发布。
+**状态**：0.31 已完整入库 Git（135 文件）。今天修了"一直往前跑"和"高频抖动"
+两个控制环问题，**待真机验证**。位置环尚未接入（缺轮径参数）。
 
 **当前版本目录**：`0.31/`（版本号 `0.31.0`，见 `0.31/version.txt`）
 **上一版本**：`0.30/`（已发布到 GitHub，勿修改）
@@ -46,6 +47,8 @@
 | `test/bal_sim.py`（定轴） | RMS 13.3%，末段振幅 3.38° |
 | `test/bal_sim.py --walk` | 目标 20/40/60/80 rpm 都不摔，倾角波动 3.14~3.56° |
 | `node --check app/utils/control.js` | 通过 |
+| **`test/test_speed_pid_pc.c`（新建）** | **14 / 14 通过**（死区软化 + 积分衰减） |
+| `test/test_pid_pc.c` | **29 / 29 通过**（新增 8 条积分衰减断言） |
 | `app/pages.json` JSON.parse | 通过 |
 | 车端 vs App 参数表逐项比对 | 17 项全一致 |
 
@@ -53,66 +56,42 @@
 
 ## 4. 待办 / 待用户确认
 
-### 🔴 最优先：高频抖动 + 一直往前跑 + 加位置环（已失败 3 次，务必看这里）
-用户连续 3 次提出同一问题，3 个会话全部因上下文耗尽而失败，**0 次写入**。接手时先读这段：
+### 🔴 最优先：真机验证今天修的两个问题
+用户连提 4 次的问题，今天已定位根因并改完代码，**但还没上真机**。
 
-**症状**：
-1. 一直在高频抖动
-2. 推它的时候很坚挺，不会倒（说明平衡环本身是好的）
-3. 但是会一直往前跑（速度环有零点漂移 / 编码器方向问题）
-4. 需求：加位置环
+**症状与对应修复**：
 
-**已定位的线索**（2026-10-27 用外部子代理查证，未经真机验证）：
-- 速度环误差 = `实测 − 目标`（`speed_pid.c:59`），死区 1.0 rpm（`speed_pid.h:38`）
-- 速度环输出（目标倾角）上限 = `min(参数 spdout_max, SPD_PID_WALK_PITCH_MAX=4°)`（`speed_pid.c:29-31`、`speed_pid.h:46`）
-- 目标倾角在速度环 PID 内部夹住，`balance.c:657` 直接拿值不再夹
-- `BAL_ENC_FWD_SIGN = -1`，编码器在电机轴上、减速箱 30:1，`gear` 已是 30
-- **编码器 rpm 换算里没用 gear**（`encoder.c:168-171`，44 脉冲/圈）；gear 只在
-  `balance.c:351-357` 的 300ms 滑窗换算里用 → 两处速度口径可能不一致，值得核对
-- 位置环**当前只有接口占位**（`user/pid/position_pid.c`），**未接入控制流程**
-- 位置环输入单位是 **turn（轮子圈数）**，死区 `POS_PID_ERR_DEADBAND = 0.05` turn
-  （`position_pid.h:27/32/62`）
-- 位置环接入口：`balance.c:651`（斜坡）与 `:657`（speed_pid_update）**之间**，
-  输出加到目标轮速再喂速度环
-- 需要配套：`balance_load_params`(222-227) / `balance_reset_pid`(232-241) /
-  `balance_init`(918-920) 三处挂 position_pid
-- **参数表 v14 共 17 项，没有轮径参数**（`param.c:84`/`param.c:33`），里程计缺轮径这一步
+| 症状 | 根因 | 修复 | 位置 |
+|---|---|---|---|
+| 会一直往前跑 | 速度环死区在 PID 前归零 → 积分**冻结** → 残留积分永久非零 → 目标倾角恒定非零 | 新增 `pid_decay_integral()`，死区内积分按 `exp(-dt/3s)` 衰减到 0 | `user/pid/pid.{c,h}`、`user/pid/speed_pid.c` |
+| 一直在高频抖动 | 死区**硬归零** → 实测轮速跨量化台阶 (0.90↔1.05 rpm) 时目标倾角每 300ms 跳一次 → 平衡环反复纠偏 | 死区加线性过渡带 `SPD_PID_ERR_SOFT_BAND = 0.5 rpm`，误差连续 | `user/pid/speed_pid.{c,h}` |
 
-**接手做法（不要重蹈覆辙）**：
-1. **第一步就派外部子代理**，别自己读文件（Task 已坏，见上）：
-   ```bash
-   cat > /tmp/q.txt <<'EOF'
-   工程根: /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot
-   目标文件: 0.31/user/pid/speed_pid.c, 0.31/user/pid/balance_pid.c, 0.31/hardware/encoder/encoder.c, 0.31/user/control/balance.c
-   要找什么: 1) 速度环误差符号与限幅在哪算; 2) 编码器计数到 rpm 的换算与前进方向符号; 3) 抖动可能来自哪个环的增益或采样
-   返回格式: 只回结论 + 关键行号 (file:line), 不要贴大段原文, 30 行以内
-   EOF
-   scripts/subagent.sh /tmp/q.txt speed_loop
-   ```
-2. 拿到结论后**直接动手改代码**，不要回头把文件再读一遍
-3. 位置环要接进控制流程的话，先确认轮径参数怎么加（**要问用户轮径实际值**），
-   以及要不要先把 `encoder.c` 和 `balance.c` 两处速度口径统一
-4. 改完跑 `test/bal_sim.py --walk` 验证不摔，再考虑真机
+**验证状态**：固件编译 SUCCESS；离线测试 pid 29/29、speed_pid 14/14、
+param 110/110、trim 67/67，全绿无回归。
 
-**`.cursor/hooks/` 装了三个强制钩子**（2026-10-27 加，真实环境已验证生效）：
-- `require_subagent.py`：自己查文件满 6 次就拦截，强制先派子代理
-- `guard_reads.py`：拦重复读同一位置、拦大文件整读（>800 行）
-- `limit_verbose_output.py`：单轮正文超 12000 字符就塞提醒（postToolUse）
-**被拦截时不要绕过，按提示派子代理。**
-维护类命令（git/python/编译/写文件）不计数，不会被误拦。
+**需要用户做的**：
+- [ ] 烧录 0.31（`pio run --target upload`）
+- [ ] **重新配平**（旧配平表作废）
+- [ ] 定轴静置 30 秒，看**还往不往前跑**（修复 1 的直接判据）
+- [ ] 静置时听电机声音，看**还有没有高频嗡嗡声**（修复 2 的直接判据）
+- [ ] App 方向键走一段再松手，看停不停止（验证积分能退干净）
 
-⚠ **新开窗口才生效**：Cursor 在会话启动时加载 hooks.json，中途创建的要重启才生效。
+**如果还是往前跑**，可能的追加方向（按优先级）：
+1. `SPD_PID_I_DECAY_TAU` 调小（3.0 → 1.5）
+2. 死区 `SPD_PID_ERR_DEADBAND` 偏小，量化噪声进了积分 → 调大到 2.0
+3. 编码器方向符号 `BAL_ENC_FWD_SIGN`（balance.h）反了 → 车速反馈符号错
 
-### 🔴 子代理：Task 坏了，改用外部 CLI（2026-10-27 定位完毕）
-`Task`（Cursor 内置子代理）**全面失效**，报
-`[invalid_argument] Cursor user message action has no message_id`，重试 3 次全败。
-父会话正常，只有子会话创建被服务端拒绝 —— Cursor agent-host 的 bug，改不了。
+**位置环：尚未接入**（用户明确要求过）
+- 需要里程计 = **轮径参数** + 编码器位移积分 + 编码器零点复位接口
+- 参数表里目前只有 `gear=30`，**没有轮径参数** → 需要问用户轮子实际直径
+- 接入点在 `balance.c:657` `speed_pid_update()` 调用**之前**，
+  位置环输出 (rpm) 加到 `s_tgt_avg`
+- 里程累计要挂在 `balance.c:340-341` 的 `d1/d2` 窗口增量处（100ms 一次），
+  不要挂在 rpm 换算后面（那样 300ms 才动一次）
+- `user/pid/position_pid.c` 接口占位已就绪（`position_pid_update(dt, err)`）
 
-证据：`~/Library/Application Support/Cursor/logs/20261027T122114/window1/exthost/anysphere.cursor-agent-host/Cursor Agent Host.log`
-里每个子会话 `conversationId` 都报同一错误；历史上 10-21~10-26 有 27 次子代理全部成功，
-今天 16:14 之后 10 次全部失败（含 3 次最小探针、试过 explore/generalPurpose/shell/指定 model/后台）。
-
-**改用 `scripts/subagent.sh`**（走本机 Claude Code CLI `/Volumes/Moving/app/npm-global/bin/claude`，已验证可用）：
+**子代理怎么派（2026-10-27 起）**：
+Cursor 内置 `Task` 报 `message_id` 错误时，用外部脚本（走本机 claude CLI）：
 ```bash
 cat > /tmp/q.txt <<'EOF'
 工程根: /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot
@@ -122,16 +101,15 @@ cat > /tmp/q.txt <<'EOF'
 EOF
 scripts/subagent.sh /tmp/q.txt <任务名>
 ```
-完整报告落 `logs/subagents/<任务名>-<时间戳>.md`，主对话只回 20 行摘要。
+报告落在 `logs/subagents/<任务名>-<时间戳>.md`，主对话只回 20 行摘要。
+⚠ 依赖 claude CLI 额度，今天下午遇到过 402 余额不足。
 
-### 🔴 "输入内容过长"的真正原因：助手自己的输出文字
-不是大文件。`python3 scripts/ctx_check.py --all` 实测三个失败会话：
-助手文字 50~55 万字符、工具 IO 才 7~8 千字符 → **助手输出占 98%**，单段最长 4.5~7 万字符。
-Cursor 把模型 reasoning 当正文 text 存进 transcript，每轮重发一遍，30 轮就爆。
-成功那次（4a8a42d5）助手文字只 10 万字符、占 68% → 88 轮才 44k token。
-`limit_verbose_output.py` hook 专门盯这个。
-
-临时解锁（hook 与子代理不可用时会互锁）：
+**`.cursor/hooks/` 装了三个强制钩子**（真实环境已验证生效）：
+- `require_subagent.py`：自己查文件满 6 次就拦截，强制先派子代理
+- `guard_reads.py`：拦重复读同一位置、拦大文件整读（>800 行）
+- `limit_verbose_output.py`：单轮正文超 12000 字符时提醒精简
+维护类命令（git/python/编译/写文件）不计数，不会被误拦。
+紧急开关（子代理不可用时 hook 会把自己锁死）：
 ```bash
 touch /tmp/esp_balance_robot_ctx_guard_off   # 全部放行
 rm   /tmp/esp_balance_robot_ctx_guard_off   # 恢复正常拦截
@@ -144,10 +122,10 @@ rm   /tmp/esp_balance_robot_ctx_guard_off   # 恢复正常拦截
 - [ ] **轮子直径实际值是多少**（加位置环做里程计要用）—— 这是位置环的唯一硬阻塞
 
 ### 助手可以自己做的
-- [ ] `0.31/` 整个目录**还没进 Git**（126 个文件 / 1.3 MB，未跟踪）
+- [x] `0.31/` 整个目录已进 Git（135 文件，提交 `700d122`）
 - [ ] `0.30/` 的 18 个文件改动也还没提交
-- [ ] 提交前先按规则 14 确认 `package-lock.json`（528 KB）是否入库 —— **已决定：只订规则，不动文件，0.31 这份不入库**
 - [ ] 0.31 发布到 GitHub（tag `v0.31` + release + 源码包）
+- [ ] 位置环接入（**等用户给轮径**）
 
 
 ### 已知的文档脱节（0.30 遗留，0.31 已修好，0.30 待修）
