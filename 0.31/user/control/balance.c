@@ -62,13 +62,20 @@ static const char *TAG = "BALANCE";
  *   抓完这一段再干别的, 不用守着。 */
 #define BAL_TRACE_ENABLE  1
 #if BAL_TRACE_ENABLE
-/* ⚠ 采样周期: 20ms (50Hz)
+/* ⚠ 采样周期: 10ms (100Hz)
  *   100ms 采样会漏掉真实振荡 —— 10Hz 采样把 11Hz 的振荡混叠成 1.1Hz,
  *   看起来像"慢慢晃", 其实是控制环自己在高频振荡。
  *   20ms → 50Hz 采样, 11Hz 振荡有 4~5 个点, 够看波形了。
- *   ⚠ 串口是 115200 (11.5KB/s), 50 行/s × 约 90 字节 = 4.5KB/s, 不能更快了。 */
-#define BAL_TRACE_PERIOD_MS 20
-/* 环形缓冲条数 (每条 20ms) → 600 条 = 12 秒 */
+ * ⚠ 2026-10-27: 20ms(50Hz) → **10ms(100Hz)**。
+ *   原因: 50Hz 采样的 Nyquist 只有 25Hz, **分辨不出 12.4Hz 和它的
+ *   混叠 37.4Hz** —— 而给 D 路加陷波必须知道真实谐振频率在哪,
+ *   打偏了等于白做。100Hz 采样 → Nyquist 50Hz, 够分辨。
+ *   串口已从 115200 提到 **230400** (23KB/s):
+ *   100 行/s × 约 125 字节 = 12.5KB/s, 230400 装得下, 115200 装不下
+ *   (会丢行, 采样率就假了)。
+ *   ⚠ 串口监视器/采集脚本的波特率要跟着改成 230400。 */
+#define BAL_TRACE_PERIOD_MS 10
+/* 环形缓冲条数 (每条 10ms) → 600 条 = 6 秒 */
 #define BAL_TRACE_RING_N    600
 #endif
 
@@ -125,12 +132,10 @@ static void balance_trace_dump(void)
     int start = (s_trace_cnt < BAL_TRACE_RING_N) ? 0 : s_trace_idx;
     for (int i = 0; i < s_trace_cnt; i++) {
         const bal_trace_rec_t *r = &s_trace_ring[(start + i) % BAL_TRACE_RING_N];
-        ESP_LOGI(TAG, "TRACE t=%.3f pitch=%.2f gyro=%.1f out=%.1f tgt=%.2f "
-                      "spd=%.1f/%.1f yaw=%.1f pos=%.1fcm/%.1f dt=%.1fms st=%d",
+        ESP_LOGI(TAG, "TRACE t=%.3f pitch=%.2f gyro=%.1f out=%.1f spd=%.1f kd=%.2f dt=%.1f st=%d",
                  (double)r->t,
                  (double)r->pitch, (double)r->gyro, (double)r->out,
-                 (double)r->tgt, (double)r->spd_tgt, (double)r->spd,
-                 (double)r->yaw, (double)r->pos, (double)r->pos_out,
+                 (double)r->spd, (double)param_get_float(PARAM_PID_BAL_KD),
                  (double)(r->dt * 1000.0f), r->st);
     }
     ESP_LOGW(TAG, "=== TRACE DUMP END ===");
@@ -1058,14 +1063,11 @@ static void balance_task(void *arg)
             /* 先存进环形缓冲 (不管当前是什么状态都存, 这样"起立前"也能看到) */
             balance_trace_push(&s_data, (float)esp_timer_get_time() / 1000000.0f);
 
-            ESP_LOGI(TAG, "TRACE t=%.3f pitch=%.2f gyro=%.1f out=%.1f tgt=%.2f "
-                          "spd=%.1f/%.1f yaw=%.1f pos=%.1fcm/%.1f dt=%.1fms st=%d",
+            ESP_LOGI(TAG, "TRACE t=%.3f pitch=%.2f gyro=%.1f out=%.1f spd=%.1f kd=%.2f dt=%.1f st=%d",
                      (double)((float)esp_timer_get_time() / 1000000.0f),
                      (double)s_data.pitch, (double)s_data.gyro,
-                     (double)s_data.bal_out, (double)s_data.target_pitch,
-                     (double)s_data.target_speed, (double)s_data.speed,
-                     (double)s_data.yaw_out,
-                     (double)s_data.position_cm, (double)s_data.pos_out,
+                     (double)s_data.bal_out, (double)s_data.speed,
+                     (double)param_get_float(PARAM_PID_BAL_KD),
                      (double)(dt * 1000.0f), (int)s_state);
         }
 

@@ -1,0 +1,29 @@
+# uniapp 项目根目录
+# 实际工程文件由 HBuilderX/CLI 编译产物放这里, 但 source 不在
+
+# 编译产物
+/unpackage/
+/dist/
+/node_modules/
+
+# HBuilderX
+.hbuilderx/
+
+# 编辑器
+.idea/
+.vscode/
+*.iml
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 环境
+.env
+.env.local

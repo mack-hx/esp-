@@ -19,13 +19,12 @@ SECS = int(sys.argv[1]) if len(sys.argv) > 1 else 120
 BASE = sys.argv[2] if len(sys.argv) > 2 else "/tmp/trace"
 
 pat = re.compile(
-    r"TRACE (?:t=([\d.]+) )?pitch=(-?[\d.]+) gyro=(-?[\d.]+) out=(-?[\d.]+) tgt=(-?[\d.]+) "
-    r"spd=(-?[\d.]+)/(-?[\d.]+) yaw=(-?[\d.]+) pos=(-?[\d.]+)cm/(-?[\d.]+) "
-    r"dt=([\d.]+)ms st=(\d+)"
+    r"TRACE t=([\d.]+) pitch=(-?[\d.]+) gyro=(-?[\d.]+) out=(-?[\d.]+) "
+    r"spd=(-?[\d.]+) kd=(-?[\d.]+) dt=([\d.]+) st=(\d+)"
 )
-HEAD = "t_ms,pitch,gyro,out,tgt,spd_tgt,spd,yaw,pos,pos_out,dt,st\n"
+HEAD = "t_ms,pitch,gyro,out,spd,kd,dt,st\n"
 
-s = serial.Serial(PORT, 115200, timeout=0.5)
+s = serial.Serial(PORT, 230400, timeout=0.5)
 t0 = time.time()
 n = 0
 in_dump = False
@@ -35,7 +34,23 @@ with open(BASE + ".csv", "w") as f, open(BASE + ".dump.csv", "w") as fd:
     fd.write(HEAD)
     buf = b""
     while time.time() - t0 < SECS:
-        b = s.read(512)
+        try:
+            b = s.read(512)
+        except serial.SerialException as e:
+            # USB CDC 偶发重枚举 (Errno 6 Device not configured) → 重开串口继续抓
+            print("串口掉线, 3 秒后重连: %s" % e, flush=True)
+            time.sleep(3)
+            try:
+                s.close()
+            except Exception:
+                pass
+            try:
+                s = serial.Serial(PORT, 230400, timeout=0.5)
+            except Exception as e2:
+                print("重连失败: %s" % e2, flush=True)
+                time.sleep(3)
+                continue
+            continue
         if not b:
             continue
         # ⚠ 必须把跨块的分行拼起来: 直接 splitlines 会丢掉块边界的半行

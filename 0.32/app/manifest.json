@@ -1,0 +1,68 @@
+{
+    "name" : "esp_balance_robot",
+    "appid" : "__UNI__EBR001",
+    "description" : "ESP32-S3R8N8 平衡轮腿机械狗 配套 App",
+    "versionName" : "0.31.0",
+    "versionCode" : "141",
+    "transformPx" : false,
+    "app-plus" : {
+        "usingComponents" : true,
+        "nvueStyleCompiler" : "uni-app",
+        "compilerVersion" : 3,
+        "splashscreen" : {
+            "alwaysShowBeforeRender" : true,
+            "waiting" : true,
+            "autoclose" : true,
+            "delay" : 0
+        },
+        "modules" : {
+            "Share" : {}
+        },
+        "distribute" : {
+            "android" : {
+                "permissions" : [
+                    "<uses-permission android:name=\"android.permission.INTERNET\"/>",
+                    "<uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\"/>",
+                    "<uses-permission android:name=\"android.permission.ACCESS_WIFI_STATE\"/>"
+                ]
+            },
+            "ios" : {},
+            "sdkConfigs" : {}
+        }
+    },
+    "quickapp" : {},
+    "mp-weixin" : {
+        "appid" : "",
+        "setting" : {
+            "urlCheck" : false,
+            "es6" : true,
+            "minified" : true
+        },
+        "usingComponents" : true,
+        "permission" : {}
+    },
+    "mp-alipay" : {
+        "usingComponents" : true
+    },
+    "mp-baidu" : {
+        "usingComponents" : true
+    },
+    "mp-toutiao" : {
+        "usingComponents" : true
+    },
+    "uniStatistics" : {
+        "enable" : false
+    },
+    "vueVersion" : "3",
+    "h5" : {
+        "title" : "ESP32 平衡机械狗",
+        "router" : {
+            "mode" : "hash",
+            "base" : "./"
+        },
+        "devServer" : {
+            "https" : false,
+            "port" : 8080
+        }
+    }
+}

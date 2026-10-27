@@ -9,16 +9,21 @@ import sys
 import numpy as np
 
 path = sys.argv[1] if len(sys.argv) > 1 else "/tmp/hi.csv"
-rows = [r for r in csv.reader(open(path)) if r and r[0] != "t_ms"]
+with open(path) as f:
+    rdr = csv.reader(f)
+    header = next(rdr, None)
+    rows = [r for r in rdr if r]
 if not rows:
     print("没数据")
     sys.exit(1)
 
+# 表头里的列名 (t_ms 是第一列, 后面是各字段)
+names = (header[1:] if header and header[0] == "t_ms" else
+         ["t", "pitch", "gyro", "out", "tgt", "spd_tgt", "spd",
+          "yaw", "pos", "pos_out", "dt", "st"])
 t = np.array([float(r[0]) for r in rows]) / 1000.0
 cols = {name: np.array([float(r[i]) for r in rows])
-        for i, name in enumerate(
-            ["t", "pitch", "gyro", "out", "tgt", "spd_tgt", "spd",
-             "yaw", "pos", "pos_out", "dt", "st"]) if i < len(rows[0])}
+        for i, name in enumerate(names) if i < len(rows[0])}
 
 # 取 BALANCING 且输出有明显动作的连续段
 st = cols["st"]
