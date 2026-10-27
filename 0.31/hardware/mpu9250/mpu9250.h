@@ -199,6 +199,15 @@ esp_err_t mpu9250_calibrate_gyro(uint16_t samples);
 esp_err_t mpu9250_read_mag(mpu9250_axis_t *out);
 
 /**
+ * @brief 读磁力计 + 打观察日志 (给**低频**任务用)
+ * @return ESP_OK 成功; ESP_ERR_INVALID_STATE 这块板没有可用的 AK8963
+ * @note  ⚠ **不要在控制任务里调用**: 磁力计的 I2C 事务会给平衡内环
+ *        叠加 1~2ms 抖动延迟, 足以把 8~12Hz 的自激振荡顶起来。
+ *        磁力计不参与姿态解算, UI 任务(50ms)里读完全够用。
+ */
+esp_err_t mpu9250_update_mag(void);
+
+/**
  * @brief 开/关"零偏慢漂跟随"
  * @param on true=允许零偏在设备静止时缓慢向当前读数靠拢
  * @note  为什么要这个: 陀螺零偏随温度漂 (实测冷机 0.90 °/s → 热机 0.65 °/s),

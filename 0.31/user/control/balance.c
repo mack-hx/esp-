@@ -26,6 +26,7 @@
  */
 
 #include "balance.h"
+#include "esp_timer.h"
 #include "param.h"
 #include "balance_pid.h"
 #include "speed_pid.h"
@@ -52,10 +53,88 @@ static const char *TAG = "BALANCE";
  * 打开后每 100ms 打印一次控制回路的关键量 (姿态角/角速度/输出/目标/周期),
  * 用来在真机上看"抖"到底是姿态读数在抖、还是控制器在抖、还是周期在抖。
  * 打开: 把下面的 0 改成 1 重新编译烧录。
- * ⚠ 开了之后串口会被刷屏, 别在正式使用时开着。 */
-#define BAL_TRACE_ENABLE  0
+ * ⚠ 开了之后串口会被刷屏, 别在正式使用时开着。
+ *
+ * ⚠ 2026-10-27 追加: **环形缓冲 + 自动回灌**。
+ *   现场调试最大的坑是"要卡时间点": 车站起来抖的那几十秒, 往往正好错过
+ *   串口采集的窗口。现在把最近 30 秒的跟踪一直存在 RAM 里, 一旦状态从
+ *   "平衡中" 变成别的 (摔倒 / 关闭平衡 / 退出), 自动把整段打到串口,
+ *   抓完这一段再干别的, 不用守着。 */
+#define BAL_TRACE_ENABLE  1
 #if BAL_TRACE_ENABLE
-#define BAL_TRACE_PERIOD_MS 100
+/* ⚠ 采样周期: 20ms (50Hz)
+ *   100ms 采样会漏掉真实振荡 —— 10Hz 采样把 11Hz 的振荡混叠成 1.1Hz,
+ *   看起来像"慢慢晃", 其实是控制环自己在高频振荡。
+ *   20ms → 50Hz 采样, 11Hz 振荡有 4~5 个点, 够看波形了。
+ *   ⚠ 串口是 115200 (11.5KB/s), 50 行/s × 约 90 字节 = 4.5KB/s, 不能更快了。 */
+#define BAL_TRACE_PERIOD_MS 20
+/* 环形缓冲条数 (每条 20ms) → 600 条 = 12 秒 */
+#define BAL_TRACE_RING_N    600
+#endif
+
+#if BAL_TRACE_ENABLE
+/* ========== 跟踪环形缓冲 (最近 30 秒现场) ==========
+ * 车站起来抖的那段最容易错过串口采集窗口, 所以先把最近 30 秒存在 RAM 里,
+ * 等状态一变 (摔倒 / 关闭平衡) 再一次性回灌, 不用卡时间点守着采集。 */
+typedef struct {
+    float t;                           /* esp_timer 时刻 (秒) */
+    float pitch, gyro, out, tgt;      /* 姿态角 / 角速度 / 电机输出 / 目标倾角 */
+    float spd_tgt, spd, yaw;           /* 目标轮速 / 实测轮速 / 差速输出 */
+    float pos, pos_out, dt;            /* 位置 / 位置环输出 / 周期 */
+    int   st;                          /* 状态机状态 */
+} bal_trace_rec_t;
+
+static bal_trace_rec_t s_trace_ring[BAL_TRACE_RING_N];
+static int  s_trace_idx = 0;      /* 下一个写入位置 */
+static int  s_trace_cnt = 0;      /* 已存条数 (最多 BAL_TRACE_RING_N) */
+static bool s_trace_was_balancing = false;  /* 上一拍是否处于平衡状态 */
+
+/**
+ * @brief 把当前控制回路数据存进环形缓冲
+ * @param d 控制回路数据快照
+ * @param t esp_timer 时刻 (秒), 用来算真实采样间隔
+ * @note 每 20ms 调一次, 满了就覆盖最旧的
+ */
+static void balance_trace_push(const bal_data_t *d, float t)
+{
+    bal_trace_rec_t *r = &s_trace_ring[s_trace_idx];
+    r->t       = t;
+    r->pitch   = d->pitch;
+    r->gyro    = d->gyro;
+    r->out     = d->bal_out;
+    r->tgt     = d->target_pitch;
+    r->spd_tgt = d->target_speed;
+    r->spd     = d->speed;
+    r->yaw     = d->yaw_out;
+    r->pos     = d->position_cm;
+    r->pos_out = d->pos_out;
+    r->dt      = d->dt;
+    r->st      = (int)d->state;
+
+    s_trace_idx = (s_trace_idx + 1) % BAL_TRACE_RING_N;
+    if (s_trace_cnt < BAL_TRACE_RING_N) s_trace_cnt++;
+}
+
+/**
+ * @brief 把环形缓冲里的跟踪记录回灌到串口 (由旧到新)
+ * @note 行格式跟实时 TRACE 完全一致, 前后加 DUMP 标记, 采集脚本能分段提取
+ */
+static void balance_trace_dump(void)
+{
+    ESP_LOGW(TAG, "=== TRACE DUMP BEGIN (%d 条) ===", s_trace_cnt);
+    int start = (s_trace_cnt < BAL_TRACE_RING_N) ? 0 : s_trace_idx;
+    for (int i = 0; i < s_trace_cnt; i++) {
+        const bal_trace_rec_t *r = &s_trace_ring[(start + i) % BAL_TRACE_RING_N];
+        ESP_LOGI(TAG, "TRACE t=%.3f pitch=%.2f gyro=%.1f out=%.1f tgt=%.2f "
+                      "spd=%.1f/%.1f yaw=%.1f pos=%.1fcm/%.1f dt=%.1fms st=%d",
+                 (double)r->t,
+                 (double)r->pitch, (double)r->gyro, (double)r->out,
+                 (double)r->tgt, (double)r->spd_tgt, (double)r->spd,
+                 (double)r->yaw, (double)r->pos, (double)r->pos_out,
+                 (double)(r->dt * 1000.0f), r->st);
+    }
+    ESP_LOGW(TAG, "=== TRACE DUMP END ===");
+}
 #endif
 
 /* ================= 模块内部状态 ================= */
@@ -950,6 +1029,17 @@ static void balance_task(void *arg)
             motor_brake_all();
         }
 
+        /* 3.5) 磁力计: 只观察, 不参与姿态解算
+         *
+         * ⚠ 必须放在**电机输出写完之后**:
+         *   磁力计的 I2C 事务要 0.3~1ms, 如果夹在"读传感器"和"写电机"
+         *   之间, 就等于给平衡内环加了一段**可变延迟**。内环本来就在
+         *   相位裕度边缘, 这种延迟足以把 8~12Hz 的自激振荡顶起来
+         *   (0.31 相对 0.30 唯一的功能差异就是多了这颗磁力计)。
+         *   放在输出之后: 环路延迟不受影响; 本周期多花的时间由
+         *   vTaskDelayUntil 自动吸收 (实测 dt 仍稳定 10.0ms)。 */
+        mpu9250_update_mag();
+
         /* 4) 一次性发布整帧快照, 避免外部读到撕裂的数据 */
         s_data.state = s_state;
         s_data.dt    = dt;
@@ -964,14 +1054,28 @@ static void balance_task(void *arg)
         TickType_t now_t = xTaskGetTickCount();
         if (now_t - s_trace_tick >= pdMS_TO_TICKS(BAL_TRACE_PERIOD_MS)) {
             s_trace_tick = now_t;
-            ESP_LOGI(TAG, "TRACE pitch=%.2f gyro=%.1f out=%.1f tgt=%.2f "
+
+            /* 先存进环形缓冲 (不管当前是什么状态都存, 这样"起立前"也能看到) */
+            balance_trace_push(&s_data, (float)esp_timer_get_time() / 1000000.0f);
+
+            ESP_LOGI(TAG, "TRACE t=%.3f pitch=%.2f gyro=%.1f out=%.1f tgt=%.2f "
                           "spd=%.1f/%.1f yaw=%.1f pos=%.1fcm/%.1f dt=%.1fms st=%d",
+                     (double)((float)esp_timer_get_time() / 1000000.0f),
                      (double)s_data.pitch, (double)s_data.gyro,
                      (double)s_data.bal_out, (double)s_data.target_pitch,
                      (double)s_data.target_speed, (double)s_data.speed,
                      (double)s_data.yaw_out,
                      (double)s_data.position_cm, (double)s_data.pos_out,
                      (double)(dt * 1000.0f), (int)s_state);
+        }
+
+        /* 状态从"平衡中"变成别的 → 把最近 30 秒的现场回灌到串口。
+         * 触发场景: 摔了 / 关了平衡 / 退出了 —— 不用卡时间点去抓。 */
+        if (s_state != BAL_STATE_BALANCING && s_trace_was_balancing) {
+            s_trace_was_balancing = false;
+            balance_trace_dump();
+        } else if (s_state == BAL_STATE_BALANCING) {
+            s_trace_was_balancing = true;
         }
 #endif
     }

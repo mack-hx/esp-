@@ -122,6 +122,10 @@ static void ui_mpu9250_draw_data(void)
         ui_draw_string(20, 70, "SENSOR ERR", TFT_COLOR_RED, TFT_COLOR_BLACK);
         return;
     }
+
+    /* 磁力计: 只观察, 不参与姿态解算 → 放在 UI 任务(50ms)里读,
+     * 绝不能放控制任务(10ms) —— 它的 I2C 事务会给内环加抖动延迟。 */
+    mpu9250_update_mag();
     if (mpu9250_get_euler_angle(&angle) != ESP_OK) {
         ui_mpu9250_draw_static();
         ui_fill_rect(0, Y_AXIS, UI_SCREEN_W, Y_SEP3 - Y_AXIS, TFT_COLOR_BLACK);

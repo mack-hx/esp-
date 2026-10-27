@@ -117,7 +117,6 @@ static bool     s_calibrating       = false;
 static char  bias_log_buf[128];
 static bool  bias_log_pending = false;
 static char  mag_log_buf[160];
-static bool  mag_log_pending = false;
 
 /* 初始化是否成功 (供外部查询, 避免反复尝试初始化失败的模块) */
 static bool s_ready = false;
@@ -527,6 +526,52 @@ esp_err_t mpu9250_read_mag(mpu9250_axis_t *out)
 }
 
 /**
+ * @brief 读磁力计 + 打观察日志 (给**低频**任务用, 不要在控制任务里调)
+ * @note  2026-10-27: 磁力计从 mpu9250_read_data() 里挪到这里。
+ *        原因: read_data 在控制任务(10ms)里也会跑, 磁力计的 I2C 事务
+ *        插在"读传感器"和"写电机"之间, 给平衡内环叠加了 1~2ms 抖动延迟。
+ *        磁力计不参与姿态解算, 50Hz 读一次完全够用。
+ * @return ESP_OK 成功; ESP_ERR_INVALID_STATE 这块板没有可用的 AK8963
+ */
+esp_err_t mpu9250_update_mag(void)
+{
+    if (!s_mag_available) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    mpu9250_lock();
+    mpu9250_read_mag_locked(NULL);
+
+    /* 每秒打一条日志: 让用户看串口就能判断这个"盗版"磁力计的数据有没有用。
+     * ⚠ 限流, 不刷屏。
+     * ⚠⚠ 这里只把内容**填进缓冲**, 真正的打印放到解锁之后 ——
+     *   ESP_LOGI 走 UART, 一条 100 多字节的日志要写 10ms 左右,
+     *   在 I2C 锁里打印会把调用者卡住。 */
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    bool log_now = false;
+    if ((now_ms - s_mag_log_ms) >= AK8963_LOG_PERIOD_MS) {
+        s_mag_log_ms = now_ms;
+        float mag_norm = sqrtf(s_mag_ut.x * s_mag_ut.x +
+                               s_mag_ut.y * s_mag_ut.y +
+                               s_mag_ut.z * s_mag_ut.z);
+        snprintf(mag_log_buf, sizeof(mag_log_buf),
+                 "MAG raw(%.0f, %.0f, %.0f) uT(%.1f, %.1f, %.1f) "
+                 "|B|=%.1f uT %s",
+                 (double)s_mag_raw.x, (double)s_mag_raw.y, (double)s_mag_raw.z,
+                 (double)s_mag_ut.x, (double)s_mag_ut.y, (double)s_mag_ut.z,
+                 (double)mag_norm,
+                 s_mag_data_ok ? "数据就绪" : "数据未就绪(沿用上次)");
+        log_now = true;
+    }
+    mpu9250_unlock();
+
+    if (log_now) {
+        ESP_LOGI(TAG, "%s", mag_log_buf);
+    }
+    return ESP_OK;
+}
+
+/**
  * @brief 开/关"零偏慢漂跟随"
  * @param on true=允许零偏在设备静止时缓慢向当前读数靠拢
  * @note  为什么要这个: 陀螺零偏随温度漂 (实测冷机 0.90 °/s → 热机 0.65 °/s),
@@ -907,41 +952,20 @@ esp_err_t mpu9250_read_data(mpu9250_data_t *data)
         }
     }
 
-    /* ---------- 磁力计 (只观察, 不参与姿态解算) ----------
-     * 每次读数据顺带读一次磁力计: 控制周期 10ms, 磁力计 100Hz 输出,
-     * 差不多每次都能拿到新数据。没就绪就沿用上一次的读数。 */
-    if (s_mag_available) {
-        mpu9250_read_mag_locked(NULL);
-
-        /* 每秒打一条日志: 让用户看串口就能判断这个"盗版"磁力计的数据有没有用。
-         * ⚠ 限流, 不刷屏。
-         * ⚠⚠ 这里只把内容**填进缓冲**, 真正的打印放到解锁之后 ——
-         *   ESP_LOGI 走 UART, 一条 100 多字节的日志要写 10ms 左右,
-         *   在 I2C 锁里打印会把控制任务 (10ms 周期) 卡住, 轮子输出就会抖。 */
-        int64_t now_ms = esp_timer_get_time() / 1000;
-        if ((now_ms - s_mag_log_ms) >= AK8963_LOG_PERIOD_MS) {
-            s_mag_log_ms = now_ms;
-            float mag_norm = sqrtf(s_mag_ut.x * s_mag_ut.x +
-                                   s_mag_ut.y * s_mag_ut.y +
-                                   s_mag_ut.z * s_mag_ut.z);
-            snprintf(mag_log_buf, sizeof(mag_log_buf),
-                     "MAG raw(%.0f, %.0f, %.0f) uT(%.1f, %.1f, %.1f) "
-                     "|B|=%.1f uT %s",
-                     (double)s_mag_raw.x, (double)s_mag_raw.y, (double)s_mag_raw.z,
-                     (double)s_mag_ut.x, (double)s_mag_ut.y, (double)s_mag_ut.z,
-                     (double)mag_norm,
-                     s_mag_data_ok ? "数据就绪" : "数据未就绪(沿用上次)");
-            mag_log_pending = true;
-        }
-    }
+    /* ⚠ 磁力计读**不在这里** (2026-10-27 挪走)
+     *
+     * 原来每次读 MPU 都顺带读一次磁力计, 但本函数在**控制任务(10ms)** 里
+     * 也会被调用, 于是磁力计的 I2C 事务(2 次, 且耗时随 DRDY 状态变化)
+     * 就插在"读传感器"和"写电机"之间 —— 直接给平衡内环叠加了一个
+     * **1~2ms 且抖动**的延迟。内环本来就在相位裕度边缘, 这种延迟
+     * 足以把 8~12Hz 的自激振荡顶起来。
+     *
+     * 磁力计只是"观察用", 不参与姿态解算 → 改到 UI 任务(50ms)里读,
+     * 见 mpu9250_update_mag()。 */
 
     mpu9250_unlock();
 
     /* 解锁之后再打印 (UART 是慢速设备, 不能占着 I2C 锁写) */
-    if (mag_log_pending) {
-        mag_log_pending = false;
-        ESP_LOGI(TAG, "%s", mag_log_buf);
-    }
     if (bias_log_pending) {
         bias_log_pending = false;
         ESP_LOGI(TAG, "%s", bias_log_buf);
