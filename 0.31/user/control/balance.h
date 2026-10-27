@@ -200,6 +200,8 @@ typedef struct {
     float target_speed; /* 目标轮速 (rpm, 前进为正) */
     float yaw_out;      /* 差速环输出 (%, 正 = 左轮更快) */
     float dt;           /* 本周期实测间隔 (秒), 正常应≈0.01 */
+    float position_cm;  /* 里程计位移 (cm, 前进为正), 相对起立时的原点 */
+    float pos_out;      /* 位置环输出 (rpm), 加到目标轮速上的纠偏量 */
 
     /* --- 实际执行输出 --- */
     int8_t motor_a;     /* 电机 A 实际输出 (-100~100) */

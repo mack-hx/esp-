@@ -1,9 +1,9 @@
 /**
  * @file paramDef.js
- * @brief 1:1 镜像 ESP32 端 param.c 的参数定义 (17 项)
+ * @brief 1:1 镜像 ESP32 端 param.c 的参数定义 (20 项)
  * @date 2026-10-26
  *
- * 数据来源: 0.31/user/param/param.c (PARAM_DATA_VERSION 14)
+ * 数据来源: 0.31/user/param/param.c (PARAM_DATA_VERSION 15)
  * 改了 param.c 就要同步这个文件, 否则 App 显示的滑块范围/默认值会跟车端对不上.
  *
  * ⚠ 2026-10-26 踩过的坑 (不要再犯):
@@ -27,6 +27,11 @@
  *   - 参数总数 16 → 17 项
  *   ⚠ NVS blob 的布局变了, 车端会自动作废旧数据 (param.c 的 PARAM_DATA_VERSION 已 +1)
  *
+ * @note v15 (0.31 位置环) 的变更:
+ *   - 新增 wheel_dia (id 17, 轮径 6.5 cm) / pos_kp (id 18) / pos_ki (id 19)
+ *   - 参数总数 17 → 20 项
+ *   ⚠ NVS blob 布局变了, 车端会自动作废旧数据 (param.c 的 PARAM_DATA_VERSION 已 +1)
+ *
  * @note 0.31 收尾 (2026-10-26, 同一版内改动, 版本号不变):
  *   - spd_kp / spd_ki / spd_kd 的 step 从 0.5/0.5/0.1 改成 **0.01**
  *     (车端 param_set_float() 按 step 吸附, step 太粗会把中间值吸掉, App 上调不动)
@@ -36,7 +41,7 @@
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 14
+export const PARAM_VER = 15
 
 export const PARAM_GROUPS = {
   0: { key: 'balance', label: '平衡环' },
@@ -88,7 +93,15 @@ export const PARAM_DEFS = [
   { id: 15, key: 'servo_c',     label: 'Servo Center',  unit: '°', def: 80, min: 30, max: 120, step: 1,   dec: 0, grp: 2,
     hint: '舵机中心角。也是配平表的参考角 (补偿在这一档为 0)' },
   { id: 16, key: 'move_rpm_max',label: 'Move RPM Max',  unit: 'rpm', def: 100, min: 0, max: 333, step: 1, dec: 1, grp: 2,
-    hint: 'App 方向键 100% 档位对应的目标轮速 (rpm)。本机轮子最高转速 333 rpm, 默认取 100 (约 30%); 再大目标倾角会顶到 4° 安全阀, 车会左右猛摇。0 = 用代码里的默认值' }
+    hint: 'App 方向键 100% 档位对应的目标轮速 (rpm)。本机轮子最高转速 333 rpm, 默认取 100 (约 30%); 再大目标倾角会顶到 4° 安全阀, 车会左右猛摇。0 = 用代码里的默认值' },
+
+  // 里程计 / 位置环 (0.31 位置环新增, id 17~19)
+  { id: 17, key: 'wheel_dia',   label: 'Wheel Diameter', unit: 'cm', def: 6.5, min: 1, max: 30, step: 0.1, dec: 1, grp: 2,
+    hint: '**轮子直径** (cm)。里程计靠它把编码器脉冲换算成位移: 距离 = 脉冲数 / (44 × gear) × π × 轮径。本机实测 6.5 cm。填错会让位置反馈整体缩放错误 (位置环纠偏力度不对)' },
+  { id: 18, key: 'pos_kp',      label: 'Position Kp',    unit: 'rpm/cm', def: 1.0,  min: 0, max: 50, step: 0.1,  dec: 1, grp: 1,
+    hint: '位置环比例增益 (rpm/cm): 位置偏差 1 cm 时给速度环加多少 rpm 的纠偏。位置环在速度环外面 (位置误差 → 目标轮速修正 → 速度环 → 平衡环)。调大纠偏更快, 但太大会来回摆' },
+  { id: 19, key: 'pos_ki',      label: 'Position Ki',    unit: 'rpm/(cm·s)', def: 0.05, min: 0, max: 10, step: 0.01, dec: 2, grp: 1,
+    hint: '位置环积分增益: 消除站住之后慢慢偏这种位置漂移。太大容易积分饱和 (车会突然窜出去找位置)。步进 0.01' }
 ]
 
 /** 用 key 找 def */

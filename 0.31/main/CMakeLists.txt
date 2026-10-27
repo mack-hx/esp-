@@ -2,4 +2,4 @@ idf_component_register(SRCS "main.c"
                     INCLUDE_DIRS "."
                     REQUIRES lcd ui tft_display led hc595
                              servo motor_driver encoder mpu9250 pcf8574
-                             wifi_sta param control onenet_client freertos nvs_flash)
+                             wifi_sta param control onenet_client freertos nvs_flash odom)
