@@ -28,16 +28,25 @@ EOF
 ```
 
 ## 注意事项
-- SSH方式可能被代理拦截(GitHub被解析到127.0.0.1:7897)
+- SSH方式可能被代理拦截(GitHub被解析到127.0.0.1:7890)
 - 优先使用HTTPS + Token方式
 
-## 推送命令 (必须用这一条)
+## 推送命令
+
+**正常情况（2026-10-27 起）**：全局 git 代理已指向 `http://127.0.0.1:7890`（用户换端口），
+直接 `git push origin main` 就行，实测走代理 HTTP/2 正常，不需要任何额外参数：
+
+```bash
+git push origin main
+```
+
+## 备用方案（直连被重置时）
 
 本机 DNS 把 `github.com` 解析到亚洲 IP (20.205.243.166), 直连时 HTTP/2 请求会被
 `Connection reset by peer` 重置, git 表现为 "Operation too slow. Less than 1 bytes/sec
 transferred the last 60 seconds"。`api.github.com` 直连正常, 只有 `github.com` 会卡。
 
-解决: 强制 HTTP/1.1, 同时清掉代理 (规则里写的代理端口 7897 当前不一定在跑)。
+解决: 强制 HTTP/1.1, 同时清掉代理。
 
 ```bash
 GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=3 \

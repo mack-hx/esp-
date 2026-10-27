@@ -233,6 +233,7 @@ python3 scripts/ctx_check.py --all    # 最近 10 个会话的历史规律
 - 本地只保留 `0.31/`（当前）+ `0.30/`（冻结稳定板）两版，`0.22/` 已删
 - `logs/change_log.txt` 已删，版本级变更说明改放 `releases/RELEASE_NOTES.md`
 - 工作区**干净**，全部已推 GitHub（`origin/main` = `40e5b10`）
-- ⚠ **git 配了代理 `http://127.0.0.1:7897` 但代理没在跑**，`git push` 会报
-  `Failed to connect to 127.0.0.1 port 7897`。直连是通的，用
-  `git -c http.proxy= -c https.proxy= push origin main` 绕过；或把代理开起来
+- ✅ **git 代理已改成 `http://127.0.0.1:7890`**（用户 2026-10-27 换端口，全局 `http.proxy`/`https.proxy` 都改了，
+  实测 `curl -x http://127.0.0.1:7890 https://github.com` → HTTP 200）。`git push` 现在直接走代理，不用再绕
+  `-c http.proxy=`
+  ⚠ 直连 GitHub 也是通的，之前"代理没在跑"是旧端口 7897 的问题
