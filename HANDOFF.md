@@ -90,6 +90,11 @@
 ⚠ **新开窗口才生效**：Cursor 在会话启动时加载 hooks.json，中途创建的要重启才生效。
 ⚠ 若子代理调用报 `Cursor user message action has no message_id`，
    那是环境问题（2026-10-27 本次会话 4 次全失败，历史 22 次全成功），换个窗口再试。
+   临时解锁（子代理不可用时 hook 会把自己锁死）：
+   ```bash
+   touch /tmp/esp_balance_robot_ctx_guard_off   # 全部放行
+   rm   /tmp/esp_balance_robot_ctx_guard_off   # 恢复正常拦截
+   ```
 
 ### 需要用户动手的（必须等硬件）
 - [ ] 烧录 0.31 后**必须重新配平**（旧配平表 + 旧配平零点作废）
