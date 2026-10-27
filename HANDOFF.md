@@ -220,3 +220,19 @@ python3 scripts/ctx_check.py --all    # 最近 10 个会话的历史规律
   `maxInputTokens` / `contextWindow` 之类的模型上下文配置（只有 `cursor/initialModelState` 等 UI 状态）
 - Cursor 全部日志里没有 context length 类服务端记录
 → 限制在 Cursor 服务端或上游代理，本地无配置可调，只能靠"少写、多落盘"自律
+
+## 8. 日志保留策略（2026-10-27 起，用户明确要求）
+
+- **本地 `logs/` 只保留最近 3 天**：当前是 `2026-10-25.md` / `2026-10-26.md` / `2026-10-27.md`
+- 更早的 16 个日志文件**已推送到 GitHub 后从本地删除**（提交 `40e5b10`，内容仍在 git 历史里）
+- 清理命令：`scripts/log_prune.sh`（默认 3 天，删除前会检查"有没有未提交/未推送"，不通过就中止）
+- **日常读日志只看最近 1~2 天**；需要更早的内容，等用户指定日期再取（`git show <commit>:logs/YYYY-MM-DD.md`）
+
+## 9. 仓库状态（2026-10-27 19:50）
+
+- 本地只保留 `0.31/`（当前）+ `0.30/`（冻结稳定板）两版，`0.22/` 已删
+- `logs/change_log.txt` 已删，版本级变更说明改放 `releases/RELEASE_NOTES.md`
+- 工作区**干净**，全部已推 GitHub（`origin/main` = `40e5b10`）
+- ⚠ **git 配了代理 `http://127.0.0.1:7897` 但代理没在跑**，`git push` 会报
+  `Failed to connect to 127.0.0.1 port 7897`。直连是通的，用
+  `git -c http.proxy= -c https.proxy= push origin main` 绕过；或把代理开起来
