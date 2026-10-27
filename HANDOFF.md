@@ -102,7 +102,14 @@ EOF
 scripts/subagent.sh /tmp/q.txt <任务名>
 ```
 报告落在 `logs/subagents/<任务名>-<时间戳>.md`，主对话只回 20 行摘要。
-⚠ 依赖 claude CLI 额度，今天下午遇到过 402 余额不足。
+
+⚠ **2026-10-27 17:29 起 claude CLI 返回 402 Insufficient Balance**，
+脚本会**静默产出 0 字节报告**（退出码 0 但内容空）——不是"没查到"，
+是额度用完了。用之前先 `ls -l` 看报告大小。
+额度恢复前只能自己用 Grep/分段 Read 查（hook 会强制控制次数）。
+
+⚠ 别用 `nohup scripts/subagent.sh ... &` 后台跑：脚本 5 秒内随父 shell 结束，
+报告写一半（实测 0 字节）。前台同步等它跑完。
 
 **`.cursor/hooks/` 装了三个强制钩子**（真实环境已验证生效）：
 - `require_subagent.py`：自己查文件满 6 次就拦截，强制先派子代理
