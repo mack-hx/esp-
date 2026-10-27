@@ -63,10 +63,24 @@ def main():
     except Exception:
         respond({"permission": "allow"})
 
+    # Cursor 的 preToolUse payload 结构:
+    #   { "tool_name": "Read", "tool_input": { "path": "..." }, ... }
+    # tool_name 与 tool_input 是顶层并列字段 (不是嵌在 tool_input 里)。
+    # 两种结构都兼容, 防止 Cursor 版本差异。
     tool_input = payload.get("tool_input") or {}
-    tool_name = tool_input.get("tool_name") or ""
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    tool_name = (
+        payload.get("tool_name")
+        or tool_input.get("tool_name")
+        or ""
+    )
 
-    session = payload.get("session_id") or "default"
+    session = (
+        payload.get("session_id")
+        or payload.get("conversation_id")
+        or "default"
+    )
     sessions = load_state()
     sess = sessions.setdefault(
         session, {"reads": 0, "seen": [], "delegated": 0}
