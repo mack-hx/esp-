@@ -29,6 +29,34 @@ READS_AFTER_DELEGATE = 12
 # 会被拦截的"自己动手查"类工具
 QUERY_TOOLS = {"Read", "Grep", "Shell", "Glob"}
 
+# 维护类命令特征: 命中就不计数, 直接放行
+# ⚠ 教训: 最初把所有 Shell 都算作"查代码", 结果 hook 把自己的维护能力也锁死了
+#   (连写日志的 Shell 都被拦, 计数只增不减 -> 永久锁死)。
+MAINTENANCE_PATTERNS = (
+    "git ", "python3 ", "python ", "mkdir ", "cp ", "mv ", "rm ",
+    "chmod ", "ln ", "make ", "pio ", "npm ", "node ",
+    "cat >", "echo ", "sed -i", "tee ",
+)
+
+# 查代码类命令特征: 命中就计数 (优先级高于维护类)
+QUERY_PATTERNS = (
+    "grep", "cat ", "ls ", "find ", "wc ", "head ", "tail ",
+    "sed ", "awk ",
+)
+
+
+def is_maintenance(command):
+    """判断 Shell 命令是不是维护类操作 (不该计入自查次数)。
+
+    规则: 命中查代码特征 -> 算自查; 否则命中维护特征 -> 维护类, 放行。
+    """
+    if not command:
+        return False
+    cmd = command.strip()
+    if any(p in cmd for p in QUERY_PATTERNS):
+        return False
+    return any(p in cmd for p in MAINTENANCE_PATTERNS)
+
 
 def load_state():
     try:
@@ -93,7 +121,26 @@ def main():
         save_state(sessions)
         respond({"permission": "allow"})
 
+    # 写操作不算"查", 直接放行且清零计数 (助手在动手做事)
+    if tool_name in ("Write", "Edit", "MultiEdit", "Delete"):
+        sess["reads"] = 0
+        save_state(sessions)
+        respond({"permission": "allow"})
+
     if tool_name not in QUERY_TOOLS:
+        respond({"permission": "allow"})
+
+    # 维护类 Shell (git / python 脚本 / 编译 / 写文件) 不计数, 直接放行
+    if tool_name == "Shell":
+        command = tool_input.get("command") or ""
+        if is_maintenance(command):
+            save_state(sessions)
+            respond({"permission": "allow"})
+
+    # 写文件 / 编辑文件 说明助手在动手做事, 不是在查 —— 计数清零
+    if tool_name in ("Write", "Edit", "MultiEdit", "Delete"):
+        sess["reads"] = 0
+        save_state(sessions)
         respond({"permission": "allow"})
 
     sess["reads"] += 1
