@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": ".cursor/hooks/require_subagent.py",
+        "matcher": "Read|Grep|Shell|Glob",
+        "failClosed": false
+      },
+      {
+        "command": ".cursor/hooks/guard_reads.py",
+        "matcher": "Read",
+        "failClosed": false
+      }
+    ]
+  }
+}
