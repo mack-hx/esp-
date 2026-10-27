@@ -30,8 +30,8 @@ done
 
 [ -d "$LOGDIR" ] || { echo "找不到 $LOGDIR"; exit 1; }
 
-# 今天减去 (KEEP_DAYS - 1) 天 = 保留窗口的起始日期
-CUTOFF="$(date -v-${KEEP_DAYS}d +%Y-%m-%d 2>/dev/null || date -d "${KEEP_DAYS} days ago" +%Y-%m-%d)"
+# 今天减去 (KEEP_DAYS - 1) 天 = 保留窗口的起始日期 (保留 3 天 = 今天+昨天+前天)
+CUTOFF="$(date -v-$((KEEP_DAYS - 1))d +%Y-%m-%d 2>/dev/null || date -d "$((KEEP_DAYS - 1)) days ago" +%Y-%m-%d)"
 echo "保留窗口: ${CUTOFF} 及之后 (最近 ${KEEP_DAYS} 天), 截止日期 ${CUTOFF}"
 
 # --- 前置检查: logs/ 里有没有没提交的改动 ---
