@@ -213,3 +213,10 @@ python3 scripts/ctx_check.py --all    # 最近 10 个会话的历史规律
 
 **所以真正的规则是**：请求体（我的输出文字 + 工具输入 + 工具结果）总和控制在 **40 万字符 / 12 万 token** 以内，
 且**永远不要 Read 截图或把整页 DOM 灌进上下文**。`ctx_check.py` 的 90k/140k 红黄线可以再收紧。
+
+**这个上限在本地改不了**（已查证，别再重复查）：
+- `Cursor.app/Contents/Resources/app` bundle 里没有报错字符串
+- `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` 里没有
+  `maxInputTokens` / `contextWindow` 之类的模型上下文配置（只有 `cursor/initialModelState` 等 UI 状态）
+- Cursor 全部日志里没有 context length 类服务端记录
+→ 限制在 Cursor 服务端或上游代理，本地无配置可调，只能靠"少写、多落盘"自律
