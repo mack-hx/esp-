@@ -32,6 +32,14 @@
  *   - 参数总数 17 → 20 项
  *   ⚠ NVS blob 布局变了, 车端会自动作废旧数据 (param.c 的 PARAM_DATA_VERSION 已 +1)
  *
+ * @note v16 (0.31) 的变更:
+ *   - 位置环 pos_kp / pos_ki 的默认值 1.0 / 0.05 → **0 / 0** (位置环默认关闭)
+ *     原因: 真机"站直时车身抖动"排查的结论 —— 位置环是 0.30→0.31 唯一新增的
+ *     闭环, 站直时车缓慢漂移、漂过 1cm 死区位置环就开始纠偏 (积分能到 ±10rpm),
+ *     把目标轮速顶出去, 速度环积分跟着追, 车就前后摆。
+ *   - 参数总数不变 (还是 20 项), 只是默认值变了
+ *   ⚠ NVS blob 的内容变了, 车端会自动作废旧数据 (param.c 的 PARAM_DATA_VERSION 已 +1)
+ *
  * @note 0.31 收尾 (2026-10-26, 同一版内改动, 版本号不变):
  *   - spd_kp / spd_ki / spd_kd 的 step 从 0.5/0.5/0.1 改成 **0.01**
  *     (车端 param_set_float() 按 step 吸附, step 太粗会把中间值吸掉, App 上调不动)
@@ -41,7 +49,7 @@
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 15
+export const PARAM_VER = 16
 
 export const PARAM_GROUPS = {
   0: { key: 'balance', label: '平衡环' },
@@ -98,10 +106,10 @@ export const PARAM_DEFS = [
   // 里程计 / 位置环 (0.31 位置环新增, id 17~19)
   { id: 17, key: 'wheel_dia',   label: 'Wheel Diameter', unit: 'cm', def: 6.5, min: 1, max: 30, step: 0.1, dec: 1, grp: 2,
     hint: '**轮子直径** (cm)。里程计靠它把编码器脉冲换算成位移: 距离 = 脉冲数 / (44 × gear) × π × 轮径。本机实测 6.5 cm。填错会让位置反馈整体缩放错误 (位置环纠偏力度不对)' },
-  { id: 18, key: 'pos_kp',      label: 'Position Kp',    unit: 'rpm/cm', def: 1.0,  min: 0, max: 50, step: 0.1,  dec: 1, grp: 1,
-    hint: '位置环比例增益 (rpm/cm): 位置偏差 1 cm 时给速度环加多少 rpm 的纠偏。位置环在速度环外面 (位置误差 → 目标轮速修正 → 速度环 → 平衡环)。调大纠偏更快, 但太大会来回摆' },
-  { id: 19, key: 'pos_ki',      label: 'Position Ki',    unit: 'rpm/(cm·s)', def: 0.05, min: 0, max: 10, step: 0.01, dec: 2, grp: 1,
-    hint: '位置环积分增益: 消除站住之后慢慢偏这种位置漂移。太大容易积分饱和 (车会突然窜出去找位置)。步进 0.01' }
+  { id: 18, key: 'pos_kp',      label: 'Position Kp',    unit: 'rpm/cm', def: 0,     min: 0, max: 50, step: 0.1,  dec: 1, grp: 1,
+    hint: '位置环比例增益 (rpm/cm): 位置偏差 1 cm 时给速度环加多少 rpm 的纠偏。位置环在速度环外面 (位置误差 → 目标轮速修正 → 速度环 → 平衡环)。**默认 0 = 位置环关闭** (站直抖动的结论: 位置环默认开会引起前后摆)。要用就往上慢慢加, 推一下车看是否走回原位' },
+  { id: 19, key: 'pos_ki',      label: 'Position Ki',    unit: 'rpm/(cm·s)', def: 0,  min: 0, max: 10, step: 0.01, dec: 2, grp: 1,
+    hint: '位置环积分增益: 消除站住之后慢慢偏这种位置漂移。**默认 0**。太大容易积分饱和 (车会突然窜出去找位置)。步进 0.01' }
 ]
 
 /** 用 key 找 def */

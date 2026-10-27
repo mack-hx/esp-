@@ -7,6 +7,7 @@
  * 0.31 起, 16 → 17 个参数 (新增 move_rpm_max), PARAM_DATA_VERSION = 14
  * 0.31 位置环: 17 → 20 个参数 (新增 wheel_dia / pos_kp / pos_ki),
  * PARAM_DATA_VERSION = 15
+ * 0.31 位置环默认关闭 (pos_kp / pos_ki 默认 0), PARAM_DATA_VERSION = 16
  *
  * @author ESP32 平衡轮腿机器人
  * @date 2026-10-07
@@ -32,7 +33,7 @@ static const char *TAG = "PARAM";
 #define NVS_KEY_VERSION "ver"   /* 表结构版本, 表变了就忽略旧数据 */
 #define NVS_KEY_STALE   "stale" /* 标记: 最近一次写参数来自旧版 App */
 #endif
-#define PARAM_DATA_VERSION  15  /* 每次增删参数就 +1
+#define PARAM_DATA_VERSION  16  /* 每次增删参数就 +1
                                  * v2~v5: 0.1 的历史版本 (已作废)
                                  * v6:    0.11 删掉转向环/servo_l/pwm_max/deadband 等
                                  * v7:    0.13 再删 ang_zero/bal_sign/gyro_sign (烘焙成常量)
@@ -67,6 +68,15 @@ static const char *TAG = "PARAM";
                                  * v15:   0.31 位置环: 新增 wheel_dia (轮径 6.5 cm) /
                                  *         pos_kp / pos_ki 三个参数。
                                  *         NVS blob 布局变了, 旧数据必须作废
+                                 * v16:   0.31 位置环**默认关闭**: pos_kp / pos_ki 默认
+                                 *         改成 0 (之前是 1.0 / 0.05)。
+                                 *         原因: 真机上"站直时车身抖动"排查下来, 位置环
+                                 *         是 0.30→0.31 唯一新增的闭环 —— 站直时车必然
+                                 *         缓慢漂移, 漂过 1cm 死区位置环就开始纠偏
+                                 *         (积分项能到 ±10rpm) → 目标轮速被顶出去 →
+                                 *         速度环积分跟着追 → 车前后摆。
+                                 *         位置环先按"默认关, 需要时从 App 打开"处理。
+                                 *         NVS blob 内容变了, 旧数据必须作废
                                  * NVS blob 布局变了, 旧数据必须作废
                                  *
                                  * ⚠ 2026-10-26 收尾: spd_kp/spd_ki/spd_kd 的 step
@@ -158,13 +168,14 @@ const param_item_t g_param_items[] = {
       "**轮子直径** (cm)。里程计靠它把编码器脉冲换算成位移: "
       "距离 = 脉冲数 / (44 × gear) × π × 轮径。本机实测 6.5 cm。"
       "填错会让位置反馈整体缩放错误 (位置环纠偏力度不对)" },
-    { PARAM_POS_KP, "pos_kp", "Position Kp", "rpm/cm", 1.0f, 0.0f, 50.0f, 0.1f, 2, PARAM_GRP_SPEED,
+    { PARAM_POS_KP, "pos_kp", "Position Kp", "rpm/cm", 0.0f, 0.0f, 50.0f, 0.1f, 2, PARAM_GRP_SPEED,
       "位置环比例增益 (rpm/cm): 位置偏差 1 cm 时给速度环加多少 rpm 的纠偏。"
       "位置环在速度环外面 (位置误差 → 目标轮速修正 → 速度环 → 平衡环)。"
-      "调大纠偏更快, 但太大会来回摆" },
-    { PARAM_POS_KI, "pos_ki", "Position Ki", "rpm/(cm·s)", 0.05f, 0.0f, 10.0f, 0.01f, 2, PARAM_GRP_SPEED,
+      "**默认 0 = 位置环关闭** (站直抖动排查的结论: 位置环默认开会引起前后摆)。"
+      "要用就把 pos_kp 从 0 往上慢慢加, 一次加一点, 推一下车看是否走回原位" },
+    { PARAM_POS_KI, "pos_ki", "Position Ki", "rpm/(cm·s)", 0.0f, 0.0f, 10.0f, 0.01f, 2, PARAM_GRP_SPEED,
       "位置环积分增益: 消除站住之后慢慢偏这种位置漂移。"
-      "太大容易积分饱和 (车会突然窜出去找位置)。步进 0.01" },
+      "**默认 0**。太大容易积分饱和 (车会突然窜出去找位置)。步进 0.01" },
 };
 
 /**

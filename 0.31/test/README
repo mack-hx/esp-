@@ -17,13 +17,25 @@
       -o /tmp/trim_test -I test -I user/trim -DTRIM_OFFLINE_TEST
   /tmp/trim_test
 
-  gcc -std=c99 -Wall -Wextra test/test_pid_pc.c user/control/pid.c \
-      -o /tmp/pid_test -I test -I user/control
+  gcc -std=c99 -Wall -Wextra test/test_pid_pc.c user/pid/pid.c \
+      -o /tmp/pid_test -I test -I user/pid
   /tmp/pid_test
 
   gcc -std=c99 -Wall -Wextra test/test_param_pc.c user/param/param.c \
       -o /tmp/param_test -I test -I user/param -DPARAM_OFFLINE_TEST
   /tmp/param_test
+
+  # 速度环 / 位置环: 这两个模块要读 param 表, 离线编译用 param_offline.h 桩头
+  # (param.h 里 #ifndef PARAM_OFFLINE_TEST 才 include esp_err.h)
+  gcc -std=c99 -Wall -Wextra -DPARAM_OFFLINE_TEST \
+      test/test_speed_pid_pc.c user/pid/speed_pid.c user/pid/pid.c \
+      -o /tmp/speed_pid_test -I test -I user/pid -I user/param -lm
+  /tmp/speed_pid_test
+
+  gcc -std=c99 -Wall -Wextra -DPARAM_OFFLINE_TEST \
+      test/test_position_pid_pc.c user/pid/position_pid.c user/pid/pid.c \
+      -o /tmp/position_pid_test -I test -I user/pid -I user/param -lm
+  /tmp/position_pid_test
 
 全部通过时退出码为 0。
 
