@@ -79,13 +79,8 @@ esp_err_t k230_uart_init(void)
                        -1, -1);
     if (ret != ESP_OK) return ret;
 
-    /* 创建接收处理任务
-     * ⚠ 优先级 6 (2026-10-26): 原来用 10, 比平衡控制任务 (7) 还高 →
-     *   K230 一路传数据就会抢占控制任务, 控制周期从 10ms 变成 20~30ms
-     *   → 反馈相位错位 → 车"一碰就剧烈抖"。
-     *   现在压到 6: 仍然比网络/上报任务 (3~5) 高, 不会丢帧,
-     *   但不会抢平衡环的 CPU。 */
-    xTaskCreate(k230_uart_event_task, "k230_uart", 2048, NULL, 6, NULL);
+    // 创建接收处理任务
+    xTaskCreate(k230_uart_event_task, "k230_uart", 2048, NULL, 10, NULL);
 
     ESP_LOGI(TAG, "K230 UART 初始化成功 (TX=%d, RX=%d, %d bps)",
              K230_TXD_GPIO, K230_RXD_GPIO, K230_UART_BAUDRATE);

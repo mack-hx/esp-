@@ -37,13 +37,8 @@ static mpu9250_axis_t gyro_offset = {0, 0, 0};
 #define MPU_NVS_KEY_GYRO      "gof"
 /* 零偏绝对值超过这个数就当作数据不可信 (重新标定) */
 #define MPU_GYRO_OFFSET_MAX   5.0f
-/* 标定时判定"设备在动"的阈值 (°/s): 采样期间**同一轴读数的标准差**超过
- * 这个数就说明设备在动 (静止时本机实测 σ ≈ 0.8~1.0 °/s)。
- * ⚠ 2026-10-26 修正: 原来比的是"读数的绝对值", 那比的是**零偏本身** ——
- *   零偏就是要测的量, 零偏大的 IMU (本机 Y 轴 4.7 °/s) 会让**每一个**样本
- *   都被判成"在动" → 标定永远失败 → 零偏永远是 0 → 姿态角带一个恒定误差
- *   → 车起立就剧烈抖 (见 mpu9250_calibrate_gyro 的注释)。 */
-#define MPU_GYRO_MOTION_THR   2.5f
+/* 标定时判定"设备在动"的阈值 (°/s): 超过就丢掉这个样本 */
+#define MPU_GYRO_MOTION_THR   2.0f
 
 /* 初始化是否成功 (供外部查询, 避免反复尝试初始化失败的模块) */
 static bool s_ready = false;
@@ -126,27 +121,9 @@ static float gyro_scale = 131.0f;     // ±250°/s
 
 /* 互补滤波参数
  * alpha = 陀螺仪(短期)权重, 越大越信陀螺仪、越不平滑
- *
- * ⚠⚠ 2026-10-26 大改: alpha 0.98 → 0.997
- *
- * 这个 alpha 决定的是**姿态角反馈通道的滞后**, 不是"平滑程度":
- *     姿态角 = alpha·(陀螺积分) + (1−alpha)·(加速度算出来的角)
- * 加速度那一路以 (1−alpha)/dt 的速率把角度往真实值上拉,
- * 也就是一个一阶低通, 时间常数 τ = dt/(1−alpha):
- *     alpha=0.98  → τ = 0.5s   ← 旧值
- *     alpha=0.995 → τ = 0.2s
- *     alpha=0.997 → τ = 0.03s  ← 现在
- *
- * 平衡环的穿越频率在 2~4Hz, 而 0.5s 的滞后 = 0.8 个周期 (≈290° 相位滞后)
- * → P 反馈用的是"半秒前的姿态" → 扰动一来就过冲, 越晃越大
- * (现象: 静止站着没事, 一碰/一走就剧烈抖动)
- *
- * 陀螺零偏已经在 NVS 里标定好了 (mpu9250_load_gyro_offset),
- * 所以陀螺积分的长期漂移很小, 把 alpha 调高没有副作用。
- * 代价: 陀螺残余零偏 (假设 0.1°/s) 带来的稳态角误差 = 零偏·dt/(1−alpha)
- *       = 0.33° (alpha=0.997), 可以接受 (起立时会自动微调配平零点)。 */
+ * 0.98 配 100Hz 采样 ≈ 时间常数 0.5s, 兼顾响应和无噪声 */
 static euler_angle_t current_angle = {0, 0, 0};
-static const float alpha = 0.997f;  // 互补滤波系数 (陀螺权重)
+static const float alpha = 0.98f;  // 互补滤波系数
 
 /* ========== 俯仰角零点基准 (°) ==========
  *
@@ -343,53 +320,21 @@ esp_err_t mpu9250_init(void)
     ESP_LOGI(TAG, "IMU 初始化完成 (加速度+陀螺配置就绪)");
     s_ready = true;
 
-    /* ---------- 陀螺零偏 ----------
-     *
-     * 每次上电都重新标定 (成功就存进 NVS), 失败才退回 NVS 里存好的那份。
-     *
-     * ⚠ 为什么不能"只用 NVS 里存好的那份" (2026-10-26 真机教训):
-     *   陀螺零偏会随**温度**漂 (本机实测: 冷机 0.90 °/s → 热机 0.65 °/s),
-     *   而互补滤波把零偏放大 1/(1−alpha) ≈ 333 倍:
-     *       零偏差 0.25 °/s → 姿态角差 0.83°
-     *   → 平衡环以为车歪了 0.83° → 车带着倾角站 → 慢慢往一边跑。
-     *   所以零偏必须跟当前温度对得上, 每次上电重标最省事。
-     *
-     * ⚠ 为什么"标定失败"要重试 + 大声报错:
-     *   零偏为 0 的代价是姿态角带 ~3° 的恒定误差 → 起立就剧烈抖。
-     *   宁可多试一次, 也不能默默带着 0 零偏跑。 */
-    mpu9250_axis_t saved_off = {0, 0, 0};
-    bool have_saved = mpu9250_load_gyro_offset();
-    if (have_saved) {
-        saved_off = gyro_offset;
-        ESP_LOGI(TAG, "NVS 里存着陀螺零偏: (%.3f, %.3f, %.3f) °/s",
-                 (double)saved_off.x, (double)saved_off.y, (double)saved_off.z);
-    }
-
-    ret = ESP_ERR_INVALID_STATE;
-    for (int attempt = 1; attempt <= 2; attempt++) {
-        ESP_LOGI(TAG, "开始校准陀螺仪 (第 %d 次), 请保持设备静止...", attempt);
+    /* 校准陀螺仪:
+     * 优先用 NVS 里存好的零偏 (每次上电用同一个 → pitch 每次上电一致),
+     * 没有才现场标定 (要求设备静止), 标定完自动存盘。 */
+    if (mpu9250_load_gyro_offset()) {
+        ESP_LOGI(TAG, "已载入陀螺仪零偏 (NVS): (%.3f, %.3f, %.3f)",
+                 (double)gyro_offset.x, (double)gyro_offset.y, (double)gyro_offset.z);
+    } else {
+        ESP_LOGI(TAG, "开始校准陀螺仪,请保持设备静止...");
         ret = mpu9250_calibrate_gyro(100);
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "陀螺仪校准完成: offset(%.3f, %.3f, %.3f)",
                      (double)gyro_offset.x, (double)gyro_offset.y, (double)gyro_offset.z);
-            break;
-        }
-        if (attempt < 2) {
-            ESP_LOGW(TAG, "校准未成功, 0.5s 后再试一次");
-            vTaskDelay(pdMS_TO_TICKS(500));
-        }
-    }
-
-    if (ret != ESP_OK) {
-        if (have_saved) {
-            /* 标定失败 (设备在动) → 退回 NVS 里存好的那份 */
-            gyro_offset = saved_off;
-            ESP_LOGW(TAG, "标定失败, 沿用 NVS 里的零偏: (%.3f, %.3f, %.3f) °/s",
-                     (double)gyro_offset.x, (double)gyro_offset.y, (double)gyro_offset.z);
         } else {
-            ESP_LOGE(TAG, "陀螺仪校准最终未成功, 零偏暂用 0 —— 姿态角会有约 3° 的"
-                          "恒定误差, 车起立就会剧烈抖! 请把车放稳后重新上电, "
-                          "或在 MPU 调试页按 K2 重新标定");
+            ESP_LOGW(TAG, "陀螺仪校准未成功 (设备可能在动), 零偏暂用 0; "
+                          "可在 MPU 调试页按 K2 重新标定");
         }
     }
 
@@ -664,28 +609,18 @@ esp_err_t mpu9250_get_euler_angle(euler_angle_t *angle)
  * @brief 校准陀螺仪零点
  * @param samples 采样次数
  * @return ESP_OK 成功; ESP_ERR_INVALID_STATE 采样期间设备在动, 标定失败
- * @note  ⚠ 2026-10-26 修正 (真机抓到的问题):
- *
+ * @note  ⚠ 2026-10-26 改动:
  *   1) 用**原始**读数 (不扣旧零偏) 计算新零偏 —— 之前用已补偿过的读数,
  *      二次标定时算出来的是残差, 越校越歪;
- *
- *   2) ⚠⚠ 判定"设备在动"要看**波动** (最大值−最小值), 不能看绝对值:
- *      绝对值大 = 零偏大 (这正是我们要测的量), 不是"在动"。
- *      旧写法把 |读数| > 2°/s 的样本全丢掉 → 只要 IMU 有一个轴的零偏 > 2°/s,
- *      标定就**永远失败** (实测: 100 个样本被剔除 99 个), 零偏永远是 0。
- *      零偏为 0 的后果: 姿态角带一个**恒定**误差 = 零偏·dt/(1−alpha)
- *      = 0.9 × 0.01/0.003 ≈ **3°** → 平衡环以为车歪了 3° → 轮子猛冲 →
- *      "起立就立马剧烈抖动"。这正是 2026-10-26 真机抖动的根因。
- *
- *   3) 标定成功后**自动存进 NVS**, 断电不丢 (下次上电直接用同一把零偏)。
+ *   2) 剔除采样期间"设备在动"的样本 (任一轴 > 2°/s): 标定时手在抖 /
+ *      车没放稳的话, 采到的是运动而不是零偏, 直接平均会得到一个假的零偏,
+ *      表现为每次上电 pitch 都不一样;
+ *   3) 标定成功后**自动存进 NVS**, 断电不丢。
  */
 esp_err_t mpu9250_calibrate_gyro(uint16_t samples)
 {
-    float sum[3]   = {0.0f, 0.0f, 0.0f};   /* 三轴累加 */
-    float sum2[3]  = {0.0f, 0.0f, 0.0f};   /* 三轴平方和 (算标准差) */
-    float mn[3]    = {1e9f, 1e9f, 1e9f};    /* 三轴最小值 */
-    float mx[3]    = {-1e9f, -1e9f, -1e9f}; /* 三轴最大值 */
-    uint16_t got   = 0;
+    float sum_x = 0, sum_y = 0, sum_z = 0;
+    uint16_t used = 0;
 
     for (uint16_t i = 0; i < samples; i++) {
         mpu9250_axis_t g;
@@ -693,75 +628,37 @@ esp_err_t mpu9250_calibrate_gyro(uint16_t samples)
         if (ret != ESP_OK) {
             return ret;
         }
-        float v[3] = { g.x, g.y, g.z };
-        for (int k = 0; k < 3; k++) {
-            sum[k]  += v[k];
-            sum2[k] += v[k] * v[k];
-            if (v[k] < mn[k]) mn[k] = v[k];
-            if (v[k] > mx[k]) mx[k] = v[k];
+
+        if (fabsf(g.x) > MPU_GYRO_MOTION_THR ||
+            fabsf(g.y) > MPU_GYRO_MOTION_THR ||
+            fabsf(g.z) > MPU_GYRO_MOTION_THR) {
+            /* 设备在动 → 这个样本丢掉 (但照常延时, 保持采样节奏) */
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
         }
-        got++;
+
+        sum_x += g.x;
+        sum_y += g.y;
+        sum_z += g.z;
+        used++;
 
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    if (got < samples / 2) {
-        ESP_LOGE(TAG, "陀螺仪校准失败: 采样失败 (%u/%u 个样本)", (unsigned)got, (unsigned)samples);
+    /* 有效的样本太少 → 说明采样期间一直在动, 不能拿这种数据当零偏 */
+    if (used < samples / 2) {
+        ESP_LOGE(TAG, "陀螺仪校准失败: 采样期间检测到运动 "
+                      "(%u/%u 个样本被剔除), 请把设备放稳再校准",
+                 (unsigned)(samples - used), (unsigned)samples);
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* 均值 = 零偏; 标准差 σ = 有没有在动
-     * ⚠ 为什么用标准差而不是"最大值−最小值":
-     *   最大值−最小值 对**单个**离群样本特别敏感 (本机 MPU6500 静止时
-     *   波动就能到 3.5 °/s), 标准差对离群点稳健得多。
-     *   本机静止实测: σ ≈ 0.8~1.0 °/s, 阈值 2.5 °/s 有 2.5 倍余量。 */
-    float mean[3], sigma[3], spread[3];
-    for (int k = 0; k < 3; k++) {
-        mean[k]   = sum[k] / (float)got;
-        float var = sum2[k] / (float)got - mean[k] * mean[k];
-        sigma[k]  = (var > 0.0f) ? sqrtf(var) : 0.0f;
-        spread[k] = mx[k] - mn[k];
-    }
+    gyro_offset.x = sum_x / used;
+    gyro_offset.y = sum_y / used;
+    gyro_offset.z = sum_z / used;
 
-    ESP_LOGI(TAG, "陀螺零偏采样: 均值(%.3f, %.3f, %.3f) °/s, "
-                  "标准差(%.3f, %.3f, %.3f), 极差(%.3f, %.3f, %.3f) °/s",
-             (double)mean[0], (double)mean[1], (double)mean[2],
-             (double)sigma[0], (double)sigma[1], (double)sigma[2],
-             (double)spread[0], (double)spread[1], (double)spread[2]);
-
-    /* 在动 → 失败 (均值里混了运动量, 当零偏用会越校越歪) */
-    for (int k = 0; k < 3; k++) {
-        if (sigma[k] > MPU_GYRO_MOTION_THR) {
-            ESP_LOGE(TAG, "陀螺仪校准失败: 采样期间在动 (轴%c 标准差 %.2f°/s > %.1f°/s)",
-                     'X' + k, (double)sigma[k], (double)MPU_GYRO_MOTION_THR);
-            return ESP_ERR_INVALID_STATE;
-        }
-    }
-
-    /* 均值大到离谱 → 数据不可信, 别存 */
-    if (fabsf(mean[0]) > MPU_GYRO_OFFSET_MAX ||
-        fabsf(mean[1]) > MPU_GYRO_OFFSET_MAX ||
-        fabsf(mean[2]) > MPU_GYRO_OFFSET_MAX) {
-        ESP_LOGE(TAG, "陀螺仪校准失败: 零偏过大 (%.3f, %.3f, %.3f) °/s",
-                 (double)mean[0], (double)mean[1], (double)mean[2]);
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    gyro_offset.x = mean[0];
-    gyro_offset.y = mean[1];
-    gyro_offset.z = mean[2];
-
-    /* 存盘: 下次上电直接用这个零偏 */
+    /* 存盘: 下次上电直接用这个零偏, 保证每次上电一致 */
     mpu9250_save_gyro_offset();
-
-    /* 提示残余零偏在姿态角上的放大:
-     *   互补滤波的稳态角误差 = **残余**零偏·dt/(1−alpha)
-     *   alpha=0.997 → 1/(1−alpha) ≈ 333 → 每残余 0.1°/s = 0.33° 的姿态角误差
-     *   (零偏本身已经被扣掉了, 这里说的是"扣得准不准") */
-    float dt_est = 0.01f;
-    float amp    = dt_est / (1.0f - alpha);
-    ESP_LOGI(TAG, "零偏已补偿 (%.3f°/s): 每残余 0.1°/s 的零偏 = %.2f° 的姿态角误差",
-             (double)gyro_offset.x, (double)(0.1f * amp));
 
     return ESP_OK;
 }

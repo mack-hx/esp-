@@ -3,7 +3,7 @@
  * @brief 1:1 镜像 ESP32 端 param.c 的参数定义 (16 项)
  * @date 2026-10-26
  *
- * 数据来源: 0.30/user/param/param.c (PARAM_DATA_VERSION 13)
+ * 数据来源: 0.30/user/param/param.c (PARAM_DATA_VERSION 10)
  * 改了 param.c 就要同步这个文件, 否则 App 显示的滑块范围/默认值会跟车端对不上.
  *
  * ⚠ 2026-10-26 踩过的坑 (不要再犯):
@@ -22,7 +22,7 @@
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 13
+export const PARAM_VER = 10
 
 export const PARAM_GROUPS = {
   0: { key: 'balance', label: '平衡环' },
@@ -39,13 +39,13 @@ export const PARAM_DEFS = [
   { id: 2,  key: 'bal_kd',      label: 'Balance Kd', unit: '',  def: 1.5,   min: 0,  max: 30,   step: 0.1,  dec: 1, grp: 0,
     hint: '角速度阻尼。车晃得停不下来就加大, 出现高频嗡嗡声就减小' },
 
-  // 速度环 (App 方向键就走这个环: 目标轮速 → 目标倾角 → 平衡环)
-  { id: 3,  key: 'spd_kp',      label: 'Speed Kp',   unit: '',  def: 0.06,  min: 0,  max: 200,  step: 0.01, dec: 2, grp: 1,
-    hint: '走多快 (°/rpm)。App 方向键走的就是这个环, 平衡环全程不撒手。目标倾角被限制在 4° 以内, 调太大只会让车左右猛摇' },
-  { id: 4,  key: 'spd_ki',      label: 'Speed Ki',   unit: '',  def: 0.01,  min: 0,  max: 300,  step: 0.005, dec: 3, grp: 1,
-    hint: '消除稳态速度误差 (走不到目标速度时慢慢补倾角)。太大容易积分饱和, 也会让车越走越歪' },
+  // 速度环
+  { id: 3,  key: 'spd_kp',      label: 'Speed Kp',   unit: '',  def: 0.0,   min: 0,  max: 200,  step: 0.5,  dec: 1, grp: 1,
+    hint: '走多快。**默认 0**: 站立时目标轮速恒为 0, 开这个环只会引入噪声' },
+  { id: 4,  key: 'spd_ki',      label: 'Speed Ki',   unit: '',  def: 0.0,   min: 0,  max: 300,  step: 0.5,  dec: 1, grp: 1,
+    hint: '消除稳态速度误差。默认 0 (同上)' },
   { id: 5,  key: 'spd_kd',      label: 'Speed Kd',   unit: '',  def: 0.0,   min: 0,  max: 30,   step: 0.1,  dec: 1, grp: 1,
-    hint: '速度变化阻尼。默认 0: 编码器量化台阶会让 D 项噪声很大' },
+    hint: '速度变化阻尼' },
 
   // 限幅 / 安全
   { id: 6,  key: 'motor_max',   label: 'Motor Out Max', unit: '%',  def: 60, min: 0, max: 100, step: 1, dec: 0, grp: 2,
@@ -54,12 +54,12 @@ export const PARAM_DEFS = [
     hint: '速度环能给出的最大倾角目标 (°)。车本来就有配平偏差时别调太大' },
   { id: 8,  key: 'ang_limit',   label: 'Angle Limit',   unit: '°', def: 25, min: 5, max: 60,  step: 1, dec: 0, grp: 2,
     hint: '超过这个倾角判定摔倒, 立刻停电机' },
-  { id: 9,  key: 'gyro_lpf',    label: 'Gyro LPF',      unit: '',  def: 0.8, min: 0, max: 1,  step: 0.01, dec: 2, grp: 2,
-    hint: '陀螺仪低通滤波系数 (0~1)。越小越平滑但延迟越大 —— 延迟大了阻尼会变弱, 车一碰就剧烈抖' },
+  { id: 9,  key: 'gyro_lpf',    label: 'Gyro LPF',      unit: '',  def: 0.2, min: 0, max: 1,  step: 0.01, dec: 2, grp: 2,
+    hint: '陀螺仪低通滤波系数 (0~1)。越小越平滑但延迟越大, 延迟大了阻尼会变弱' },
   { id: 10, key: 'gear',        label: 'Gear Ratio',    unit: '',  def: 1.0, min: 0.1, max: 50, step: 0.1,  dec: 1, grp: 2,
     hint: '电机转速 / 轮转速。带减速箱的填 >1' },
   { id: 11, key: 'deadzone',    label: 'Motor Deadband',unit: '%', def: 4,   min: 0, max: 30,   step: 1,    dec: 0, grp: 2,
-    hint: '电机最小启动 PWM (硬件死区)。要填轮子刚能转起来的那个占空比: 填小了补偿不够会突然猛冲, 填大了平衡点附近空转抖动' },
+    hint: '电机最小启动 PWM。太小电机转不动 (车会慢慢歪然后突然猛冲), 太大车会一顿一顿 (高频哒哒响)' },
   { id: 12, key: 'arm_pitch',   label: 'Arm Pitch',     unit: '°', def: 8,   min: 1, max: 30,   step: 1,    dec: 0, grp: 2,
     hint: '启动门控: 倾角小于这个值才允许输出。防止歪着启动直接摔' },
   { id: 13, key: 'arm_rate',    label: 'Arm Rate',      unit: '°/s',def: 20, min: 2, max: 100,  step: 1,    dec: 0, grp: 2,

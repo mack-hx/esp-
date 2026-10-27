@@ -69,32 +69,62 @@
 - 位置环需要里程计：编码器只能给瞬时转速，积分成位移需要**轮径参数**（参数表里目前没有）
 
 **接手做法（不要重蹈覆辙）**：
-1. **第一步就派子代理**，别自己读文件。照抄这个模板：
-   ```
-   Task(subagent_type="explore", description="查速度环与编码器链路",
-        prompt="工程根: /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot
+1. **第一步就派外部子代理**，别自己读文件（Task 已坏，见上）：
+   ```bash
+   cat > /tmp/q.txt <<'EOF'
+   工程根: /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot
    目标文件: 0.31/user/pid/speed_pid.c, 0.31/user/pid/balance_pid.c, 0.31/hardware/encoder/encoder.c, 0.31/user/control/balance.c
    要找什么: 1) 速度环误差符号与限幅在哪算; 2) 编码器计数到 rpm 的换算与前进方向符号; 3) 抖动可能来自哪个环的增益或采样
-   返回格式: 只回结论 + 关键行号 (file:line), 不要贴大段原文, 30 行以内")
+   返回格式: 只回结论 + 关键行号 (file:line), 不要贴大段原文, 30 行以内
+   EOF
+   scripts/subagent.sh /tmp/q.txt speed_loop
    ```
 2. 拿到结论后**直接动手改代码**，不要回头把文件再读一遍
 3. 位置环要接进控制流程的话，先确认轮径参数怎么加（要问用户轮径实际值）
 4. 改完跑 `test/bal_sim.py --walk` 验证不摔，再考虑真机
 
-**`.cursor/hooks/` 已经装了两个强制钩子**（2026-10-27 加，真实环境已验证生效）：
-- `require_subagent.py`：自己查文件满 6 次就拦截，强制先派 `explore` 子代理
+**`.cursor/hooks/` 装了三个强制钩子**（2026-10-27 加，真实环境已验证生效）：
+- `require_subagent.py`：自己查文件满 6 次就拦截，强制先派子代理
 - `guard_reads.py`：拦重复读同一位置、拦大文件整读（>800 行）
+- `limit_verbose_output.py`：单轮正文超 12000 字符就塞提醒（postToolUse）
 **被拦截时不要绕过，按提示派子代理。**
 维护类命令（git/python/编译/写文件）不计数，不会被误拦。
 
 ⚠ **新开窗口才生效**：Cursor 在会话启动时加载 hooks.json，中途创建的要重启才生效。
-⚠ 若子代理调用报 `Cursor user message action has no message_id`，
-   那是环境问题（2026-10-27 本次会话 4 次全失败，历史 22 次全成功），换个窗口再试。
-   临时解锁（子代理不可用时 hook 会把自己锁死）：
-   ```bash
-   touch /tmp/esp_balance_robot_ctx_guard_off   # 全部放行
-   rm   /tmp/esp_balance_robot_ctx_guard_off   # 恢复正常拦截
-   ```
+
+### 🔴 子代理：Task 坏了，改用外部 CLI（2026-10-27 定位完毕）
+`Task`（Cursor 内置子代理）**全面失效**，报
+`[invalid_argument] Cursor user message action has no message_id`，重试 3 次全败。
+父会话正常，只有子会话创建被服务端拒绝 —— Cursor agent-host 的 bug，改不了。
+
+证据：`~/Library/Application Support/Cursor/logs/20261027T122114/window1/exthost/anysphere.cursor-agent-host/Cursor Agent Host.log`
+里每个子会话 `conversationId` 都报同一错误；历史上 10-21~10-26 有 27 次子代理全部成功，
+今天 16:14 之后 10 次全部失败（含 3 次最小探针、试过 explore/generalPurpose/shell/指定 model/后台）。
+
+**改用 `scripts/subagent.sh`**（走本机 Claude Code CLI `/Volumes/Moving/app/npm-global/bin/claude`，已验证可用）：
+```bash
+cat > /tmp/q.txt <<'EOF'
+工程根: /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot
+目标文件: 0.31/<具体路径>
+要找什么: [明确的问题]
+返回格式: 只回结论 + 文件:行号, 40 行以内, 不贴大段源码
+EOF
+scripts/subagent.sh /tmp/q.txt <任务名>
+```
+完整报告落 `logs/subagents/<任务名>-<时间戳>.md`，主对话只回 20 行摘要。
+
+### 🔴 "输入内容过长"的真正原因：助手自己的输出文字
+不是大文件。`python3 scripts/ctx_check.py --all` 实测三个失败会话：
+助手文字 50~55 万字符、工具 IO 才 7~8 千字符 → **助手输出占 98%**，单段最长 4.5~7 万字符。
+Cursor 把模型 reasoning 当正文 text 存进 transcript，每轮重发一遍，30 轮就爆。
+成功那次（4a8a42d5）助手文字只 10 万字符、占 68% → 88 轮才 44k token。
+`limit_verbose_output.py` hook 专门盯这个。
+
+临时解锁（hook 与子代理不可用时会互锁）：
+```bash
+touch /tmp/esp_balance_robot_ctx_guard_off   # 全部放行
+rm   /tmp/esp_balance_robot_ctx_guard_off   # 恢复正常拦截
+```
 
 ### 需要用户动手的（必须等硬件）
 - [ ] 烧录 0.31 后**必须重新配平**（旧配平表 + 旧配平零点作废）

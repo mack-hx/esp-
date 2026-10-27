@@ -36,21 +36,10 @@
 
 static const char *TAG = "BALANCE";
 
-/* ========== 控制回路跟踪 (调试用, 默认关闭) ==========
- * 打开后每 100ms 打印一次控制回路的关键量 (姿态角/角速度/输出/目标/周期),
- * 用来在真机上看"抖"到底是姿态读数在抖、还是控制器在抖、还是周期在抖。
- * 打开: 把下面的 0 改成 1 重新编译烧录。
- * ⚠ 开了之后串口会被刷屏, 别在正式使用时开着。 */
-#define BAL_TRACE_ENABLE  0
-#if BAL_TRACE_ENABLE
-#define BAL_TRACE_PERIOD_MS 100
-#endif
-
 /* ================= 模块内部状态 ================= */
 
 static bal_pid_t s_pid_bal;      /* 姿态误差 → 电机输出 (%) */
 static bal_pid_t s_pid_spd;      /* 轮速误差 → 目标倾角 (°) */
-static bal_pid_t s_pid_yaw;      /* 左−右 轮速差 → 差速输出 (%) */
 
 static bal_state_t s_state  = BAL_STATE_IDLE;
 static bool        s_enabled = false;
@@ -78,38 +67,23 @@ static float s_trim_comp = 0.0f;
 /* 已连续满足门控条件的累计时长 (ms); 任何条件不满足立即清零 */
 static float s_arm_hold_ms = 0.0f;
 
-/* ========== 速度环 / 差速环 的目标与测量 ==========
- * 全部用"**前进为正**"的轮速 (rpm):
- *   s_tgt_avg   = 两轮平均目标轮速 (前进为正)
- *   s_tgt_diff  = 左轮 − 右轮 的目标差 (前进为正, 左轮更快为正)
- *   s_speed_fwd = 两轮平均实测轮速 (前进为正)
- *   s_diff_fwd  = 左轮 − 右轮 的实测差 (前进为正)
- * 目标与实测之间用斜坡连接 (见 BAL_SPD_RAMP_*), 免得目标跳变导致猛冲。 */
-static float s_tgt_avg      = 0.0f;   /* 斜坡后的实际目标 */
-static float s_tgt_diff     = 0.0f;   /* 斜坡后的实际目标差 */
+/* 速度环目标轮速 (rpm): 遥控直驱期间不参与, 恒为 0 (原地站立) */
+static float s_target_rpm = 0.0f;
 
-/* ========== 轮速统计 (300ms 滑动窗口) ==========
- * 编码器 44 脉冲/转, 10ms 窗口的读数是量化跳变 (1 个脉冲 = 136 rpm),
- * 100ms 窗口也好不到哪去 (1 个脉冲 = 13.6 rpm) —— 速度环拿到这种读数,
- * 误差 2 rpm 就把目标倾角打到限幅, 平衡环随即饱和 → 电机前后猛顶。
- * 所以把 3 个 100ms 窗口的脉冲数**累加**后再算速度 (300ms 窗口):
- * 量化台阶降到 1 个脉冲 = 4.5 rpm, 读数平滑可用。
- *
+/* ========== 轮速统计 (100ms 窗口) ==========
+ * 10ms 窗口的编码器读数是量化跳变 (1 脉冲 = 136 rpm), 会把速度环的
+ * 目标倾角打到限幅 → 电机猛冲。所以按 100ms 窗口统计, 见
+ * balance_read_sensors() 里的说明。
  * ⚠ 不走 encoder_get_rpm(): 它的快照状态和 UI 编码器页共用, 会被抢。 */
-#define SPD_WIN_MS       100                                  /* 基本窗口长度 (ms) */
-#define SPD_ACC_WIN      3                                   /* 累加几个基本窗口 (300ms) */
+#define SPD_WIN_MS       100                                  /* 轮速窗口长度 (ms) */
 #define SPD_WIN_CYCLES   (SPD_WIN_MS / CONTROL_PERIOD_MS)    /* 窗口内的控制周期数 */
 static int   s_enc_last_cnt[2] = {0, 0};  /* 上个窗口结束时的编码器计数值 */
 static int   s_enc_win_cnt    = 0;        /* 当前窗口已过的控制周期数 */
-static int   s_enc_acc_pulse[2] = {0, 0}; /* 累加窗口内累计的脉冲数 */
-static int   s_enc_acc_win    = 0;        /* 已累加了几个基本窗口 */
-static float s_rpm_raw[2]      = {0.0f, 0.0f}; /* 编码器空间的轮速 (左/右) */
-static float s_speed_fwd       = 0.0f;   /* 实测平均轮速 (前进为正, rpm) */
-static float s_diff_fwd        = 0.0f;   /* 实测 左−右 轮速差 (前进为正, rpm) */
+static float s_speed_rpm      = 0.0f;     /* 上个窗口算出的两轮平均轮速 (rpm) */
 
-/* ========== 遥控指令 (App 方向键) ==========
- * 现在只用来设目标轮速 (走速度环), 平衡环全程在线。
- * 平衡没开 (车没起立) 时才退回开环直驱, 方便单独调电机/编码器。 */
+/* ========== 遥控直驱 (App 方向键) ==========
+ * 直驱 = 直接给电机 PWM, 不经过平衡环, 跟 UI 编码器调试页一样。
+ * 期间暂停平衡环输出, 状态机也暂停 (车被开着走, 姿态检测没有意义)。 */
 static bal_move_t s_move_dir   = BAL_MOVE_STOP;
 static int8_t     s_move_level = 0;
 
@@ -238,31 +212,10 @@ static void balance_load_params(void)
                   balance_i_max(bal_ki, out_max),   /* 积分项最大 = 输出一半 */
                   out_max);
 
-    /* 速度环: 输出 = 目标倾角 (°)。
-     * ⚠ 限幅夹到 BAL_WALK_PITCH_MAX: 走路时车最多前倾这么多度,
-     *   目标轮速定太高时宁可走慢, 也不能倾到摔。
-     *   (夹在 PID 内部而不是外面: 否则积分会继续往 40° 攒,
-     *    误差反向时要很久才退得回来 → 车会先猛冲再回不来) */
-    float walk_max = spdout_max;
-    if (walk_max > BAL_WALK_PITCH_MAX) walk_max = BAL_WALK_PITCH_MAX;
-    if (walk_max < 0.0f) walk_max = 0.0f;
-
-    /* 速度环增益为 0 时用内置默认值 (防止旧版 App 把参数写回 0,
-     * 结果方向键完全没反应 —— 2026-10-26 那次"恢复默认"事故的教训) */
-    float spd_kp_eff = (spd_kp > 0.001f) ? spd_kp : BAL_SPD_KP_DEFAULT;
-    float spd_ki_eff = (spd_ki > 0.001f) ? spd_ki : BAL_SPD_KI_DEFAULT;
-    float spd_kd_eff = (spd_kd > 0.001f) ? spd_kd : 0.0f;
-
     pid_set_gains(&s_pid_spd,
-                  spd_kp_eff, spd_ki_eff, spd_kd_eff,
-                  balance_i_max(spd_ki_eff, walk_max),
-                  walk_max);        /* 输出 = 目标倾角 (°) */
-
-    /* 差速环 (转向): 输出 = 两轮的差 (%); 正 = 左轮更快 */
-    pid_set_gains(&s_pid_yaw,
-                  BAL_YAW_KP, BAL_YAW_KI, 0.0f,
-                  balance_i_max(BAL_YAW_KI, BAL_YAW_OUT_MAX),
-                  BAL_YAW_OUT_MAX);
+                  spd_kp, spd_ki, spd_kd,
+                  balance_i_max(spd_ki, spdout_max),
+                  spdout_max);         /* 输出 = 目标倾角 (°) */
 }
 
 /**
@@ -272,11 +225,7 @@ static void balance_reset_pid(void)
 {
     pid_reset(&s_pid_bal);
     pid_reset(&s_pid_spd);
-    pid_reset(&s_pid_yaw);
     s_lpf_primed = false;
-    /* 目标轮速也归零: 摔倒 / 停机时不能还挂着"往前走"的目标 */
-    s_tgt_avg  = 0.0f;
-    s_tgt_diff = 0.0f;
 }
 
 /**
@@ -349,15 +298,14 @@ static void balance_read_sensors(void)
         s_data.trim_comp = 0.0f;
     }
 
-    /* --- 编码器: 300ms 滑动窗口统计两轮轮速 ---
+    /* --- 编码器: 100ms 窗口统计两轮平均轮速 (去掉减速比, 得到轮子真实转速) ---
      *
      * ⚠ 不用 encoder_get_rpm(..., 10ms) 的原因:
      *   编码器 44 脉冲/转, 10ms 窗口里轮子常常转不到 1 个脉冲,
      *   读数在 0 和 136 rpm 之间跳 (1 个脉冲 = 136 rpm @10ms 窗口)。
      *   速度环拿到这种读数, 误差 2 rpm 就把目标倾角打到限幅,
      *   平衡环随即饱和 → 电机前后猛顶 (起立剧烈抖动的直接来源)。
-     *   100ms 窗口把量化误差降到 1/10 (1 脉冲 = 13.6 rpm), 还是偏粗,
-     *   所以这里累加 3 个 100ms 窗口 (300ms), 量化台阶 = 4.5 rpm。
+     *   100ms 窗口把量化误差降到 1/10, 读数平滑可用。
      *
      * ⚠ 自己记快照, 不走 encoder_get_rpm(): 它内部存的是"上次调用时刻",
      *   和 UI 编码器调试页 (150ms 一读) 是同一份状态, 两边互抢会算出
@@ -378,31 +326,12 @@ static void balance_read_sensors(void)
         s_enc_last_cnt[0] = c1;
         s_enc_last_cnt[1] = c2;
 
-        /* 累加脉冲数, 攒够 SPD_ACC_WIN 个窗口再换算速度 */
-        s_enc_acc_pulse[0] += d1;
-        s_enc_acc_pulse[1] += d2;
-        s_enc_acc_win++;
-
-        if (s_enc_acc_win >= SPD_ACC_WIN) {
-            float win_sec = (float)(SPD_WIN_MS * SPD_ACC_WIN) / 1000.0f;
-            /* rpm = 脉冲数 / 每转脉冲数 / 窗口秒数 × 60 / 减速比 */
-            float k = 60.0f / (win_sec * ENCODER_PULSES_PER_REV * gear);
-            s_rpm_raw[0] = (float)s_enc_acc_pulse[0] * k;
-            s_rpm_raw[1] = (float)s_enc_acc_pulse[1] * k;
-            s_enc_acc_pulse[0] = 0;
-            s_enc_acc_pulse[1] = 0;
-            s_enc_acc_win    = 0;
-        }
+        float win_sec = (float)SPD_WIN_MS / 1000.0f;
+        float rpm1 = ((float)d1 / ENCODER_PULSES_PER_REV) / win_sec * 60.0f / gear;
+        float rpm2 = ((float)d2 / ENCODER_PULSES_PER_REV) / win_sec * 60.0f / gear;
+        s_speed_rpm = (rpm1 + rpm2) / 2.0f;
     }
-
-    /* 换算成"前进为正": 编码器正方向 = 车尾方向, 要取反 (见 balance.h) */
-    float fwd_l = BAL_ENC_FWD_SIGN * s_rpm_raw[0];
-    float fwd_r = BAL_ENC_FWD_SIGN * s_rpm_raw[1];
-    s_speed_fwd = (fwd_l + fwd_r) * 0.5f;    /* 两轮平均 */
-    s_diff_fwd  = fwd_l - fwd_r;             /* 左 − 右 */
-
-    s_data.speed     = s_speed_fwd;
-    s_data.speed_raw = s_rpm_raw[0];         /* 调试用: 编码器空间的原始轮速 */
+    s_data.speed = s_speed_rpm;
 }
 
 /**
@@ -559,92 +488,10 @@ static void balance_state_machine(float dt)
 }
 
 /**
- * @brief 把当前值朝目标值挪一步 (加速慢、减速快)
- * @param cur  当前值
- * @param tgt  目标值
- * @param up   往正方向走的一步上限
- * @param down 往负方向走的一步上限
- * @return 挪动后的值
- */
-static float balance_move_toward(float cur, float tgt, float up, float down)
-{
-    float d = tgt - cur;
-    if (d > 0.0f) {
-        float s = (d < up) ? d : up;
-        return cur + s;
-    }
-    if (d < 0.0f) {
-        float s = (-d < down) ? -d : down;
-        return cur - s;
-    }
-    return cur;
-}
-
-/**
- * @brief 遥控指令 → 目标轮速 (前进为正)
- * @param dir      方向
- * @param level    档位百分比 (20/40/60/80)
- * @param out_avg  [出参] 两轮平均目标轮速 (前进为正, rpm); 前进/后退用它
- * @param out_diff [出参] 左轮 − 右轮 的目标差 (前进为正, rpm); 转向用它
- *
- * @note  前进/后退: 两轮同向 → 平均 = ±rpm, 差 = 0
- *       左/右转:  两轮反向 (原地转) → 平均 = 0, 差 = ±2×rpm
- *       (这个换算只有这一处, balance_set_move() 的日志和
- *        balance_update_target() 的斜坡都用它, 免得两处算出不一样的值)
- */
-static void balance_move_targets(bal_move_t dir, int8_t level,
-                                 float *out_avg, float *out_diff)
-{
-    float rpm  = (float)level * BAL_MOVE_RPM_MAX / 100.0f;
-    float avg  = 0.0f;
-    float diff = 0.0f;
-
-    switch (dir) {
-        case BAL_MOVE_FWD:   avg  =  rpm; break;
-        case BAL_MOVE_BACK:  avg  = -rpm; break;
-        case BAL_MOVE_LEFT:  diff =  2.0f * rpm; break;
-        case BAL_MOVE_RIGHT: diff = -2.0f * rpm; break;
-        default: break;
-    }
-    *out_avg  = avg;
-    *out_diff = diff;
-}
-
-/**
- * @brief 由遥控指令算出目标轮速, 并用斜坡逼近
- * @param dt 控制周期 (秒)
- * @note  目标轮速一阶斜坡:
- *        - 起步时目标不会瞬间跳到 48 rpm (否则速度环一上来就要求很大的
- *          前倾角 → 车猛地一冲);
- *        - 松手时目标慢慢退到 0, 车自然减速站稳 (跟人手推车的习惯一致)。
- *
- * ⚠ 指令 (s_move_dir / s_move_level) 是 MQTT 任务写的, 这里只读,
- *   不在两个任务之间传递"目标值", 免得两个任务同时改一个变量。
- */
-static void balance_update_target(float dt)
-{
-    /* 指令 → 目标轮速 (前进为正) */
-    float cmd_avg = 0.0f;
-    float cmd_diff = 0.0f;
-    balance_move_targets(s_move_dir, s_move_level, &cmd_avg, &cmd_diff);
-
-    /* 没在平衡状态时目标一律归零 (门控没过 / 摔倒 / 没起立) */
-    if (s_state != BAL_STATE_BALANCING) {
-        cmd_avg = 0.0f;
-        cmd_diff = 0.0f;
-    }
-
-    float step_up   = BAL_SPD_RAMP_UP   * dt;
-    float step_down = BAL_SPD_RAMP_DOWN * dt;
-    s_tgt_avg  = balance_move_toward(s_tgt_avg,  cmd_avg,  step_up, step_down);
-    s_tgt_diff = balance_move_toward(s_tgt_diff, cmd_diff, step_up, step_down);
-}
-
-/**
  * @brief 跑一次串级控制运算并输出到电机
  * @param dt 控制周期 (秒)
- * @note  驱动方式: **双轮同向** (平衡环) + 可选的**差速** (转向环)。
- *        车往前倒 (pitch < 0) 时两个轮子都往"追着倒的方向"转,
+ * @note  驱动方式: **双轮同向**。
+ *        车往前倒 (pitch > 0) 时两个轮子都往"追着倒的方向"转,
  *        轮子跑出去 → 重心被甩到轮轴上方 → 车身被托回竖直。
  */
 static void balance_control_step(float dt)
@@ -663,29 +510,11 @@ static void balance_control_step(float dt)
         if (s_out_ramp > 100.0f) s_out_ramp = 100.0f;
     }
 
-    /* --- 目标轮速斜坡 (App 方向键 → 目标轮速) --- */
-    balance_update_target(dt);
-    s_data.target_speed = s_tgt_avg;
-
     /* --- 外环: 速度环 → 目标倾角 ---
-     * 误差 = 实测 − 目标 (前进为正)。
-     *   实测比目标慢 → 误差为负 → 目标倾角为负 → 车前倾 (pitch 负 = 车头往下)
-     *   → 轮子往车头跑 → 加速前进 ✓
-     *   实测比目标快 → 误差为正 → 目标倾角为正 → 车后仰 → 减速 ✓
-     *
-     * ⚠ 误差死区: 编码器量化台阶是 4.5 rpm, 不设死区的话,
-     *   车会为了追一个量化噪声一直歪着 (慢慢往一边跑)。 */
-    float spd_err = s_speed_fwd - s_tgt_avg;
-    if (fabsf(spd_err) < BAL_SPD_ERR_DEADBAND) spd_err = 0.0f;
+     * 车速要往前, 车就得先往前倾一点, 所以目标倾角 = 速度环输出
+     * 目标轮速 s_target_rpm 恒为 0 (遥控走直驱通道), 即"原地保持" */
+    float spd_err = s_target_rpm - s_data.speed;
     s_data.target_pitch = pid_update(&s_pid_spd, spd_err, dt);
-
-    /* --- 差速环 (转向): 左−右 轮速差 → 两轮输出的差 ---
-     * 转向时两轮反向转 (原地转), 平均轮速保持 0, 平衡环照常扶住车身。
-     * 误差 = 目标差 − 实测差: 左轮该更快时误差为正 → 差速输出为正
-     * → 左轮输出更小 (往车头 = 前进) → 左轮更快 ✓ */
-    float diff_err = s_tgt_diff - s_diff_fwd;
-    float yaw = pid_update(&s_pid_yaw, diff_err, dt);
-    s_data.yaw_out = yaw;
 
     /* --- 内环: 平衡环 → 电机输出 ---
      * 误差 = 实际倾角 - 目标倾角
@@ -698,7 +527,7 @@ static void balance_control_step(float dt)
     float bal_err = s_data.pitch - s_data.target_pitch;
     s_data.bal_out = pid_update_rate(&s_pid_bal, bal_err, s_data.gyro, dt);
 
-    /* --- 执行: 双轮同向输出 (+ 差速) ---
+    /* --- 执行: 双轮同向输出 ---
      * BAL_MOTOR_SIGN 烘焙在代码里 (0.13 起不在网页上可调):
      * 改电机装配方向后, 要改的是 balance.h 的宏, 然后重烧固件。
      * ⚠ 2026-10-25 实测: 这个符号之前取反了 (原 -1), 导致前倾时轮子往后跑,
@@ -717,24 +546,8 @@ static void balance_control_step(float dt)
     if (out >  s_out_ramp) out =  s_out_ramp;
     if (out < -s_out_ramp) out = -s_out_ramp;
 
-    /* --- 叠加差速 (转向) ---
-     * 差速为正 = 左轮更快 = 左轮输出更小 (电机输出负 = 往车头 = 前进) */
-    float out_a = out;
-    float out_b = out;
-    if (BAL_MOTOR_A_IS_LEFT) { out_a = out - yaw; out_b = out + yaw; }
-    else                     { out_a = out + yaw; out_b = out - yaw; }
-
-    if (out_a >  out_max) out_a =  out_max;
-    if (out_a < -out_max) out_a = -out_max;
-    if (out_b >  out_max) out_b =  out_max;
-    if (out_b < -out_max) out_b = -out_max;
-    if (out_a >  s_out_ramp) out_a =  s_out_ramp;
-    if (out_a < -s_out_ramp) out_a = -s_out_ramp;
-    if (out_b >  s_out_ramp) out_b =  s_out_ramp;
-    if (out_b < -s_out_ramp) out_b = -s_out_ramp;
-
-    s_data.motor_a = (int8_t)out_a;
-    s_data.motor_b = (int8_t)out_b;
+    s_data.motor_a = (int8_t)out;
+    s_data.motor_b = (int8_t)out;   /* 同向: 两轮一起转, 不做差速 */
 
     /* 死区补偿: 每周期写入, 网页拖滑块立刻生效。
      * 作用: 让极小的非零输出也能真正推动电机, 消除平衡点附近的
@@ -783,13 +596,11 @@ static void balance_move_wheels(bal_move_t dir, int8_t level,
 }
 
 /**
- * @brief 开环直驱: 直接给两轮 PWM (不走平衡环)
- * @note  **只在平衡没开 (车没起立) 时用**, 方便单独调电机/编码器
- *        (跟 UI 编码器调试页 ui_encoder.c 行为一致):
+ * @brief 遥控直驱: 直接给两轮 PWM (不走平衡环)
+ * @note  行为与 UI 编码器调试页 (ui_encoder.c) 一致:
  *        - 前进/后退: 两轮同向
  *        - 左转/右转: 两轮反向 (原地转向)
  *        档位取自 motor_spd_levels[], 与 ui_encoder 的调速档位同源。
- *        平衡开着的时候方向键走速度环, 不会走到这里。
  */
 static void balance_apply_direct_move(void)
 {
@@ -873,32 +684,28 @@ static void balance_task(void *arg)
         /* 1.5) 配平采样 (只记录 pitch, 不碰电机) */
         balance_calib_step();
 
-        /* 2) 状态机 (摔倒检测) —— **始终运行**
-         * ⚠ 2026-10-26: 以前按方向键时这里被整个跳过 (直驱优先),
-         *   平衡环和摔倒检测都不跑 → 车站着的时候一推, 平衡环等于被关掉,
-         *   松手时车已经歪了, 平衡环接手必然剧烈纠偏。
-         *   现在方向键走速度环, 平衡环全程在线。 */
-        balance_state_machine(dt);
-
-        /* 3) 运算 + 输出 */
-        if (s_enabled) {
-            balance_control_step(dt);
-        } else if (s_move_dir != BAL_MOVE_STOP) {
-            /* 平衡没开 (车没起立): 方向键走开环直驱, 方便单独调电机/编码器 */
+        /* 2) 遥控直驱优先: 直接驱动电机, 暂停平衡环与状态机 */
+        if (s_move_dir != BAL_MOVE_STOP) {
             balance_apply_direct_move();
             s_data.target_pitch = 0.0f;
             s_data.bal_out      = 0.0f;
             s_data.spd_out      = 0.0f;
-            s_data.yaw_out      = 0.0f;
         } else {
-            /* 未启用: 只刹车, PID 不动 (enable 时会 reset) */
-            s_data.target_pitch = 0.0f;
-            s_data.bal_out      = 0.0f;
-            s_data.spd_out      = 0.0f;
-            s_data.yaw_out      = 0.0f;
-            s_data.motor_a      = 0;
-            s_data.motor_b      = 0;
-            motor_brake_all();
+            /* 3) 状态机 (摔倒检测) */
+            balance_state_machine(dt);
+
+            /* 4) 运算 + 输出 */
+            if (s_enabled) {
+                balance_control_step(dt);
+            } else {
+                /* 未启用: 只刹车, PID 不动 (enable 时会 reset) */
+                s_data.target_pitch = 0.0f;
+                s_data.bal_out      = 0.0f;
+                s_data.spd_out      = 0.0f;
+                s_data.motor_a      = 0;
+                s_data.motor_b      = 0;
+                motor_brake_all();
+            }
         }
 
         /* 4) 一次性发布整帧快照, 避免外部读到撕裂的数据 */
@@ -908,22 +715,6 @@ static void balance_task(void *arg)
         taskENTER_CRITICAL(&s_data_mux);
         s_data_pub = s_data;
         taskEXIT_CRITICAL(&s_data_mux);
-
-#if BAL_TRACE_ENABLE
-        /* 调试跟踪: 姿态角 / 角速度 / 输出 / 目标倾角 / 实测周期 */
-        static TickType_t s_trace_tick = 0;
-        TickType_t now_t = xTaskGetTickCount();
-        if (now_t - s_trace_tick >= pdMS_TO_TICKS(BAL_TRACE_PERIOD_MS)) {
-            s_trace_tick = now_t;
-            ESP_LOGI(TAG, "TRACE pitch=%.2f gyro=%.1f out=%.1f tgt=%.2f "
-                          "spd=%.1f/%.1f yaw=%.1f dt=%.1fms st=%d",
-                     (double)s_data.pitch, (double)s_data.gyro,
-                     (double)s_data.bal_out, (double)s_data.target_pitch,
-                     (double)s_data.target_speed, (double)s_data.speed,
-                     (double)s_data.yaw_out,
-                     (double)(dt * 1000.0f), (int)s_state);
-        }
-#endif
     }
 }
 
@@ -958,15 +749,7 @@ esp_err_t balance_init(void)
     s_enc_last_cnt[0] = encoder_get_count(ENCODER_1);
     s_enc_last_cnt[1] = encoder_get_count(ENCODER_2);
     s_enc_win_cnt    = 0;
-    s_enc_acc_pulse[0] = 0;
-    s_enc_acc_pulse[1] = 0;
-    s_enc_acc_win    = 0;
-    s_rpm_raw[0]      = 0.0f;
-    s_rpm_raw[1]      = 0.0f;
-    s_speed_fwd       = 0.0f;
-    s_diff_fwd        = 0.0f;
-    s_tgt_avg         = 0.0f;
-    s_tgt_diff        = 0.0f;
+    s_speed_rpm      = 0.0f;
 
     if (!s_mpu_ready) {
         ESP_LOGW(TAG, "MPU9250 不可用, 平衡控制无法工作 (请先接好 IMU)");
@@ -988,18 +771,10 @@ esp_err_t balance_init(void)
 
     /* 增大任务栈: 平衡控制涉及大量浮点运算, 需要足够空间避免溢出
      * ⚠ 优先级 7 (2026-10-26): 必须高于所有网络/上报任务
-     *   (OneNet 高速上报 5/4、MQTT 客户端 5), 否则 WiFi 收发或 MQTT 发布会
+     *   (OneNet 高速上报 5/6、MQTT 客户端 5), 否则 WiFi 收发或 MQTT 发布会
      *   抢占控制任务 → 控制周期抖动 (dt 突然变大) → 阻尼相位失配 →
-     *   表现为"站一会之后开始高频抖"。
-     *
-     * ⚠ 2026-10-26 追加: **绑到 core 1**
-     *   IDF 的 WiFi 任务优先级 23 且固定跑在 core 0, lwIP 的 tcpip 任务
-     *   优先级 18 (默认两个 core 都能跑)。它们一忙就会抢占优先级 7 的
-     *   控制任务 → 控制周期从 10ms 变成 20~30ms → 反馈相位错位 →
-     *   "一碰 / 一让走 (App 一发指令, MQTT 立刻高频上报) 就剧烈抖"。
-     *   把控制任务绑到 core 1, 网络栈留在 core 0, 互不干扰。
-     *   (lwIP 绑 core 0 见 sdkconfig 的 CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0) */
-    BaseType_t ret = xTaskCreatePinnedToCore(balance_task, "bal", 8192, NULL, 7, NULL, 1);
+     *   表现为"站一会之后开始高频抖"。 */
+    BaseType_t ret = xTaskCreate(balance_task, "bal", 8192, NULL, 7, NULL);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "控制任务创建失败");
         return ESP_FAIL;
@@ -1125,25 +900,21 @@ esp_err_t balance_set_move(bal_move_t dir, int8_t level_pct)
         return ESP_OK;
     }
 
-    /* 指令变了才清速度环/差速环的积分:
-     * 积分是"上一个指令"攒的, 换了方向还留着 → 一按就猛冲一下。
-     * (App 每秒会补发一次同样的指令, 指令没变时不能清) */
-    if (s_move_dir != dir || s_move_level != lvl) {
-        pid_reset(&s_pid_spd);
-        pid_reset(&s_pid_yaw);
+    /* 刚进入直驱时清一次 PID 积分: 直驱期间平衡环不跑,
+     * 退出时若还留着老积分, 平衡环一恢复就会猛冲一下 */
+    if (s_move_dir == BAL_MOVE_STOP) {
+        balance_reset_pid();
     }
 
     s_move_dir   = dir;
     s_move_level = lvl;
 
-    /* 目标轮速 (前进为正, rpm) —— 真正的目标由控制任务按斜坡逼近 */
-    float tgt_avg = 0.0f;
-    float tgt_diff = 0.0f;
-    balance_move_targets(dir, lvl, &tgt_avg, &tgt_diff);
+    int8_t sa = 0;
+    int8_t sb = 0;
+    balance_move_wheels(dir, lvl, &sa, &sb);
 
-    ESP_LOGI(TAG, "遥控指令: 方向=%d, 档位=%d%% → 目标轮速 平均 %.1f rpm / 差 %.1f rpm "
-                  "(走速度环, 平衡环不撒手)",
-             (int)dir, lvl, (double)tgt_avg, (double)tgt_diff);
+    ESP_LOGI(TAG, "遥控直驱: 方向=%d, 档位=%d%% (电机A%+d, 电机B%+d)",
+             (int)dir, lvl, sa, sb);
     return ESP_OK;
 }
 
@@ -1153,16 +924,12 @@ void balance_clear_move(void)
 
     s_move_dir   = BAL_MOVE_STOP;
     s_move_level = 0;
-
-    /* 目标轮速由控制任务按斜坡退到 0 (车自然减速站稳),
-     * 这里只清速度环/差速环的积分, 免得积分残留让车继续歪着走 */
-    pid_reset(&s_pid_spd);
-    pid_reset(&s_pid_yaw);
+    balance_reset_pid();
 
     /* 平衡没开就直接刹车; 开了则交给平衡环接管 */
     if (!s_enabled) motor_brake_all();
 
-    ESP_LOGI(TAG, "遥控指令结束, 目标轮速归零, 平衡环接管");
+    ESP_LOGI(TAG, "遥控直驱结束, 电机交回平衡环");
 }
 
 void balance_get_move(bal_move_t *out_dir, int8_t *out_level)

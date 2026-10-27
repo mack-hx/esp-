@@ -33,6 +33,15 @@ READS_AFTER_DELEGATE = 12
 # 会被拦截的"自己动手查"类工具
 QUERY_TOOLS = {"Read", "Grep", "Shell", "Glob"}
 
+# 外部子代理 (Claude Code CLI) 的调用特征。
+# 2026-10-27 起 Cursor 内置 Task (子代理) 报
+# "[invalid_argument] Cursor user message action has no message_id" 全面失败,
+# 所以改用 scripts/subagent.sh (本机 Claude Code CLI) 派子代理。
+EXTERNAL_SUBAGENT_PATTERNS = (
+    "scripts/subagent.sh",
+    "subagent.sh",
+)
+
 # 维护类命令特征: 命中就不计数, 直接放行
 # ⚠ 教训: 最初把所有 Shell 都算作"查代码", 结果 hook 把自己的维护能力也锁死了
 #   (连写日志的 Shell 都被拦, 计数只增不减 -> 永久锁死)。
@@ -60,6 +69,13 @@ def is_maintenance(command):
     if any(p in cmd for p in QUERY_PATTERNS):
         return False
     return any(p in cmd for p in MAINTENANCE_PATTERNS)
+
+
+def is_external_subagent(command):
+    """判断 Shell 命令是不是在派外部子代理 (scripts/subagent.sh)。"""
+    if not command:
+        return False
+    return any(p in command for p in EXTERNAL_SUBAGENT_PATTERNS)
 
 
 def load_state():
@@ -129,6 +145,13 @@ def main():
         save_state(sessions)
         respond({"permission": "allow"})
 
+    # 外部子代理 (scripts/subagent.sh): 放行并清零计数 (等价于 Task)
+    if tool_name == "Shell" and is_external_subagent(tool_input.get("command") or ""):
+        sess["delegated"] += 1
+        sess["reads"] = 0
+        save_state(sessions)
+        respond({"permission": "allow"})
+
     # 写操作不算"查", 直接放行且清零计数 (助手在动手做事)
     if tool_name in ("Write", "Edit", "MultiEdit", "Delete"):
         sess["reads"] = 0
@@ -163,23 +186,27 @@ def main():
     if sess["delegated"] == 0:
         agent_msg = (
             f"本会话已自己查了 {sess['reads']} 次文件, 但一次子代理都没派过。"
-            "**现在停下, 先派一个 explore 子代理。**\n\n"
-            "照抄下面这个模板派 (自行把 [要找什么] 换成实际问题):\n\n"
-            "```\n"
-            "Task(subagent_type=\"explore\", description=\"<一句话说明查什么>\",\n"
-            "     prompt=\"工程根: /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot\n"
+            "**现在停下, 先派一个子代理。**\n\n"
+            "⚠ Cursor 内置 `Task` 子代理目前是坏的 (报 "
+            "`Cursor user message action has no message_id`), 不要用 Task。\n"
+            "改用本工程的外部子代理脚本 (走本机 Claude Code CLI, 绕开 Cursor 的故障点):\n\n"
+            "```bash\n"
+            "# 1) 把自包含的提问写进 prompt 文件 (子代理看不到本对话历史)\n"
+            "cat > /tmp/q.txt <<'EOF'\n"
+            "工程根: /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot\n"
             "目标文件: 0.31/<具体路径>\n"
-            "要找什么: [明确的问题, 如 '速度环的误差符号与限幅在哪里计算, 用到哪些变量']\n"
-            "返回格式: 只回结论 + 关键行号 (file:line), 不要贴大段原文, 控制在 30 行以内\")\n"
+            "要找什么: [明确的问题]\n"
+            "返回格式: 只回结论 + 文件:行号, 40 行以内, 不贴大段源码\n"
+            "EOF\n\n"
+            "# 2) 派子代理 (完整报告落到 logs/subagents/, 只回 20 行摘要)\n"
+            "scripts/subagent.sh /tmp/q.txt <任务名>\n"
             "```\n\n"
-            "子代理看不到本对话历史, 所以 prompt 必须自包含 —— 把背景和目标写清楚。\n"
-            "子代理的结论会以摘要形式回到主对话, 原文不进上下文, 这正是我们要的效果。\n"
-            "派完子代理拿到结论后**直接动手改代码**, 不要再回头把文件读一遍。"
+            "拿到结论后**直接动手改代码**, 不要再回头把文件读一遍。"
         )
     else:
         agent_msg = (
             f"本会话已自己查了 {sess['reads']} 次文件 (已派过 {sess['delegated']} 次子代理)。"
-            "再查下去会重蹈覆辙: 派一个 explore 子代理做交叉核对, "
+            "再查下去会重蹈覆辙: 再派一个子代理做交叉核对 (scripts/subagent.sh), "
             "或者**现在就开始动手改代码**。\n"
             "历史数据: 3 个会话因为反复读文件, 0 次写入就耗尽了上下文。"
         )

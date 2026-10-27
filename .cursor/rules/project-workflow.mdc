@@ -97,29 +97,66 @@ alwaysApply: true
 所以规则光写"要派子代理"没用, 必须用 **hook 强制**。
 
 ### 14.2 Hook 强制 (已生效, 不依赖自觉)
-`.cursor/hooks.json` 装了两个 `preToolUse` 钩子:
+`.cursor/hooks.json` 装了三个钩子:
 
 | Hook | 作用 | 触发后 |
 |---|---|---|
-| `require_subagent.py` | 自己查文件满 6 次 | **拦截 Read/Grep/Shell/Glob**, 强制先派 `explore` 子代理, 并附可直接照抄的 Task 模板 |
+| `require_subagent.py` | 自己查文件满 6 次 | **拦截 Read/Grep/Shell/Glob**, 强制先派子代理, 并附可直接照抄的模板 |
 | `guard_reads.py` | 重复读同一位置 / 大文件整读 | 拦截并要求改用 `Grep` 或分段 `Read` |
+| `limit_verbose_output.py` | 单轮助手正文超 12000 字符 | postToolUse 塞提醒: 长分析写进文件, 查代码派子代理 |
 
 - 派过子代理后计数重置, 允许再查 12 次
-- 阈值在两个脚本顶部常量里, 可调
+- 阈值在三个脚本顶部常量里, 可调
 - **看到拦截提示时不要绕过, 按提示派子代理**
 - **紧急开关** (hook 与子代理不可用时会互相锁死, 用它解锁):
   ```bash
   touch /tmp/esp_balance_robot_ctx_guard_off   # 全部放行
   rm   /tmp/esp_balance_robot_ctx_guard_off   # 恢复正常拦截
   ```
-- 若 `Task` 报 `Cursor user message action has no message_id`, 是环境问题
-  (2026-10-27 实测: 本次会话 4 次全失败, 历史 22 次全成功),
-  此时用上面的开关临时放行, 继续干活, 换窗口后再恢复
+
+### 14.2.1 子代理怎么派 (2026-10-27 起改用外部 CLI)
+**Cursor 内置的 `Task` 子代理目前是坏的**, 报
+`[invalid_argument] Cursor user message action has no message_id`,
+重试 3 次全败。日志证据:
+`~/Library/Application Support/Cursor/logs/<当天目录>/window1/exthost/anysphere.cursor-agent-host/Cursor Agent Host.log`
+里所有子会话 `conversationId` 都是同一个错误。
+父会话正常, 只有子会话创建被服务端拒绝 —— 是 Cursor agent-host 的 bug, 项目侧改不了。
+
+**改用本工程自带的外部子代理脚本** (走本机 Claude Code CLI, 绕开 Cursor 的故障点):
+
+```bash
+cat > /tmp/q.txt <<'EOF'
+工程根: /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot
+目标文件: 0.31/<具体路径>
+要找什么: [明确的问题]
+返回格式: 只回结论 + 文件:行号, 40 行以内, 不贴大段源码
+EOF
+scripts/subagent.sh /tmp/q.txt <任务名>
+```
+
+- 完整报告落到 `logs/subagents/<任务名>-<时间戳>.md`, **主对话只回 20 行摘要**
+- prompt 必须自包含 (子代理看不到本对话历史)
+- 脚本内部用 `--allowedTools` 只给只读工具, 不会误改代码
+
+### 14.2.2 "输入内容过长"的真正原因 (2026-10-27 实测)
+**不是读进来的大文件, 是助手自己的输出文字。** `scripts/ctx_check.py --all` 实测:
+
+| 会话 | 助手文字 | 工具 IO | 助手占比 | 最长单段 |
+|---|---|---|---|---|
+| 01ced01f | 551,422 | 7,127 | 98.7% | 69,598 |
+| 63abc1ff | 517,173 | 7,407 | 98.6% | 45,532 |
+| 130f3ab1 | 504,316 | 8,071 | 98.4% | 57,826 |
+| 4a8a42d5 (成功那次) | 102,907 | 47,322 | 68.5% | 15,882 |
+
+Cursor 把模型的 reasoning 当正文 text 存进 transcript, 每轮重新发一遍。
+单轮写 4~7 万字符 x 30 轮 ≈ 15 万 token, 加上系统提示和规则文件就超上限。
+`limit_verbose_output.py` hook 专门盯这个。
 
 ### 14.3 硬性要求
 - **每轮输出控制在 2~3 段以内**；推演过程不要全留在主对话里
+- **正文只写结论，不写推演**：内部推演留在正文里是撑爆上下文的头号原因（见 14.2.2）
 - **单段助手文字不超过 8 KB**；要写长内容就写进文件
-- **查代码前先派子代理**：`explore` 查代码 / `generalPurpose` 做分析，只带回结论、行号、差异清单
+- **查代码前先派子代理**：用 `scripts/subagent.sh`（见 14.2.1），只带回结论、行号、差异清单
   - 子代理 prompt 必须**自包含**（看不到主对话历史），写清：工程根路径、目标文件、要找什么、返回格式
   - 拿到结论后**直接动手改代码**，不要再回头把文件读一遍
 - **大文件不得整篇 `Read`**：先用 `Grep` 定位，再分段 `Read`（`offset`/`limit`）

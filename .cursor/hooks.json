@@ -12,6 +12,13 @@
         "matcher": "Read",
         "failClosed": false
       }
+    ],
+    "postToolUse": [
+      {
+        "command": ".cursor/hooks/limit_verbose_output.py",
+        "matcher": "*",
+        "failClosed": false
+      }
     ]
   }
 }

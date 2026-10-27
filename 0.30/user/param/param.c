@@ -29,7 +29,7 @@ static const char *TAG = "PARAM";
 #define NVS_KEY_VERSION "ver"   /* 表结构版本, 表变了就忽略旧数据 */
 #define NVS_KEY_STALE   "stale" /* 标记: 最近一次写参数来自旧版 App */
 #endif
-#define PARAM_DATA_VERSION  13  /* 每次增删参数就 +1
+#define PARAM_DATA_VERSION  10  /* 每次增删参数就 +1
                                  * v2~v5: 0.1 的历史版本 (已作废)
                                  * v6:    0.11 删掉转向环/servo_l/pwm_max/deadband 等
                                  * v7:    0.13 再删 ang_zero/bal_sign/gyro_sign (烘焙成常量)
@@ -42,19 +42,6 @@ static const char *TAG = "PARAM";
                                  *         (spd_kp=20/spd_ki=30/motor_max=30/deadzone=8)
                                  *         写回车端并落盘 → 速度环被意外打开, 车一直朝一个
                                  *         方向跑。这里再作废一次 blob, 让这些坏值失效
-                                 * v11:   0.30 "一碰就剧烈抖" 的修复: gyro_lpf 默认
-                                 *         0.2→0.8 (陀螺低通的延迟加在 D 项上 = 加在
-                                 *         唯一的阻尼源上), 死区补偿方式也改了。
-                                 *         blob 里的旧值会让新代码继续用 0.2 → 再作废一次
-                                 * v12:   0.30 App 方向键改走速度环: 速度环默认增益从 0
-                                 *         改成 spd_kp=0.15 / spd_ki=0.05 (之前是 0,
-                                 *         速度环等于没开, 方向键只能走直驱)。
-                                 *         blob 里的旧值会让方向键没反应 → 再作废一次
-                                 * v13:   0.30 速度环增益按仿真结果调保守:
-                                 *         spd_kp 0.15→0.06, spd_ki 0.05→0.01,
-                                 *         走路时目标倾角上限 12°→4°。
-                                 *         (0.15/0.05 仿真里车身倾角波动中位 10.7°,
-                                 *          走起来就是"剧烈抖")
                                  * NVS blob 布局变了, 旧数据必须作废 */
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
@@ -78,15 +65,12 @@ const param_item_t g_param_items[] = {
       "角速度阻尼。车晃得停不下来就加大, 出现高频嗡嗡声就减小" },
 
     /* ---------- 速度环 (前进后退) ---------- */
-    { PARAM_PID_SPD_KP, "spd_kp", "Speed Kp",   "",   0.06f,   0.0f,  200.0f,  0.5f, 2, PARAM_GRP_SPEED,
-      "走多快 (°/rpm)。App 方向键就走这个环: 目标轮速 → 目标倾角 → "
-      "平衡环 (平衡环全程不撒手)。调大走得快, 但目标倾角被限制在 4° 以内 "
-      "(安全阀), 调太大只会让车左右猛摇" },
-    { PARAM_PID_SPD_KI, "spd_ki", "Speed Ki",   "",   0.01f,   0.0f,  300.0f,  0.5f, 2, PARAM_GRP_SPEED,
-      "消除稳态速度误差 (走不到目标速度时慢慢补倾角)。太大容易积分饱和, "
-      "也会让车越走越歪" },
-    { PARAM_PID_SPD_KD, "spd_kd", "Speed Kd",   "",   0.0f,    0.0f,   30.0f,  0.1f, 2, PARAM_GRP_SPEED,
-      "速度变化阻尼。默认 0: 编码器量化台阶会让 D 项噪声很大" },
+    { PARAM_PID_SPD_KP, "spd_kp", "Speed Kp",   "",   0.0f,   0.0f,  200.0f,  0.5f, 1, PARAM_GRP_SPEED,
+      "走多快。**默认 0**: 站立时目标轮速恒为 0, 开这个环只会引入噪声" },
+    { PARAM_PID_SPD_KI, "spd_ki", "Speed Ki",   "",   0.0f,   0.0f,  300.0f,  0.5f, 1, PARAM_GRP_SPEED,
+      "消除稳态速度误差。默认 0 (同上)" },
+    { PARAM_PID_SPD_KD, "spd_kd", "Speed Kd",   "",   0.0f,   0.0f,   30.0f,  0.1f, 1, PARAM_GRP_SPEED,
+      "速度变化阻尼" },
 
     /* ---------- 限幅 / 摔倒 / 滤波 / 减速比 ---------- */
     { PARAM_MOTOR_OUT_MAX, "motor_max", "Motor Out Max", "%", 60.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
@@ -96,18 +80,14 @@ const param_item_t g_param_items[] = {
       "速度环能给出的最大倾角目标 (°)。车本来就有配平偏差时别调太大" },
     { PARAM_ANGLE_LIMIT, "ang_limit", "Angle Limit", "°", 25.0f,  5.0f,   60.0f, 1.0f, 0, PARAM_GRP_LIMIT,
       "超过这个倾角判定摔倒, 立刻停电机" },
-    { PARAM_GYRO_LPF,    "gyro_lpf",  "Gyro LPF",    "",  0.8f,   0.0f,    1.0f, 0.01f,2, PARAM_GRP_LIMIT,
-      "陀螺仪低通系数 (D 项用的角速度)。**越小越平滑但延迟越大, "
-      "延迟大了阻尼会变弱 → 一碰就剧烈抖**。默认 0.8 (时间常数 12ms): "
-      "MPU 自带的 41Hz 数字低通已经够用, 这里再滤只是白白加延迟" },
+    { PARAM_GYRO_LPF,    "gyro_lpf",  "Gyro LPF",    "",  0.2f,   0.0f,    1.0f, 0.01f,2, PARAM_GRP_LIMIT,
+      "陀螺仪低通系数。越小越平滑但延迟越大, 延迟大了阻尼会变弱" },
     { PARAM_ENCODER_GEAR,"gear",      "Gear Ratio",  "",  1.0f,   0.1f,   50.0f, 0.1f, 1, PARAM_GRP_LIMIT,
       "电机转速 / 轮转速。带减速箱的填 >1" },
 
     /* ---------- 电机死区 ---------- */
     { PARAM_MOTOR_DEADBAND, "deadzone", "Motor Deadband", "%", 4.0f, 0.0f, 30.0f, 1.0f, 0, PARAM_GRP_LIMIT,
-      "电机最小启动 PWM (硬件死区)。**要填电机真正能转起来的最小占空比**, "
-      "填小了补偿不够 (小输出时电机不转, 车会突然猛冲), 填大了会一直有底噪扭矩。 "
-      "2026-10-26 起补偿改成'加上'死区, 所以这个值填得越准越好" },
+      "电机最小启动 PWM。太小电机转不动 (车会慢慢歪然后突然猛冲), 太大车会一顿一顿 (高频哒哒响)" },
 
     /* ---------- 启动门控 ---------- */
     { PARAM_ARM_PITCH,   "arm_pitch", "Arm Pitch",   "°",   8.0f,  1.0f,   30.0f, 1.0f, 0, PARAM_GRP_LIMIT,
