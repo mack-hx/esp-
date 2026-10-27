@@ -113,6 +113,8 @@ alwaysApply: true
   touch /tmp/esp_balance_robot_ctx_guard_off   # 全部放行
   rm   /tmp/esp_balance_robot_ctx_guard_off   # 恢复正常拦截
   ```
+  ⚠ **必须用独立的终端窗口执行**, 不能在被 hook 拦截的那次调用里执行 ——
+  hook 已经决定 deny 了, 命令根本不会跑到 (2026-10-27 踩过这个坑)
 
 ### 14.2.1 子代理怎么派 (2026-10-27 起改用外部 CLI)
 **Cursor 内置的 `Task` 子代理目前是坏的**, 报

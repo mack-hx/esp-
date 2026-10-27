@@ -114,6 +114,8 @@ scripts/subagent.sh /tmp/q.txt <任务名>
 touch /tmp/esp_balance_robot_ctx_guard_off   # 全部放行
 rm   /tmp/esp_balance_robot_ctx_guard_off   # 恢复正常拦截
 ```
+⚠ **在独立的终端窗口执行**，不要在被拦的那次调用里执行 —— hook 已经
+决定 deny，命令根本跑不到（2026-10-27 踩过）。
 
 ### 需要用户动手的（必须等硬件）
 - [ ] 烧录 0.31 后**必须重新配平**（旧配平表 + 旧配平零点作废）
