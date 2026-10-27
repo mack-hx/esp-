@@ -22,6 +22,10 @@ import time
 STATE_FILE = "/tmp/esp_balance_robot_ctx_guard.json"
 STATE_TTL = 1800  # 30 分钟
 
+# 紧急开关: 存在这个文件就完全放行 (hook 自锁或子代理不可用时用)
+# 用法: touch /tmp/esp_balance_robot_ctx_guard_off
+KILL_SWITCH = "/tmp/esp_balance_robot_ctx_guard_off"
+
 # 大文件阈值 (行数)。超过就必须带 offset/limit 分段读。
 BIG_FILE_LINES = 800
 # 单个会话允许的 Read 次数。超过就要求派子代理。
@@ -84,6 +88,10 @@ def main():
     #   { "tool_name": "Read", "tool_input": { "path": "..." }, ... }
     # tool_name 与 tool_input 是顶层并列字段 (不是嵌在 tool_input 里)。
     # 两种结构都兼容, 防止 Cursor 版本差异。
+    # 紧急开关: 直接放行一切
+    if os.path.exists(KILL_SWITCH):
+        respond({"permission": "allow"})
+
     tool_input = payload.get("tool_input") or {}
     if not isinstance(tool_input, dict):
         tool_input = {}
