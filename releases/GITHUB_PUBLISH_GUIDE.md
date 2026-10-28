@@ -73,6 +73,8 @@ gh release create v0.3 \
 
 | Tag | 说明 | 附件 |
 |-----|------|------|
+| v0.32 | 位置环默认打开 + bal_kd 0.4 生效 + trace 组件化 | esp_balance_robot-0.32.tar.gz |
+| v0.31 | 位置环接入 (默认关闭) + bal_kd 1.5→0.4 | esp_balance_robot-0.31.tar.gz |
 | v0.30 | 新迭代基线 (收编平衡控制三处致命修复 + App 状态页修复) | esp_balance_robot-0.30.tar.gz |
 | v0.22 | 新迭代基线（0.21 的干净复制, 仅版本号不同） | esp_balance_robot-0.22.tar.gz |
 | v0.21 | 20Hz pitch 高速通道 + LED/电磁铁/微动开关 检查页 | esp_balance_robot-0.21.tar.gz |
