@@ -65,10 +65,13 @@ static void test_defaults(void)
     CHECK(near(param_get_item(PARAM_PID_BAL_KD)->def, 0.4f, 1e-6f),
           "bal_kd 的 def 应为 0.4 (实际 %.2f)",
           (double)param_get_item(PARAM_PID_BAL_KD)->def);
-    /* 位置环默认必须关 (0.31 的结论): pos_kp / pos_ki = 0。
-     * 位置环默认开会引起站直时前后摆 (位置环是 0.30→0.31 唯一新增的闭环)。 */
-    CHECK(near(param_get_float(PARAM_POS_KP), 0.0f, 1e-6f), "pos_kp 默认应 0 (位置环默认关)");
-    CHECK(near(param_get_float(PARAM_POS_KI), 0.0f, 1e-6f), "pos_ki 默认应 0 (位置环默认关)");
+    /* 位置环默认打开 (0.32): pos_kp = 0.5 (纯 P), pos_ki = 0。
+     * 方向键改成"调目标位置", 位置环一直接管, 车被推歪后要能自己走回原位
+     * → 位置环不能默认是关的。
+     * ⚠ pos_ki 必须保持 0: 速度环本身带积分, 位置环再带积分就是双重积分,
+     *   两个环互相追 → 站直时前后摆 (0.31 抖动排查的结论)。 */
+    CHECK(near(param_get_float(PARAM_POS_KP), 0.5f, 1e-6f), "pos_kp 默认应 0.5 (位置环默认开)");
+    CHECK(near(param_get_float(PARAM_POS_KI), 0.0f, 1e-6f), "pos_ki 默认应 0 (只用 P, 不用 I)");
     /* pos_kp 的 step 是 0.1 → 显示小数位必须是 1 (App 侧也是 1)。
      * ⚠ 之前车端写的是 2, 两边不一致 —— scripts/check_param_sync.py 能查出来。 */
     CHECK(param_get_item(PARAM_POS_KP)->decimals == 1,

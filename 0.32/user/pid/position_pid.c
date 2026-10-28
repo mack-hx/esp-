@@ -13,6 +13,13 @@
 /* 模块内部唯一的 PID 实例 (位置环) */
 static bal_pid_t s_pid;
 
+/* ========== 输出整形 (限速 + 一阶低通) ==========
+ * 位置环的输出会**直接加到目标轮速上** (见 balance.c 的 balance_control_step),
+ * 所以它一跳变, 目标倾角就跟着跳, 平衡环被迫猛纠 → 车前后摆。
+ * 两级整形放在本模块里 (而不是 balance.c), 好处是能离线单测。 */
+static float s_out_slew = 0.0f;   /* 限速之后的输出 (rpm) */
+static float s_out_lpf  = 0.0f;   /* 低通之后的输出 (rpm), 真正送出去的值 */
+
 void position_pid_load_params(void)
 {
     float kp = param_get_float(PARAM_POS_KP);
@@ -33,12 +40,36 @@ void position_pid_load_params(void)
 void position_pid_reset(void)
 {
     pid_reset(&s_pid);
+    /* 整形状态一起清: 换指令/摔倒/上电时不该带着上一段动作的残留输出 */
+    s_out_slew = 0.0f;
+    s_out_lpf  = 0.0f;
 }
 
 void position_pid_init(void)
 {
     position_pid_load_params();
     position_pid_reset();
+}
+
+/**
+ * @brief 输出整形: 限速 + 一阶低通
+ * @param dt  控制周期 (秒)
+ * @param raw PID 原始输出 (rpm)
+ * @return 整形后的输出 (rpm)
+ */
+static float position_pid_shape(float dt, float raw)
+{
+    /* --- 限速: 每周期最多变 POS_PID_OUT_SLEW (rpm/s) --- */
+    float slew = POS_PID_OUT_SLEW * dt;
+    if (raw > s_out_slew + slew)      s_out_slew += slew;
+    else if (raw < s_out_slew - slew) s_out_slew -= slew;
+    else                               s_out_slew = raw;
+
+    /* --- 一阶低通: 滤掉残余的台阶/噪声 --- */
+    float alpha = dt / (POS_PID_OUT_LPF_TAU + dt);
+    s_out_lpf += (s_out_slew - s_out_lpf) * alpha;
+
+    return s_out_lpf;
 }
 
 float position_pid_update(float dt, float err)
@@ -56,5 +87,6 @@ float position_pid_update(float dt, float err)
         err = (err > 0.0f) ? t : -t;
     }
 
-    return pid_update(&s_pid, err, dt);
+    float raw = pid_update(&s_pid, err, dt);
+    return position_pid_shape(dt, raw);
 }

@@ -92,6 +92,9 @@
 #define BAL_SPD_RAMP_UP       15.0f
 #define BAL_SPD_RAMP_DOWN     30.0f
 
+/* ⚠ 位置环的输出整形 (限速 + 低通) 放在 user/pid/position_pid.h 里,
+ *   跟位置环的其它常量放在一起, 也能离线单测。 */
+
 /* ⚠ 速度环的误差死区 / 倾角上限 / 默认增益 → 见 user/pid/speed_pid.h
  * ⚠ 转向环 (差速环) 的增益与输出上限   → 见 user/pid/steer_pid.h
  */

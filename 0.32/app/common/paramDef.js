@@ -46,6 +46,14 @@
  *   - PARAM_VER 16 → 17: 车端作废旧 NVS blob, 所有参数回到出厂默认
  *   ⚠ 这条很重要: 用户在 0.31 之前调过的参数会丢, 重新烧录后要重新配平。
  *
+ * @note v18 (0.32 位置环默认打开) 的变更:
+ *   - pos_kp 的默认值 0 → **0.5** (位置环默认打开, 纯 P), pos_ki 仍然是 0
+ *     原因: 方向键改成"调目标位置"(目标位置按前馈速度往前累积, 松手锁死),
+ *     位置环一直接管 —— 车被推歪后要能自己走回原位, 位置环不能默认是关的。
+ *   - PARAM_VER 17 → 18: 车端作废旧 NVS blob, 所有参数回到出厂默认
+ *   ⚠ pos_ki 保持 0: 速度环本身带积分, 位置环再带积分就是双重积分,
+ *     两个环互相追 → 车前后摆。
+ *
  * @note 0.31 收尾 (2026-10-26, 同一版内改动, 版本号不变):
  *   - spd_kp / spd_ki / spd_kd 的 step 从 0.5/0.5/0.1 改成 **0.01**
  *     (车端 param_set_float() 按 step 吸附, step 太粗会把中间值吸掉, App 上调不动)
@@ -55,7 +63,7 @@
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 17
+export const PARAM_VER = 18
 
 export const PARAM_GROUPS = {
   0: { key: 'balance', label: '平衡环' },
@@ -112,10 +120,10 @@ export const PARAM_DEFS = [
   // 里程计 / 位置环 (0.31 位置环新增, id 17~19)
   { id: 17, key: 'wheel_dia',   label: 'Wheel Diameter', unit: 'cm', def: 6.5, min: 1, max: 30, step: 0.1, dec: 1, grp: 2,
     hint: '**轮子直径** (cm)。里程计靠它把编码器脉冲换算成位移: 距离 = 脉冲数 / (44 × gear) × π × 轮径。本机实测 6.5 cm。填错会让位置反馈整体缩放错误 (位置环纠偏力度不对)' },
-  { id: 18, key: 'pos_kp',      label: 'Position Kp',    unit: 'rpm/cm', def: 0,     min: 0, max: 50, step: 0.1,  dec: 1, grp: 1,
-    hint: '位置环比例增益 (rpm/cm): 位置偏差 1 cm 时给速度环加多少 rpm 的纠偏。位置环在速度环外面 (位置误差 → 目标轮速修正 → 速度环 → 平衡环)。**默认 0 = 位置环关闭** (站直抖动的结论: 位置环默认开会引起前后摆)。要用就往上慢慢加, 推一下车看是否走回原位' },
+  { id: 18, key: 'pos_kp',      label: 'Position Kp',    unit: 'rpm/cm', def: 0.5,   min: 0, max: 50, step: 0.1,  dec: 1, grp: 1,
+    hint: '位置环比例增益 (rpm/cm): 位置偏差 1 cm 时给速度环加多少 rpm 的纠偏。位置环在速度环外面 (位置误差 → 目标轮速修正 → 速度环 → 平衡环)。**默认 0.5** (位置环默认打开, 纯 P)。站直时车被推歪了会自己走回原位。调大容易前后摆, 调小回位慢' },
   { id: 19, key: 'pos_ki',      label: 'Position Ki',    unit: 'rpm/(cm·s)', def: 0,  min: 0, max: 10, step: 0.01, dec: 2, grp: 1,
-    hint: '位置环积分增益: 消除站住之后慢慢偏这种位置漂移。**默认 0**。太大容易积分饱和 (车会突然窜出去找位置)。步进 0.01' }
+    hint: '位置环积分增益: 消除站住之后慢慢偏这种位置漂移。**默认 0, 而且建议一直保持 0**: 速度环本身带积分, 位置环再带积分就是双重积分, 两个环互相追 → 车前后摆。步进 0.01' }
 ]
 
 /** 用 key 找 def */

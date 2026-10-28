@@ -12,6 +12,16 @@
 0.32 做了三件事：让 `bal_kd` 默认 0.4 **真正生效**、把控制回路跟踪拆成独立组件、
 修掉三个追踪脚本里的真 bug。
 
+🔶 **在 0.32 之上还有一批未发布的改动**（位置环 + 速度环串级，功能已写完、
+离线测试全过、**还没上过真车**）：
+
+- 方向键改成"调目标位置"：按住前进/后退时目标位置按前馈速度往前累积，
+  松手后目标位置锁死，位置环一直接管（`user/control/balance.c`）
+- 位置环输出加了整形：限速 12 rpm/s + 一阶低通 τ=0.2 s（`user/pid/position_pid.h`），
+  防止位置误差一变就跳变 → 目标倾角跳变 → 车前后摆
+- `pos_kp` 默认 0 → **0.5**（位置环默认打开，**纯 P**），`pos_ki` 保持 0
+- 参数表版本 17 → **18**（车端 + App 同步）
+
 **当前版本目录**：`0.32/`（版本号 `0.32.0`，见 `0.32/version.txt`）
 **上一版本**：`0.31/`（位置环接入但默认关闭）
 
@@ -45,9 +55,9 @@
 | `test/test_param_pc.c` | **123 / 123** 通过 |
 | `test/test_pid_pc.c` | **29 / 29** 通过 |
 | `test/test_speed_pid_pc.c` | **14 / 14** 通过 |
-| `test/test_position_pid_pc.c` | **9 / 9** 通过 |
+| `test/test_position_pid_pc.c` | **10 / 10** 通过（0.32 之上那批改动后重跑） |
 | `test/test_trim_pc.c` | **67 / 67** 通过 |
-| 参数表一致性 (`check_param_sync.py 0.32`) | 20 项逐项一致，版本号 17 = 17 ✓ |
+| 参数表一致性 (`check_param_sync.py 0.32`) | 20 项逐项一致，版本号 **18 = 18** ✓ |
 | 同上跑 `0.31` | **2 处不一致**（bal_kd def、pos_kp dec）—— 证明脚本能抓到真问题 |
 | App JS 语法 + `manifest.json` / `pages.json` JSON 解析 | 通过 |
 | `fft_trace.py` / `analyze_trace.py` | 用合成 CSV 验过（11.5Hz 振荡能正确识别） |
@@ -63,7 +73,12 @@
 - [ ] App 参数页确认显示 `bal_kd = 0.4`（不是 1.5）
 - [ ] 定轴静置 30 秒，确认不再一起立就满幅打摆
 - [ ] 采样率验证：新 TRACE 格式下 `capture_trace.py` 抓的行数应接近 100 行/秒
-- [ ] 位置环仍默认关闭（`pos_kp`/`pos_ki` = 0），要用再从 App 往上加
+- [ ] **位置环默认打开了**（`pos_kp = 0.5` / `pos_ki = 0`）：
+  - [ ] 站住不动 30 秒，看会不会慢慢前后挪（里程计漂移 → 位置环去追）
+  - [ ] 推它一把，确认能走回推之前的位置
+  - [ ] 按 App 方向键，确认走完后松手能站住不回跑
+- [ ] ⚠ 板子接上后才有 `/dev/cu.usbmodem*`；没接设备时 `pio run --target upload`
+  会一直等端口（`upload.wait_for_upload_port = true`）
 
 ---
 
@@ -93,7 +108,14 @@
 - **控制任务钉 core 1，trace 任务钉 core 0**，网络栈留 core 0
 - **`user/pid/` 各环接口统一**：`init` / `load_params` / `reset` / `update`；
   增益从参数表实时读；每周期调 `load_params()`（用 `pid_set_gains`，不清积分）
-- **位置环已接入串级（最外层），但默认关闭**（`pos_kp`/`pos_ki` 默认 0）
+- **位置环已接入串级（最外层），默认打开**（`pos_kp = 0.5`，**纯 P，`pos_ki` 保持 0**）
+  - 方向键 = 调目标位置：按住时目标位置按前馈速度累积，松手锁死，位置环一直接管
+  - 位置环输出必须经整形（限速 + 低通，常量在 `user/pid/position_pid.h`）才进速度环
+  - ⚠ `pos_ki` 保持 0：速度环本身带积分，位置环再带积分 = 双重积分 → 站直时前后摆
+  - ⚠ 里程计漂移：站住不动时轮子微小位移会累积成位置误差，位置环会去追 → 车可能慢慢挪。
+    死区 1 cm + 小 kp 只能压住，根治要外部参照
+- **位置环输出的整形常量放在 `user/pid/position_pid.h`**（不是 balance.c）→ 能离线单测
+  - 单测断言要"跑到稳态"再比对：整形后单拍输出只有稳态的千分之几
 - **OneNet 物模型后台配置**：4 个配平服务需要在
   [产品页面](https://open.iot.10086.cn/console/product/6YlUqr9lue/model) 配置，
   状态表见 `0.32/docs/物模型待补清单.md`
@@ -121,12 +143,15 @@ python3 scripts/fft_trace.py /tmp/trace.csv
 
 ## 8. 仓库状态
 
-- 本地保留 `0.32/`（当前）+ `0.31/`（上一版）两版，`0.30/` 已删（历史在 git 里，
-  取回：`git checkout v0.30 -- 0.30`）
-- `releases/` 只放最新两版的压缩包；版本级变更说明在 `releases/RELEASE_NOTES.md`
-- GitHub: https://github.com/mack-hx/esp- ，tag `v0.32` 已推
-- ⚠ **对照基线用 git tag，别用工作区目录**：`0.30/` 目录曾在提交 `eaece89` 被误回滚，
-  真正的 0.30 基线是 commit `b5afccb`
+- 本地保留 `0.32/`（当前）+ `0.31/`（上一版）两版，`0.30/` 已删
+  - 取回：`git checkout v0.30 -- 0.30`（tag `v0.30` = commit `82c3d47`）
+  - ⚠ 真正的 0.30 发布基线是 commit `b5afccb`（`v0.30` 目录曾在提交 `eaece89`
+    被误回滚成旧状态），取回时用 `git checkout b5afccb -- 0.30`
+  - GitHub release `v0.30` 的源码包附件也在，内容是发布出去的那一版
+- `releases/` 只放最新两版的压缩包（0.31 / 0.32）；版本级变更说明在 `releases/RELEASE_NOTES.md`
+- GitHub: https://github.com/mack-hx/esp- ，tag `v0.31` / `v0.32` 已推，
+  两个 release 都已建好（带源码包附件）
+- release notes 用 `sh scripts/release_notes.sh <版本号>` 从 `RELEASE_NOTES.md` 抽
 
 ---
 
