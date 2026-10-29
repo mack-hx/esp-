@@ -62,28 +62,28 @@ static void test_defaults(void)
      * 陀螺读到机身 8~12Hz 摆动 → D 项放大 → 自激, 车站不住。
      * kd=0.4 实测: 输出标准差 0.12%, 饱和帧 0% → 死稳。
      * 断言写死 0.4 是为了"别又把默认值调回去" —— 调参走 App, 别动默认值。 */
-    CHECK(near(param_get_item(PARAM_PID_BAL_KD)->def, 0.4f, 1e-6f),
+    CHECK(near(g_param_items[PARAM_PID_BAL_KD].def, 0.4f, 1e-6f),
           "bal_kd 的 def 应为 0.4 (实际 %.2f)",
-          (double)param_get_item(PARAM_PID_BAL_KD)->def);
-    /* 位置环默认打开 (0.32): pos_kp = 0.5 (纯 P), pos_ki = 0。
+          (double)g_param_items[PARAM_PID_BAL_KD].def);
+    /* 位置环默认打开: pos_kp = 2.0 (纯 P), pos_ki = 0。
      * 方向键改成"调目标位置", 位置环一直接管, 车被推歪后要能自己走回原位
      * → 位置环不能默认是关的。
      * ⚠ pos_ki 必须保持 0: 速度环本身带积分, 位置环再带积分就是双重积分,
      *   两个环互相追 → 站直时前后摆 (0.31 抖动排查的结论)。 */
-    CHECK(near(param_get_float(PARAM_POS_KP), 0.5f, 1e-6f), "pos_kp 默认应 0.5 (位置环默认开)");
+    CHECK(near(param_get_float(PARAM_POS_KP), 2.0f, 1e-6f), "pos_kp 默认应 2.0 (位置环默认开)");
     CHECK(near(param_get_float(PARAM_POS_KI), 0.0f, 1e-6f), "pos_ki 默认应 0 (只用 P, 不用 I)");
-    /* pos_kp 的 step 是 0.1 → 显示小数位必须是 1 (App 侧也是 1)。
-     * ⚠ 之前车端写的是 2, 两边不一致 —— scripts/check_param_sync.py 能查出来。 */
-    CHECK(param_get_item(PARAM_POS_KP)->decimals == 1,
-          "pos_kp 的 decimals 应为 1 (step=0.1), 实际 %u",
-          (unsigned)param_get_item(PARAM_POS_KP)->decimals);
+    /* pos_kp 的 step 是 0.05 → 显示小数位必须是 2 (App 侧也是 2)。
+     * ⚠ 车端和 App 侧的小数位必须一致 —— scripts/check_param_sync.py 能查出来。 */
+    CHECK(g_param_items[PARAM_POS_KP].decimals == 2,
+          "pos_kp 的 decimals 应为 2 (step=0.05), 实际 %u",
+          (unsigned)g_param_items[PARAM_POS_KP].decimals);
     /* 速度环增益: 具体数值用 g_param_items 里的 def 比对 (不在这里写死),
      * 免得调完默认值忘了改测试。写死的值只用来卡住"别又调回激进值":
      *   0.15/0.05 在仿真里会让车身倾角波动中位 10.7° (走起来就是剧烈抖)。 */
     CHECK(near(param_get_float(PARAM_PID_SPD_KP),
-               param_get_item(PARAM_PID_SPD_KP)->def, 1e-6f), "spd_kp 默认应等于 def");
+               g_param_items[PARAM_PID_SPD_KP].def, 1e-6f), "spd_kp 默认应等于 def");
     CHECK(near(param_get_float(PARAM_PID_SPD_KI),
-               param_get_item(PARAM_PID_SPD_KI)->def, 1e-6f), "spd_ki 默认应等于 def");
+               g_param_items[PARAM_PID_SPD_KI].def, 1e-6f), "spd_ki 默认应等于 def");
     CHECK(param_get_float(PARAM_PID_SPD_KP) <= 0.10f,
           "spd_kp 默认不该超过 0.10 (太大走起来会剧烈摇), 实际 %.3f",
           (double)param_get_float(PARAM_PID_SPD_KP));
@@ -102,8 +102,8 @@ static void test_defaults(void)
           "gyro_lpf 默认应 0.8 (低通延迟会削弱阻尼)");
 
     /* 每一项的 def 都必须真的被填进去 (漏一项就是白板默认值) */
-    for (int i = 0; i < param_count(); i++) {
-        const param_item_t *it = param_get_item((param_id_t)i);
+    for (int i = 0; i < PARAM_MAX; i++) {
+        const param_item_t *it = &g_param_items[(param_id_t)i];
         CHECK(it != NULL, "第 %d 项应有描述", i);
         if (!it) continue;
         CHECK(near(param_get_float((param_id_t)i), it->def, 1e-6f),
@@ -190,11 +190,11 @@ static void test_reset_key(void)
     CHECK(ret == ESP_OK, "_reset 应返回 OK");
     /* 跟 g_param_items 里的 def 比, 不写死数值 (默认值会随仿真结果调整) */
     CHECK(near(param_get_float(PARAM_PID_SPD_KP),
-               param_get_item(PARAM_PID_SPD_KP)->def, 1e-6f),
+               g_param_items[PARAM_PID_SPD_KP].def, 1e-6f),
           "reset 后 spd_kp 应回到默认 (实际 %.3f)",
           (double)param_get_float(PARAM_PID_SPD_KP));
     CHECK(near(param_get_float(PARAM_PID_SPD_KI),
-               param_get_item(PARAM_PID_SPD_KI)->def, 1e-6f),
+               g_param_items[PARAM_PID_SPD_KI].def, 1e-6f),
           "reset 后 spd_ki 应回到默认 (实际 %.3f)",
           (double)param_get_float(PARAM_PID_SPD_KI));
     CHECK(near(param_get_float(PARAM_MOTOR_OUT_MAX), 60.0f, 1e-6f),
@@ -207,7 +207,7 @@ static void test_reset_key(void)
     ret = param_from_json("{\"_reset\":1}");
     CHECK(ret == ESP_OK, "_reset:1 应返回 OK");
     CHECK(near(param_get_float(PARAM_PID_SPD_KP),
-               param_get_item(PARAM_PID_SPD_KP)->def, 1e-6f), "_reset:1 也应重置");
+               g_param_items[PARAM_PID_SPD_KP].def, 1e-6f), "_reset:1 也应重置");
 
     /* _reset:0 表示"不重置" */
     param_set_float(PARAM_PID_SPD_KP, 20.0f);
@@ -221,7 +221,7 @@ static void test_reset_key(void)
     CHECK(near(param_get_float(PARAM_PID_BAL_KP), 22.0f, 1e-6f),
           "_reset 后面的 bal_kp 应为 22");
     CHECK(near(param_get_float(PARAM_PID_SPD_KP),
-               param_get_item(PARAM_PID_SPD_KP)->def, 1e-6f),
+               g_param_items[PARAM_PID_SPD_KP].def, 1e-6f),
           "_reset 后 spd_kp 应为默认值");
 }
 
@@ -243,8 +243,8 @@ static void test_map_json(void)
     CHECK(n < 512, "map JSON 长度 %d 应小于 512", n);
 
     /* 每个参数都要在里面 */
-    for (int i = 0; i < param_count(); i++) {
-        const param_item_t *it = param_get_item((param_id_t)i);
+    for (int i = 0; i < PARAM_MAX; i++) {
+        const param_item_t *it = &g_param_items[(param_id_t)i];
         char needle[24];
         snprintf(needle, sizeof(needle), "\"%s\":", it->key);
         CHECK(strstr(buf, needle) != NULL, "map JSON 应含 %s", it->key);
@@ -258,6 +258,20 @@ static void test_map_json(void)
 }
 
 /* ================= 用例 6: 旧版 App 写参数的提示标记 ================= */
+
+/**
+ * @brief 读"旧版 App 写过参数"的标记
+ * @return 1=有标记, 0=无标记, -1=取 map JSON 失败
+ * @note  标记只通过 map JSON 的 "_w":1 字段对外可见, 这里按同样的方式读回来
+ */
+static int stale_flag(void)
+{
+    char buf[512];
+    int n = param_to_map_json(buf, sizeof(buf));
+    if (n <= 0) return -1;
+    return strstr(buf, "\"_w\":1") != NULL;
+}
+
 static void test_stale_flag(void)
 {
     banner("旧版 App 提示标记: 只提示不拦截, 标记随 _v 自动消解");
@@ -266,7 +280,7 @@ static void test_stale_flag(void)
 
     /* 没有 "_v" 的下发 (旧版 App) → 由上层 (onenet_client) 打标记 */
     param_mark_stale_write(true);
-    CHECK(param_stale_write(), "旧版 App 写过参数后标记应为真");
+    CHECK(stale_flag() == 1, "旧版 App 写过参数后标记应为真");
 
     char buf[512];
     int n = param_to_map_json(buf, sizeof(buf));
@@ -281,17 +295,17 @@ static void test_stale_flag(void)
     snprintf(json, sizeof(json), "{\"_v\":%d,\"bal_kp\":12}",
              param_get_data_version());
     param_from_json(json);
-    CHECK(!param_stale_write(), "带正确 _v 的下发应清掉标记");
+    CHECK(stale_flag() == 0, "带正确 _v 的下发应清掉标记");
 
     /* App 版本比车端旧 → 重新标记 */
     param_from_json("{\"_v\":7,\"bal_kp\":12}");
-    CHECK(param_stale_write(), "带旧版本号 _v 的下发应重新标记");
+    CHECK(stale_flag() == 1, "带旧版本号 _v 的下发应重新标记");
 
     /* 新版 App 恢复默认 (带 _v) → 也不该被当成旧版 */
     snprintf(json, sizeof(json), "{\"_reset\":true,\"_v\":%d}",
              param_get_data_version());
     param_from_json(json);
-    CHECK(!param_stale_write(), "带 _v 的恢复默认不应被标记");
+    CHECK(stale_flag() == 0, "带 _v 的恢复默认不应被标记");
 
     /* 标记状态下的 map JSON 长度仍然要够短 (平台限 512) */
     param_mark_stale_write(true);
@@ -313,15 +327,15 @@ static void test_step_snap(void)
     param_reset_default();
 
     /* step 本身要改对 */
-    CHECK(near(param_get_item(PARAM_PID_SPD_KP)->step, 0.01f, 1e-6f),
+    CHECK(near(g_param_items[PARAM_PID_SPD_KP].step, 0.01f, 1e-6f),
           "spd_kp 的 step 应为 0.01 (实际 %.3f)",
-          (double)param_get_item(PARAM_PID_SPD_KP)->step);
-    CHECK(near(param_get_item(PARAM_PID_SPD_KI)->step, 0.01f, 1e-6f),
+          (double)g_param_items[PARAM_PID_SPD_KP].step);
+    CHECK(near(g_param_items[PARAM_PID_SPD_KI].step, 0.01f, 1e-6f),
           "spd_ki 的 step 应为 0.01 (实际 %.3f)",
-          (double)param_get_item(PARAM_PID_SPD_KI)->step);
-    CHECK(near(param_get_item(PARAM_PID_SPD_KD)->step, 0.01f, 1e-6f),
+          (double)g_param_items[PARAM_PID_SPD_KI].step);
+    CHECK(near(g_param_items[PARAM_PID_SPD_KD].step, 0.01f, 1e-6f),
           "spd_kd 的 step 应为 0.01 (实际 %.3f)",
-          (double)param_get_item(PARAM_PID_SPD_KD)->step);
+          (double)g_param_items[PARAM_PID_SPD_KD].step);
 
     /* 关键值: 0.06 不能再被吸成 0 */
     param_set_float(PARAM_PID_SPD_KP, 0.06f);

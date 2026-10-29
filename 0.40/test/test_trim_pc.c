@@ -179,24 +179,21 @@ static void test_overwrite(void)
           "应保留最后一次的值 2.8, 实得 %.4f", (double)t->pts[0].pitch_deg);
 }
 
-/* ================= 用例 7: 删除 ================= */
-static void test_delete(void)
+/* ================= 用例 7: 清空 ================= */
+static void test_clear(void)
 {
-    banner("删除: 删中间项后剩余仍升序");
+    banner("清空: trim_clear() 把整张表清掉, 补偿回到 0");
     trim_clear();
     trim_set_point(40.0f, 1.0f);
     trim_set_point(60.0f, 2.0f);
     trim_set_point(80.0f, 3.0f);
 
-    trim_del_point(60.0f);
+    CHECK(trim_clear() == ESP_OK, "清空应返回 OK");
     const trim_t *t = trim_get();
-    CHECK(t->count == 2, "删 1 个应剩 2 个, 实得 %u", t->count);
-    CHECK(near(t->pts[0].servo_deg, 40.0f, 1e-4f), "剩 [40, 80]");
-    CHECK(near(t->pts[1].servo_deg, 80.0f, 1e-4f), "剩 [40, 80]");
-
-    /* 删不存在的角度不算错 */
-    trim_del_point(123.0f);
-    CHECK(trim_get()->count == 2, "删不存在的点不应改变 count");
+    CHECK(t->count == 0, "清空后应剩 0 个点, 实得 %u", t->count);
+    CHECK(near(trim_pitch(60.0f, 40.0f), 0.0f, 1e-6f), "清空后补偿应为 0");
+    CHECK(near(trim_pitch_span(), 0.0f, 1e-6f), "清空后跨度应为 0");
+    CHECK(trim_is_usable(2) == false, "清空后表不可用");
 }
 
 /* ================= 用例 8: 合法性检查 ================= */
@@ -325,7 +322,7 @@ int main(void)
     test_clamp();
     test_sorted_insert();
     test_overwrite();
-    test_delete();
+    test_clear();
     test_validation();
     test_no_variation();
     test_u_shape();
