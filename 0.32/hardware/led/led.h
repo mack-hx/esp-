@@ -1,12 +1,6 @@
 /**
  * @file led.h
  * @brief SK6812 RGB LED 控制驱动 (ESP32 RMT 直驱版)
- * @note  硬件改动记录 (2026-10-01):
- *        - SK6812 DIN 已从 74HC595 Q0 改接至 ESP32 GPIO9
- *        - 使用 ESP32-S3 RMT 外设生成精确的 SK6812 时序
- *        - 支持真实调色调光, 不再受 74HC595 锁存限制
- *        - TFT RST 已短接 VCC, 释放 GPIO9 给 SK6812
- *
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */
@@ -72,7 +66,6 @@ typedef enum {
 
 /**
  * @brief 初始化 LED 模块 (创建 RMT 通道和编码器)
- * @note  调用后 LED 默认为关 (黑)
  * @return ESP_OK 成功, 其他值失败
  */
 esp_err_t led_init(void);
@@ -85,8 +78,6 @@ esp_err_t led_deinit(void);
 
 /**
  * @brief 开机自检: 红 → 绿 → 蓝 → 灭, 每档 300ms
- * @note  用来肉眼确认 "SK6812 到底有没有接到 GPIO9" —— 灯不亮时,
- *        先看这三个颜色有没有依次出现, 再去查 App / 云端。
  */
 void led_selftest(void);
 
@@ -108,7 +99,6 @@ esp_err_t led_set_preset(led_id_t id, led_preset_t preset);
 
 /**
  * @brief 设置 LED 亮度 (0~255, 直接输出单色)
- * @note  纯亮度模式: 仅亮度参数有效, 颜色取当前缓存颜色的主导色
  * @param id LED ID
  * @param level 亮度 (0~255)
  * @return ESP_OK 成功, ESP_ERR_INVALID_ARG id 越界

@@ -1,7 +1,6 @@
 /**
  * @file motor_driver.c
  * @brief TB6612FNG 双路直流电机驱动实现
- * @note  方向控制引脚由 74HC595 提供, 此处通过调用 hc595 API 控制
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */
@@ -117,14 +116,6 @@ static int8_t s_motor_deadzone = 0;
 
 /**
  * @brief 应用方向到 74HC595
- * @note  实际硬件映射 (2026-10-03 逐位测试确认):
- *   电机 A (PWMA=GPIO15):
- *     AIN1 = HC595_Q5  (0x20 = 正转, 0x40=反转, 0x00=制动)
- *     AIN2 = HC595_Q6
- *   电机 B (PWMB=GPIO16):
- *     BIN1 = HC595_Q3  (0x08 = 正转, 0x10=反转, 0x00=制动)
- *     BIN2 = HC595_Q4
- * TB6612 真值表: (IN1=0, IN2=1)=正转  (IN1=1, IN2=0)=反转
  */
 static esp_err_t motor_apply_direction(motor_id_t motor, motor_dir_t dir)
 {
@@ -250,9 +241,6 @@ esp_err_t motor_set_speed(motor_id_t motor, int8_t speed)
  * @brief 设置电机起动死区补偿值
  * @param deadzone 最小启动占空比 (0~30, 单位 %; 0=不补偿)
  * @return ESP_OK 成功; ESP_ERR_INVALID_ARG 超出合法范围
- *
- * @note  只影响**非零**输出, 见 motor_apply_deadzone() 的说明。
- * @note  超出 MOTOR_DEADBAND_MAX 时自动夹到上限, 不报错 (滑块可能超范围)。
  */
 esp_err_t motor_set_deadband(int8_t deadzone)
 {

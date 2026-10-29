@@ -43,7 +43,6 @@
 
 /**
  * @brief 启动 MQTT 客户端 (后台任务)
- * @note  内部建一条任务处理 MQTT 事件循环, 不需要外部喂事件
  * @return ESP_OK 成功
  */
 esp_err_t mqtt_client_start(void);

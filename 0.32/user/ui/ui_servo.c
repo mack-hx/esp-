@@ -1,10 +1,6 @@
 /**
  * @file ui_servo.c
  * @brief UI 舵机调试页实现
- * @note  - K2 切换"选中舵机" (S1 <-> S2)
- *        - K3 当前选中舵机 +5°, K4 当前选中舵机 -5°
- *        - 限位由 servo.c 处理 (SERVO_LIMIT_MIN ~ SERVO_LIMIT_MAX)
- *        - 跨页保持运行, 切页时舵机不会失力或跳变
  * @author ESP32 机械狗项目
  * @date 2026-10-03
  */

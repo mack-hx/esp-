@@ -1,10 +1,3 @@
-/**
- * @file pid.c
- * @brief 通用 PID 控制器实现 (位置式)
- * @author ESP32 机械狗项目
- * @date 2026-10-04
- */
-
 #include "pid.h"
 #include <math.h>
 
@@ -28,13 +21,6 @@ static float clamp_sym(float v, float limit)
  * @param out   当前完整输出 (含积分项)
  * @param err   当前误差
  * @return true=本周期应冻结积分
- *
- * @note  抗积分饱和 (anti-windup) 的标准做法:
- *   输出顶在限幅上时, 误差继续同向积分, 累积值 i 会越攒越大;
- *   等误差反向, 系统要先把这段"退积分"走完才能响应 → 输出长时间卡在
- *   限幅上 (车表现为一直猛冲 / 回不来)。
- *   实测表现 (2026-10-26): 车先站住, 站一会儿后积分慢慢顶死,
- *   然后开始高频抖动 —— 因为积分项一直在满输出附近来回横跳。
  */
 static bool pid_windup_blocked(const bal_pid_t *pid, float out, float err)
 {
@@ -120,12 +106,6 @@ float pid_update(bal_pid_t *pid, float err, float dt)
 
 /**
  * @brief D 项用角速度反馈的 PID (平衡环专用)
- * @note  与 pid_update() 的唯一区别: D 项直接取 rate, 不对误差求导。
- *        详细理由见 pid.h 里 pid_update_rate() 的文档。
- *
- * @note  ⚠ D 项符号 (2026-10-25 修正): 取**正号**, 与 err/rate 同号。
- *        车体前倾时轮子要往倒的方向追才接得住, rate 越大追得越凶 = 阻尼。
- *        取负号 = 负阻尼 (越晃越大)。详见下面实现处的推导。
  */
 float pid_update_rate(bal_pid_t *pid, float err, float rate, float dt)
 {
@@ -144,25 +124,6 @@ float pid_update_rate(bal_pid_t *pid, float err, float rate, float dt)
     if (!pid_windup_blocked(pid, out_now, err)) {
         pid->i = i_new;
     }
-
-    /* ⚠ D 项与 P 项**同号** (2026-10-25 修正, 之前是负号 = 负阻尼, 车必然站不住)
-     *
-     * 物理关系 (轮 + 倒立摆), 与 "pitch 正负代表哪边" 的约定无关:
-     *   设 θ = 车体偏离竖直的角度 (往倒的方向为正), 轮加速度 a。
-     *   车体前倾时轮子必须**往倒的方向加速**才能把重心甩回轮轴上方,
-     *   即 a = K1·θ + K2·θ̇, 闭环稳定要求 **K2 > 0**。
-     *   代入本函数 (out = kp·err + ki·i + kd·rate, err 与 rate 都与 θ 同号):
-     *       a = k·(kp·θ + kd·θ̇)   →  K2 = k·kd > 0  ✓ 阻尼正确
-     *   若 D 项取负号 → K2 < 0 → 负阻尼: 越晃越大, 必然摔倒。
-     *
-     * 直觉: 往前倒得越快, 轮子要追得**越凶** (前冲才接得住);
-     *       "电机往回收" 是在帮着车继续倒, 不是阻尼。
-     *
-     * ⚠ out 正的方向 = "轮子往倒的方向追", 这件事由 balance.h 的
-     *   BAL_MOTOR_SIGN 决定 (2026-10-25 实测复核为 **+1**)。
-     *   本函数只负责: err 与 rate 同号, 且 D 项与 P 项同号。
-     *
-     * rate 必须与 err **同号** (本工程: 前倾时两者都是负数), 见 pid.h 的说明。 */
     float out = pid->kp * err + pid->ki * pid->i + pid->kd * d;
     return clamp_sym(out, pid->out_max);
 }

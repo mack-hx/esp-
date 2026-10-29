@@ -1,13 +1,6 @@
 /**
  * @file ui_mpu9250.c
  * @brief UI MPU9250 IMU 调试页实现
- * @note  - ACC / GYR 采用两列排布 (左右对照, 每轴占一行)
- *        - 显示欧拉角 (Roll/Pitch/Yaw) - 取自 mpu9250_get_euler_angle()
- *        - 显示平衡车重点参数: 姿态角 Pitch / 角速度 gx / 温度 / 陀螺仪零偏
- *        - K1 退出回菜单
- *        - K2 触发陀螺仪校准
- *        - K3 触发软复位
- *        - 当 MPU9250 初始化失败 (模块未接), 显示 "NOT READY" 并禁用 K2/K3
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */

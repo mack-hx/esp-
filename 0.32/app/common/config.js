@@ -17,10 +17,6 @@ const STORAGE_KEY = 'ebr_config_v3'
 
 /**
  * @brief 默认配置 (OneNet 产品 6YlUqr9lue / 设备 balancing_dog)
- * @note  accessKey 用**设备级** AccessKey (跟 ESP32 端同一把) 即可:
- *        开放接口 (query-device-property / set-device-desired-property /
- *        call-service) 都通。另一把产品级的 key 反而会返回 10403 无效鉴权。
- * @note  project_id 选填: 期望值下发和服务调用, 带不带平台都收。
  */
 const DEFAULT_CONFIG = {
   // === OneNet 设备三元组 ===
@@ -61,7 +57,6 @@ export function getConfig() {
 /**
  * @brief 本地是否已经配过 OneNet (产品ID/设备名/AccessKey 都填了)
  * @return {boolean} 配全了返回 true
- * @note  用来决定 App 启动后要不要自动做一次连通性检查
  */
 export function hasConfig() {
   const c = getConfig()

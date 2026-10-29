@@ -1,10 +1,6 @@
 /**
  * @file tft_display.c
  * @brief 128x160 RGB TFT 显示屏驱动实现 (ST7735/ST7789)
- * @note  硬件改动 (2026-10-01):
- *        - TFT RST 引脚已短接 VCC, 不再由 ESP32 控制
- *        - 上电复位依赖模块内部 POR (Power-On-Reset) 电路
- *        - 移除 tft_hard_reset() 调用, 移除 GPIO9 配置
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */
@@ -155,8 +151,6 @@ static esp_err_t tft_backlight_pwm_init(void)
 
 /**
  * @brief ST7735S 完整初始化序列
- * @note  来源: 参考工程 LCD.c (江协科技/正点原子模板, 经 TI MSPM0 移植)
- *        RST 引脚已短接 VCC, 依赖模块内部 POR, 此处不再做软件复位
  */
 static esp_err_t tft_st7735s_init_seq(void)
 {
@@ -362,7 +356,6 @@ esp_err_t tft_draw_pixel(uint8_t x, uint8_t y, uint16_t color)
 
 /**
  * @brief 显示字符串 (占位实现, 请使用 ui_draw_string)
- * @note  实际项目使用 lcd_ui 的 ui_draw_string (已集成 6x8 字模)
  */
 esp_err_t tft_draw_string(uint8_t x, uint8_t y, const char *str,
                           uint16_t color, uint16_t bg_color)

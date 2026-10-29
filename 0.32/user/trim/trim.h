@@ -81,21 +81,18 @@ typedef struct {
 /**
  * @brief 从 NVS 载入配平表
  * @return ESP_OK 成功 (无数据时用空表, 补偿量恒为 0)
- * @note  balance_init() 内部调用, 一般不直接用
  */
 esp_err_t trim_load(void);
 
 /**
  * @brief 保存配平表到 NVS
  * @return ESP_OK 成功
- * @note  网页点「保存到 NVS」时调用
  */
 esp_err_t trim_save(void);
 
 /**
  * @brief 取得配平表指针 (只读)
  * @return 指向全局表的指针, 不会为 NULL
- * @note  外部不要直接改; 要改走 trim_set_point()
  */
 const trim_t *trim_get(void);
 
@@ -104,11 +101,6 @@ const trim_t *trim_get(void);
  * @param servo_deg 舵机逻辑角 (°)
  * @param ref_deg   参考角 (°), 通常是 servo_c —— 补偿在这个角度为 0
  * @return 补偿量 (°), = 表插值(servo_deg) − 表插值(ref_deg)
- *
- * @note  表点数 < 2 时返回 0 (不做补偿), 行为和没标定时完全一致。
- * @note  舵机角超出标定范围时**夹到端点**, 不外推:
- *         外推的话机构可能已到死点, 曲线形状完全变了, 推出来的值是编的。
- *         夹到端点则补偿幅值始终有界, 越界不会突变。
  */
 float trim_pitch(float servo_deg, float ref_deg);
 
@@ -117,7 +109,6 @@ float trim_pitch(float servo_deg, float ref_deg);
  * @param servo_deg 舵机逻辑角 (°)
  * @param pitch_deg 该姿态的 Pitch (°)
  * @return ESP_OK 成功; ESP_ERR_INVALID_ARG 角度超范围; ESP_ERR_NO_MEM 点数已满
- * @note  按舵机角升序插入 (不是 append)。已有同角度则覆盖。
  */
 esp_err_t trim_set_point(float servo_deg, float pitch_deg);
 
@@ -137,8 +128,6 @@ esp_err_t trim_clear(void);
 /**
  * @brief 擦除 NVS 中配平表数据 (仅擦 namespace, 不改内存)
  * @return ESP_OK 成功
- * @note  用于换机械结构后丢弃旧标定数据。
- *        ⚠ 2026-10-25 起**不再在每次上电时自动调用** —— 那样配平表永远存不住。
  *        现在只有显式调用才会擦 (例如换机械结构后手动清一次)。 */
 esp_err_t trim_erase_nvs(void);
 
@@ -146,20 +135,12 @@ esp_err_t trim_erase_nvs(void);
  * @brief 检查配平表是否可用 (点数 >= min_points 且俯仰角有合理变化)
  * @param min_points 最少点数
  * @return true=可用
- *
- * @note  "俯仰角有合理变化" 是防呆: 如果所有点记下来的 Pitch 几乎一样,
- *        说明要么车根本没扶到不同姿态, 要么 MPU 没工作。
- *        这种表查出来的补偿恒等于常数, 没有任何作用。
- * @note  变化太小**不会**判定不可用 (只是警告), 因为实际操作中
- *        换角度时 Pitch 变化确实可能不大 (比如 0.3°)。
- *        只在"完全没变化"(< 0.05°) 时才认为数据有问题。
  */
 bool trim_is_usable(uint8_t min_points);
 
 /**
  * @brief 取表内俯仰角的跨度 (最大值 − 最小值, °)
  * @return 跨度; 表空返回 0
- * @note  网页用来判断"这张表有没有实际内容"
  */
 float trim_pitch_span(void);
 

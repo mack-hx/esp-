@@ -1,8 +1,6 @@
 /**
  * @file i2c_scanner.c
  * @brief I2C 总线地址扫描工具 (诊断用)
- * @note  用于诊断 PCF8574 等模块的地址. 调用 i2c_scanner_pcf8574() 后
- *        串口会打印扫描结果, 然后设备进入死循环, 需要手动复位.
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */

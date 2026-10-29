@@ -1,9 +1,6 @@
 /**
  * @file hc595.c
  * @brief 74HC595D 串行移位寄存器驱动实现
- * @note  硬件改动 (2026-10-01):
- *        - 移除 hc595_set_led() 接口 (Q0 不再用于 SK6812)
- *        - Q0 仍可作为通用输出使用 hc595_set_pin(HC595_Q0, state) 控制
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */
@@ -55,10 +52,6 @@ esp_err_t hc595_init(void)
 
 /**
  * @brief 写入 8 位数据到 74HC595
- * @note  74HC595 时序: 每次 SRCLK↑, SER 数据进入 QA(第一级),
- *        之前的 QA→QB→...→QH→QH'。RCLK↑ 锁存。
- *        因此必须**先发 bit0 (LSB)**, 8 次后 QA=bit0, QB=bit1, ..., QH=bit7。
- *        之前的代码按 i=7→0 发送 (MSB first), 导致 QF=QB+4, 与代码命名错位!
  */
 esp_err_t hc595_write_byte(uint8_t data)
 {

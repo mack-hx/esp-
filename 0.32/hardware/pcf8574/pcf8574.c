@@ -80,19 +80,6 @@ static esp_err_t pcf8574_write_byte(uint8_t data)
 
 /**
  * @brief 读取 1 字节 (含预写 0xFF 刷新 + 全低重试 + 兜底)
- * @note  PCF8574 是准双向 IO, 内部 100µA 上拉很弱.
- *       当某个引脚被按键拉低时, 公共 VCC 跌落会导致其他引脚被误读为低.
- *       (即使有外部 4.7kΩ 上拉, 多键同时按下仍可能跌落)
- *
- *       解决办法:
- *         1. 读前先写 0xFF 强制所有引脚为高电平 (刷新内部锁存器)
- *         2. 等待 2ms 让外部 4.7kΩ 上拉稳定 (替代原 10ms 内部上拉等待)
- *         3. 读取真实电平
- *         4. 如果读到 0x00 (全低, VCC 跌落), 重试一次 (再次写 0xFF + 等 2ms + 读)
- *         5. 仍读到 0x00 → 视为全松开 (返回 0xFF, 保守策略)
- *
- *       耗时: 正常 ~3-4ms (2ms 等待 + 2 次 I2C 传输)
- *             重试 ~6-8ms
  */
 static esp_err_t pcf8574_read_byte(uint8_t *data)
 {
@@ -330,9 +317,6 @@ static void IRAM_ATTR pcf8574_isr_handler(void *arg)
 
 /**
  * @brief 启用中断 (GPIO 下降沿触发)
- * @note  PCF8574 INT 为开漏输出, 低电平有效. 任何按键按下/释放都会触发 INT.
- *        本函数配置 ESP32 下降沿中断, 但 ISR 内只做占位 (实际扫描仍走主循环).
- *        启用后, 主循环可读取 INT 状态作为"有按键变化"提示以减少扫描频率.
  */
 esp_err_t pcf8574_enable_interrupt(void)
 {

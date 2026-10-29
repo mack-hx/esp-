@@ -1,8 +1,6 @@
 /**
  * @file mpu9250.c
  * @brief MPU9250 / MPU6500 惯性测量单元驱动实现
- * @note  0.11 第八阶段: 修正 MPU 轴向 + 烘焙 PITCH_ZERO_REF
- *        0.13:         代码层面无改动 (mpu9250_get_pose 已使用 X 轴)
  * @author ESP32 机械狗项目
  * @date 2026-10-07
  */
@@ -23,7 +21,7 @@ static const char *TAG = "MPU9250";
 /* 陀螺仪零点偏移 */
 static mpu9250_axis_t gyro_offset = {0, 0, 0};
 
-/* ========== AK8963 磁力计状态 (0.31 新增) ==========
+/* ========== AK8963 磁力计状态 ==========
  * ⚠ 这块板是"盗版"芯片, 磁力计能不能读出来要实测。
  *   所以这里全程容错: 探测失败只打一条告警, 不影响 IMU 其余功能。 */
 static bool        s_mag_available = false;    /* AK8963 探测成功 */
@@ -86,7 +84,7 @@ static bool        s_mag_data_ok   = false;    /* 最近一次是否读到了新
 /* 每次调整零偏的步长比例 (5%) */
 #define MPU_BIAS_ADJ_ALPHA     0.05f
 
-/* ========== AK8963 磁力计 (0.31 新增, 只观察不参与解算) ========== */
+/* ========== AK8963 磁力计 (只观察不参与解算) ========== */
 /* 16bit 连续模式下原始值 → μT 的系数 */
 #define AK8963_RAW_TO_UT       0.15f
 /* 磁力计日志节流周期 (毫秒): 每秒最多一条 */
@@ -125,7 +123,6 @@ static bool s_ready = false;
 
 /**
  * @brief 把当前陀螺零偏写进 NVS
- * @note  存成 3 个 int16 (单位 0.001 °/s), 避免 float 的对齐问题
  */
 static void mpu9250_save_gyro_offset(void)
 {
@@ -264,7 +261,6 @@ static bool s_filt_primed = false;
 
 /**
  * @brief 获取 I2C 总线锁
- * @note  所有走 I2C 的入口 (init / read_data / calibrate / reset) 都要先调它
  */
 static void mpu9250_lock(void)
 {
@@ -291,7 +287,6 @@ static void mpu9250_unlock(void)
  * @param reg      寄存器地址
  * @param data     要写入的数据
  * @return ESP_OK 成功
- * @note  调用方必须已持有 I2C 锁 (见 mpu9250_lock)
  */
 static esp_err_t mpu9250_write_reg_at(uint8_t dev_addr, uint8_t reg, uint8_t data)
 {
@@ -307,7 +302,6 @@ static esp_err_t mpu9250_write_reg_at(uint8_t dev_addr, uint8_t reg, uint8_t dat
  * @param data     输出缓冲区
  * @param len      读取长度
  * @return ESP_OK 成功
- * @note  调用方必须已持有 I2C 锁 (见 mpu9250_lock)
  */
 static esp_err_t mpu9250_read_reg_at(uint8_t dev_addr, uint8_t reg,
                                       uint8_t *data, size_t len)
@@ -318,7 +312,6 @@ static esp_err_t mpu9250_read_reg_at(uint8_t dev_addr, uint8_t reg,
 
 /**
  * @brief 写入寄存器 (MPU9250 本体)
- * @note  薄封装, 地址固定 MPU9250_I2C_ADDR; 磁力计用 mpu9250_write_reg_at()
  */
 static esp_err_t mpu9250_write_reg(uint8_t reg, uint8_t data)
 {
@@ -327,7 +320,6 @@ static esp_err_t mpu9250_write_reg(uint8_t reg, uint8_t data)
 
 /**
  * @brief 读取寄存器 (MPU9250 本体)
- * @note  薄封装, 地址固定 MPU9250_I2C_ADDR; 磁力计用 mpu9250_read_reg_at()
  */
 static esp_err_t mpu9250_read_reg(uint8_t reg, uint8_t *data, size_t len)
 {
@@ -337,21 +329,6 @@ static esp_err_t mpu9250_read_reg(uint8_t reg, uint8_t *data, size_t len)
 /**
  * @brief 探测 AK8963 磁力计 (MPU9250 内置)
  * @return ESP_OK 找到并配置好; ESP_ERR_INVALID_STATE 没找到 (不报错退出)
- *
- * @note  流程 (bypass 模式):
- *   1) INT_PIN_CFG |= 0x42  → bit6 = 允许 bypass, bit1 = INT 引脚锁存
- *      (bypass 打开后 AK8963 才会以**独立器件**的形式出现在 I2C 上)
- *   2) USER_CTRL = 0x00     → 退出 MPU 的 I2C master 模式
- *   3) 等 10ms 让 bypass 生效
- *   4) 读 0x0C 的 WIA, 期望 0x48
- *   5) 找到的话: CNTL1=0x00 (power down) → CNTL1=0x0F (ROM 模式) 读 ASA 厂标
- *      → CNTL1=0x12 (16bit 连续模式) → 再读一次 WIA 确认
- *
- * ⚠ 为什么要"power down 才能读 ASA": AK8963 的厂标系数寄存器 (ASAX/Y/Z)
- *   只在 ROM 访问模式下有效, 连续模式下读出来是垃圾值。
- *
- * ⚠ 这块板是"盗版"芯片, 可能根本没有可用的 AK8963 —— 所以失败只打告警,
- *   不影响 IMU 其余功能 (加速度/陀螺照常用)。
  */
 static esp_err_t mpu9250_mag_probe(void)
 {
@@ -527,10 +504,6 @@ esp_err_t mpu9250_read_mag(mpu9250_axis_t *out)
 
 /**
  * @brief 读磁力计 + 打观察日志 (给**低频**任务用, 不要在控制任务里调)
- * @note  2026-10-27: 磁力计从 mpu9250_read_data() 里挪到这里。
- *        原因: read_data 在控制任务(10ms)里也会跑, 磁力计的 I2C 事务
- *        插在"读传感器"和"写电机"之间, 给平衡内环叠加了 1~2ms 抖动延迟。
- *        磁力计不参与姿态解算, 50Hz 读一次完全够用。
  * @return ESP_OK 成功; ESP_ERR_INVALID_STATE 这块板没有可用的 AK8963
  */
 esp_err_t mpu9250_update_mag(void)
@@ -574,11 +547,6 @@ esp_err_t mpu9250_update_mag(void)
 /**
  * @brief 开/关"零偏慢漂跟随"
  * @param on true=允许零偏在设备静止时缓慢向当前读数靠拢
- * @note  为什么要这个: 陀螺零偏随温度漂 (实测冷机 0.90 °/s → 热机 0.65 °/s),
- *        而互补滤波把残余零偏放大 1/(1-alpha) ≈ 333 倍 → 姿态角差 0.83°,
- *        车会带着倾角站、慢慢往一边跑。
- * @note  为什么要"静止时"才跟: 车在动的时候读数里混着真实角速度,
- *        拿它当零偏会把真实运动也吸进零偏里, D 项阻尼会失准。
  */
 void mpu9250_set_bias_tracking(bool on)
 {
@@ -779,8 +747,6 @@ esp_err_t mpu9250_init(void)
 
 /**
  * @brief 查询 MPU9250 是否就绪
- * @note  供上层模块 (比如平衡控制) 判断能不能用,
- *        避免拿到 ESP_ERR_INVALID_STATE 之类的错误码还要猜是不是没初始化
  * @return true=初始化成功且可用
  */
 bool mpu9250_is_ready(void)
@@ -820,8 +786,6 @@ esp_err_t mpu9250_set_gyro_fs(mpu9250_gyro_fs_t fs)
  * @brief 读取**未经零偏补偿**的原始陀螺仪读数 (°/s)
  * @param gyro [出参] 三轴原始角速度
  * @return ESP_OK 成功
- * @note  标定零偏必须用原始值: mpu9250_read_gyro() 已经把旧零偏扣掉了,
- *        再拿它去算"新零偏"会算成残差 (二次相减), 越校越歪。
  */
 static esp_err_t mpu9250_read_raw_gyro(mpu9250_axis_t *gyro)
 {
@@ -846,7 +810,6 @@ static esp_err_t mpu9250_read_raw_gyro(mpu9250_axis_t *gyro)
  * @brief 读取原始数据
  * @param data 数据结构指针
  * @return ESP_OK 成功
- * @note  含 I2C 互斥保护, 可与控制任务并发调用
  */
 esp_err_t mpu9250_read_data(mpu9250_data_t *data)
 {
@@ -1017,7 +980,6 @@ esp_err_t mpu9250_read_temperature(float *temp)
  * @brief 互补滤波解算欧拉角 (内部函数, 不碰 I2C)
  * @param data 同一时刻读到的 accel + gyro (调用方必须保证是同一次采样)
  * @param out  [出参] 欧拉角
- * @note  dt 由本函数自己测 (esp_timer), 不再假设固定 10ms
  */
 static void mpu9250_fuse_euler(const mpu9250_data_t *data, euler_angle_t *out)
 {
@@ -1102,9 +1064,6 @@ static void mpu9250_fuse_euler(const mpu9250_data_t *data, euler_angle_t *out)
  * @param out        [出参] 姿态角
  * @param gyro_out   [出参] 俯仰/横滚/偏航三轴角速度 (°/s)
  * @return ESP_OK 成功
- * @note  ⚠ 控制任务必须用这个接口, 不要分别调 get_euler_angle() + read_gyro():
- *        那会读两次 I2C, 两次数据不同时刻, 姿态角和角速度错位,
- *        平衡环的 D 项(角速度阻尼)正是靠这两者的对应关系算的, 错位会让阻尼失准。
  */
 esp_err_t mpu9250_get_pose(euler_angle_t *out, mpu9250_axis_t *gyro_out)
 {
@@ -1122,7 +1081,6 @@ esp_err_t mpu9250_get_pose(euler_angle_t *out, mpu9250_axis_t *gyro_out)
  * @brief 获取欧拉角 (互补滤波)
  * @param angle 欧拉角指针
  * @return ESP_OK 成功
- * @note  只是 mpu9250_get_pose() 的兼容包装, 多传一个 NULL 而已
  */
 esp_err_t mpu9250_get_euler_angle(euler_angle_t *angle)
 {
@@ -1139,7 +1097,6 @@ static float s_cal_samples[MPU_GYRO_CAL_MAX][3];
  * @brief 对一个小数组做升序排序 (插入排序)
  * @param a   待排序数组
  * @param n   元素个数 (很小, n ≤ 256)
- * @note  只用来算中位数, n 很小, 插入排序足够快
  */
 static void mpu9250_sort_small(float *a, int n)
 {
@@ -1158,9 +1115,6 @@ static void mpu9250_sort_small(float *a, int n)
  * @brief 校准陀螺仪零点的实际实现 (见 mpu9250_calibrate_gyro 的说明)
  * @param samples 采样次数 (每 10ms 一个样本); 超过 256 按 256 处理
  * @return ESP_OK 成功; ESP_ERR_INVALID_STATE 采样失败或整段都没找到稳的一段
- * @note  单独拆成一个内部函数: 外层 mpu9250_calibrate_gyro() 负责
- *        "标定期间关掉零偏慢漂跟随" 的置位/复位, 拆开才好保证
- *        **所有**返回路径都复位了标志。
  */
 static esp_err_t mpu9250_calibrate_gyro_impl(uint16_t samples)
 {
@@ -1339,30 +1293,6 @@ static esp_err_t mpu9250_calibrate_gyro_impl(uint16_t samples)
  * @brief 校准陀螺仪零点 (对外接口)
  * @param samples 采样次数 (每 10ms 一个样本, 上限 256)
  * @return ESP_OK 成功; ESP_ERR_INVALID_STATE 采样失败或整段都没找到稳的一段
- *
- * @note  ⚠⚠ 为什么改成"最稳窗口" (这是手持标定能成功的关键):
- *
- *   老逻辑是"整段采样的标准差 σ 超阈值就失败"。但**手持标定**时人手本来
- *   就在动, 整段 σ 必然超阈值 (实测 9.23 °/s) → 标定永远失败 →
- *   零偏永远是 0 → 姿态角恒差约 3° → 车起立就剧烈抖。
- *
- *   新逻辑: 把整段采样切成 0.25 秒的滑动窗口, 每个窗口算三轴的 σ,
- *   取**三轴 σ 的最大值最小**的那个窗口 —— 也就是整段里最稳的一小段。
- *   只要用户能拿稳 0.25 秒, 就能标成功; 手持晃动只是让"最佳窗口"更难找,
- *   不再直接判失败。
- *
- *   失败时**不写 NVS**: 调用方 (mpu9250_init) 会退回 NVS 里存好的旧零偏,
- *   不会把零偏标坏。
- *
- * @note  为什么零偏取**中位数**而不是均值: 窗口里偶尔会有一个离群样本
- *   (手抖一下 / 复位瞬间的震动), 均值会被它拽走, 中位数不会。
- *
- * @note  标定必须用**未扣零偏的原始读数** (mpu9250_read_raw_gyro):
- *   拿已补偿的读数去算新零偏会算成残差 (二次相减), 越校越歪。
- *
- * @note  本函数额外负责"标定期间关掉零偏慢漂跟随": 标定最后要写
- *   gyro_offset, 慢漂跟随也会改它 —— 两者同时动这个变量会把刚标好的
- *   零偏又带偏。标志的读写都在 I2C 锁里, 不会竞态。
  */
 esp_err_t mpu9250_calibrate_gyro(uint16_t samples)
 {
@@ -1392,7 +1322,6 @@ void mpu9250_get_gyro_offset(mpu9250_axis_t *offset)
 
 /**
  * @brief 软件复位 MPU9250
- * @note  UI 页 K3 会调, 与控制任务可能并发, 所以要持锁
  */
 esp_err_t mpu9250_reset(void)
 {

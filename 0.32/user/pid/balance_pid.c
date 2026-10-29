@@ -41,10 +41,6 @@ void balance_pid_init(void)
 
 float balance_pid_update(float dt, float pitch, float target_pitch, float gyro)
 {
-    /* 误差 = 实际倾角 - 目标倾角
-     * 本工程 pitch 的符号: **前倾 (车头往下) 为负** (见 balance.h 的方向常量)。
-     * 所以车往前倒时误差为负 → 平衡输出为负 → 乘 BAL_MOTOR_SIGN(+1) 后
-     * 电机输出仍为负 → 轮子往车头方向跑, 把重心拉回来。 */
     float err = pitch - target_pitch;
 
     /* D 项用**角速度反馈**而不是误差微分 (见 pid_update_rate 的注释),

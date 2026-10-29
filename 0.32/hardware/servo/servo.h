@@ -1,12 +1,6 @@
 /**
  * @file servo.h
  * @brief 舵机控制驱动 (标准 PWM 舵机, 50Hz, 1-2ms 脉宽)
- * @note  架构:
- *        - 内部维护两路独立目标角度 s_angle[id] (用户操作的"逻辑角度")
- *        - 物理安装不对称, 靠 servo_logic_to_phys() 补偿, 调同一逻辑角度时机械上朝同一方向转
- *        - UI 显示的"servo_get_angle()"返回的是逻辑角度
- *        - main.c 启动后台任务 servo_keep_alive_task, 周期把两路角度写到硬件
- *        - 切页 / 状态变化时舵机不会失力或跳变, 一直保持当前角度
  * @author ESP32 机械狗项目
  * @date 2026-10-04
  */
@@ -76,7 +70,6 @@ typedef enum {
 
 /**
  * @brief 初始化所有舵机 (LEDC 通道 + 两路归位到 SERVO_DEFAULT_ANGLE)
- * @note  本函数不会启动后台任务, 需要在 main 中调用 servo_keep_alive_start()
  * @return ESP_OK 成功, 其他值失败
  */
 esp_err_t servo_init(void);
@@ -105,14 +98,12 @@ uint8_t servo_get_angle(servo_id_t id);
 
 /**
  * @brief 把两路舵机当前角度同步到硬件
- * @note  后台任务周期性调用, 防止切页 / 异常时舵机失力或跳变
  * @return ESP_OK 成功
  */
 esp_err_t servo_apply_both(void);
 
 /**
  * @brief 启动后台"保持运行"任务 (周期性 servo_apply_both)
- * @note  必须在 servo_init 之后调用, 任务运行后舵机会一直保持当前角度输出
  * @return ESP_OK 成功
  */
 esp_err_t servo_keep_alive_start(void);

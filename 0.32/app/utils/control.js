@@ -8,22 +8,6 @@
  *       → 平台把期望值推给设备的 $sys/.../thing/property/set 消息
  *   - 单次动作 (急停 / 起立 / 配平 / 参数读写): 走 invokeService
  *       → 平台把服务调用推给设备的 $sys/.../thing/service/{name}/invoke 消息
- *
- * @note  移动指令走物模型里已有的 `speed` 属性 (标幺 -1~1):
- *        平台会把期望值 push 给设备, 设备直接当速度环目标用。
- *        原来用的 `vx` / `w` 在物模型里并不存在, 平台会回
- *        10412 "identifier not exist", 指令根本下发不下去。
- * @note  下发频率: 值变化时立即发, 另外每 1s 补发一次保活
- *        (平台只在期望值变化时 push, 补发是为了让设备在重连后能恢复指令)。
- *
- * @note  移动指令的编码 (物模型属性 `speed`, 范围 -10~10):
- *        0                        → 停止
- *        ±0.2 / ±0.4 / ±0.6 / ±0.8 → 前进(+) / 后退(-), 档位 20/40/60/80 (%)
- *        ±1.2 / ±1.4 / ±1.6 / ±1.8 → 左转(+) / 右转(-), 档位 20/40/60/80 (%)
- *        档位跟车上的 UI 编码器调试页同源 (motor_spd_levels[]),
- *        所以 App 上的档位和屏上调出来的档位是一回事。
- *        ⚠ 2026-10-26: 档位现在代表"目标轮速的百分比", 车端把它换算成
- *           目标轮速后走速度环 (不再直接给 PWM)。
  */
 
 import { oneApi } from '../common/oneapi.js'
@@ -69,13 +53,6 @@ class Controller {
    * @brief 持续发移动指令 (按下方向键时调用)
    * @param dir   'forward' | 'back' | 'left' | 'right'
    * @param level 档位 (PWM 百分比, 取 SPEED_LEVELS 里的值: 20/40/60/80)
-   * @note  设备收到后走**速度环**: 档位换算成目标轮速 → 目标倾角 → 平衡环。
-   *        平衡环全程在线, 不会因为按方向键就被暂停
-   *        (2026-10-26 改: 以前是"直驱", 直接给 PWM, 平衡环整个暂停 ——
-   *         车站着的时候一推, 平衡环等于被关掉了, 松手时车已经歪了,
-   *         平衡环接手必然剧烈纠偏 → "一让走就剧烈抖")。
-   * @note  车没起立 (平衡没开) 时, 设备才退回开环直驱, 方便调电机/编码器。
-   * @note  平台的 speed 属性范围是 -10~10, 指令值由 _dirToCmd() 编码。
    */
   startMove(dir, level = 60) {
     if (!this._check()) return
@@ -125,8 +102,6 @@ class Controller {
   /**
    * @brief 统一的失败处理 (页面也可以直接调这个来显示错误)
    * @param {Error} e 平台返回的错误
-   * @note  只有**鉴权类**错误 (AccessKey 配错) 才把连接状态打成错误;
-   *        单条指令失败 (物模型缺属性之类的) 只提示, 不影响其它指令。
    */
   reportError(e) {
     if (e && e.auth) {
@@ -181,8 +156,6 @@ class Controller {
   /**
    * @brief 读全部 PID 参数
    * @return {Promise<Object|null>} { bal_kp: 40, ... }
-   * @note  出错时往上抛, 让页面能把平台的具体原因显示出来
-   *        (比如物模型里 values 的长度限制不够, 平台会回 "string length error")
    */
   async getParams() {
     if (!this._check()) return null
@@ -203,7 +176,6 @@ class Controller {
    * @brief 写全部 PID 参数 (写完自动落盘)
    * @param {Object} values 形如 { bal_kp: 40, ... }
    * @return {Promise<boolean>} 是否成功
-   * @note  出错时往上抛, 让页面能把平台的具体原因显示出来
    */
   async setParams(values) {
     if (!this._check()) return false
@@ -225,11 +197,6 @@ class Controller {
   /**
    * @brief 让**车端**把参数恢复成它自己的出厂默认值 (并落盘)
    * @return {Promise<boolean>} 是否成功
-   * @note  2026-10-26: 以前"恢复默认"是把 App 内置的默认值表整份下发,
-   *        而那份表早就跟车端脱节 (还是 v7 的老值), 结果把调好的参数覆盖成
-   *        "速度环开着 + 输出上限 30%" → 车只朝一个方向转, 根本稳不住。
-   *        现在改成下发 {"_reset":true}, 由车端 param_reset_default() 恢复,
-   *        默认值永远以车端 param.c 的表为准。
    */
   async resetParams() {
     if (!this._check()) return false
@@ -254,7 +221,6 @@ class Controller {
   /**
    * @brief 发送灯控制
    * @param {Object} payload { led_on, led_color, led_brightness }
-   * @note  这几个属性物模型里还没有, 平台会回 10412, 提示用户去补物模型
    */
   async sendLed(payload) {
     if (!this._check()) return
@@ -302,9 +268,6 @@ class Controller {
   /**
    * @brief 记下一个配平标定点 (当前舵机角 → 当前原始 pitch)
    * @return {Promise<string|null>} 车端回的文本, 例如 "ok, phi=60, pitch=-1.23, n=3"
-   * @note  记之前要**用手把车身扶到接近平衡**, 电机全程刹车, 车不能起立。
-   * @note  车端存的是**原始 pitch** (没扣任何补偿的那个), 不是页面上显示的
-   *        修正后 pitch —— 修正链里还会再扣一次, 存错了会重复扣。
    */
   async trimRecord() {
     if (!this._check()) return null
@@ -353,9 +316,6 @@ class Controller {
   /**
    * @brief 读回配平表
    * @return {Promise<Object|null>} { n, ref, pz, pts: [[舵机角, pitch], ...] }
-   * @note  车端回的 values 是一段 JSON 字符串, 这里解析成对象方便页面用。
-   *        ref = 参考角 (servo_c), pz = 配平零点 (°),
-   *        pts = 每个点的 [舵机角, 原始 pitch]。
    */
   async trimGet() {
     if (!this._check()) return null

@@ -1,7 +1,6 @@
 /**
  * @file wifi_provision_page.c
  * @brief AP 配网页的 HTML (内嵌字符串)
- * @note  极简版: 一个表单填 SSID/密码, POST /api/wifi, 保存到 NVS 后 ESP32 重启
  * @author ESP32 机械狗项目
  * @date 2026-10-12
  */

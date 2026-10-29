@@ -159,10 +159,6 @@ export default {
     },
     /**
      * @brief 恢复默认: 由**车端**执行, App 不再下发本地默认值表
-     * @note  2026-10-26: 以前这里把 App 内置的默认值整份下发, 而那份表
-     *        停留在 v7 (spd_kp=20/spd_ki=30/motor_max=30/deadzone=8),
-     *        把车端调好的参数覆盖掉 → 速度环被意外打开, 车只朝一个方向转。
-     *        现在下发 {"_reset":true}, 车端用自己的 param.c 默认表恢复。
      */
     onReset() {
       if (oneApi.getState().state !== 'ready') {

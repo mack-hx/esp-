@@ -1,6 +1,6 @@
 /**
  * @file wifi_sta.c
- * @brief WiFi STA 模式 + AP 配网实现 (替代 0.13 的 wifi_ap.c)
+ * @brief WiFi STA 模式 + AP 配网实现
  *
  * 设计:
  *   1. wifi_sta_start() 检查 NVS:
@@ -8,8 +8,6 @@
  *      - 没有 → AP 模式开 BalanceRobot_Setup 热点 + 起配网页
  *   2. STA 模式连上后, 配网页服务器**关闭** (释放 80 端口), onenet_client 可启动
  *   3. AP 配网模式下, 收到 /api/wifi POST → 存 NVS → 软重启
- *
- * @note  WiFi 事件处理用 esp_event 异步模式, 不开阻塞任务
  * @author ESP32 机械狗项目
  * @date 2026-10-12
  */
@@ -350,7 +348,6 @@ static esp_err_t start_ap_mode(void)
 
 /**
  * @brief 启动 STA 模式连家里 WiFi
- * @note  使用纯 STA 模式确保 DHCP 能正常工作
  */
 static esp_err_t start_sta_mode(const char *ssid, const char *pass)
 {
@@ -551,7 +548,6 @@ esp_err_t wifi_sta_get_ssid(char *buf, uint32_t len)
 
 /**
  * @brief 启动 AP 模式 + 配网页 (用于运行时切换配网)
- * @note  从 STA 模式切换时会关闭 STA，切换到纯 AP 模式
  */
 /**
  * @brief 获取当前 AP 配网热点的真实 SSID (含 MAC 后缀)

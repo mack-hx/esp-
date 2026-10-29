@@ -19,9 +19,6 @@
  *   3. 服务调用 (云→设备): topic .../thing/service/{identifier}/invoke
  *      设备要回 .../thing/service/{identifier}/invoke_reply (注意是 invoke_reply, 下划线)
  *      {"id":"<请求里的 id>","code":200,"msg":"success","data":{...}}
- *
- * @note  2026-10-21 修复: 服务应答 topic 之前写成 ".../invoke/reply" (斜杠),
- *        平台不认这个 topic, 收到就断开 MQTT 连接, 导致"调一次服务就掉线"。
  */
 
 #include "onenet_client.h"
@@ -76,7 +73,6 @@ static const char *TAG = "ONENET";
 /* ========== 上报周期 ========== */
 /**
  * @brief 俯仰角高速通道周期 (ms)
- * @note  50ms = 20Hz, 曲线点够密; 调太快平台会限流。
  */
 #define FAST_PERIOD_MS  50
 
@@ -95,10 +91,6 @@ static volatile float s_target_vx = 0.0f;   /* 前后速度目标 (标幺 -1~1) 
 /**
  * @brief 生成一条唯一的消息 id (13 位数字)
  * @return 消息 id
- * @note  之前用 xTaskGetTickCount 的毫秒数当 id, 同一毫秒里发出的两帧
- *        (比如 float 属性帧和 int 属性帧) id 相同, 平台会回两条 id 一样的应答,
- *        设备这边按 id 对应时就对错了 (现象: 明明被拒收却显示"已就位")。
- *        所以改用自增序号, 保证每帧 id 唯一。
  */
 static int64_t next_msg_id(void)
 {
@@ -154,9 +146,6 @@ static int hmac_sha1_base64(const uint8_t *key_bin, size_t key_len,
  * @param out  输出缓冲 (至少 256 字节)
  * @param out_size
  * @return 0 成功
- * @note  et 固定用 2030-12-30 的时间戳: OneNet MQTT broker 只认**长期有效**的
- *        token, 用"当前时间 + 24h"会被 broker 直接拒绝 (Bad username or password),
- *        而同一把 key 走 HTTP 接口却能通过。所以这里必须写死长期 et。
  */
 static int compute_token(char *out, size_t out_size)
 {
@@ -305,7 +294,6 @@ static int json_find_value_bool(const char *json, const char *key, bool *out)
  * @param out  输出缓冲
  * @param out_size
  * @return 1=找到, 0=没找到
- * @note  服务/属性应答必须回**同一个 id**, 平台靠它把应答和请求配对
  */
 static int json_find_id(const char *json, char *out, size_t out_size)
 {
@@ -330,9 +318,6 @@ static int json_find_id(const char *json, char *out, size_t out_size)
  * @param out       输出缓冲 (还原后的字符串)
  * @param out_size  缓冲大小
  * @return 1=找到, 0=没找到
- * @note  物模型里 values 这种 string 类型的参数, 平台下发时是
- *        "values":"{\"bal_kp\":40}", 内层的引号是转义的 (\")。
- *        直接用 strchr 找结束引号会在转义引号处截断, 必须自己走一遍转义。
  */
 static int json_find_string(const char *json, const char *key, char *out, size_t out_size)
 {
@@ -420,9 +405,6 @@ static void sntp_time_sync_cb(struct timeval *timeinfo)
 
 /**
  * @brief 启动 SNTP 校时 (后台异步, 不阻塞)
- * @note  平台会校验属性上报里的 time 字段, 必须是**真实时间戳 (Unix 毫秒)**。
- *        之前用开机以来的毫秒数上报, 平台直接拒收:
- *        code 2415 "invalid time:identifier:pitch"。
  */
 static void sntp_start(void)
 {
@@ -462,9 +444,6 @@ static int64_t now_epoch_ms(void)
  * @param n     字段对数 (必须跟实际传入的键值对个数一致!)
  * @param ...   变参: 交替传 const char *key, double val
  * @return 实际长度 (不含 '\0'), <0 表示失败
- * @note  平台的 float 属性有 step 约束 (pitch/roll/yaw/gz 是 0.1, speed 是 0.01),
- *        值必须落在 step 的整数倍上, 否则平台回 2254 "float not conform step"。
- *        所以这里固定用 %.1f / %.2f 输出, 由调用方先把值圆整到 step。
  */
 static int build_property_post_f(char *buf, size_t size, int64_t ts, int n, int decimals, ...)
 {
@@ -506,7 +485,6 @@ static int build_property_post_f(char *buf, size_t size, int64_t ts, int n, int 
  * @param n     字段对数 (必须跟实际传入的键值对个数一致!)
  * @param ...   变参: 交替传 const char *key, long long val
  * @return 实际长度 (不含 '\0'), <0 表示失败
- * @note  int32 属性不能带小数 (平台回 2211 "int32 type error"), 所以单独一个函数。
  */
 static int build_property_post_i(char *buf, size_t size, int64_t ts, int n, ...)
 {
@@ -578,8 +556,6 @@ static int build_property_post_str(char *buf, size_t size, int64_t ts,
  * @param max 上限
  * @param step 步长 (0.1 / 0.01 ...)
  * @return 圆整限幅后的值
- * @note  OneNet 平台的 float 属性有 step 约束, 值不是 step 的整数倍会被拒收
- *        (2254 float not conform step), 超范围会拒收 (2253 float over range)。
  */
 static double clamp_step(double v, double min, double max, double step)
 {
@@ -621,13 +597,6 @@ static const char* state_to_string(bal_state_t state)
 
 /**
  * @brief 周期 200ms 上报: 姿态 / 角速度 / 电机 / 编码器 / 指令 / 状态
- * @note  走 $sys/.../thing/property/post
- *
- * @note  ⚠ 分帧上报的原因: 平台的 float 属性各自有 step 约束
- *        (pitch/roll/yaw 是 0.1, gz 是 0.01), 一帧里只要有一个属性
- *        不符合 step / 超范围, **整帧被拒收**, 其它属性也跟着丢。
- *        所以 step 不同的属性必须分帧发, 且每个属性的打印小数位
- *        要跟自己的 step 对齐。
  */
 static void publish_task(void *arg)
 {
@@ -738,13 +707,6 @@ static void publish_task(void *arg)
 
 /**
  * @brief 高速上报任务: 只发 pitch, 周期 FAST_PERIOD_MS (默认 50ms, 即 20Hz)
- * @note  0.21 新增。俯仰角曲线要"跟得上", 光靠 200ms 一次的慢通道不够,
- *        所以 pitch 单独走一条高频通道:
- *        - 一帧只有一个属性, 帧短, 平台入库快
- *        - 带毫秒级时间戳, App 端能算出数据延迟, 也能在一条曲线上排出先后
- *
- * @note  平台上行的属性历史 (query-device-property-history) 会按这个频率
- *        记录采样点, App 一次请求就能拿回最近的一批点, 画出高频曲线。
  */
 static void publish_fast_task(void *arg)
 {
@@ -772,8 +734,6 @@ static void publish_fast_task(void *arg)
 
 /**
  * @brief 周期 5s 拉一次期望属性 (云端的期望值, 兜底)
- * @note  App 走 set-device-desired-property 时平台会直接推 property/set,
- *        这里再拉一次是为了 App 改了期望值但平台没推送的情况
  */
 static void desired_pull_task(void *arg)
 {
@@ -796,21 +756,6 @@ static void desired_pull_task(void *arg)
 /**
  * @brief 应用远程移动指令 (物模型属性 `speed`)
  * @param v 指令值 (编码见下)
- *
- * @note  指令编码 (平台属性 speed, 范围 -10~10):
- *
- *        0                        → 停止
- *        ±0.2 / ±0.4 / ±0.6 / ±0.8 → 前进(+) / 后退(-), 档位 20/40/60/80 (%)
- *        ±1.2 / ±1.4 / ±1.6 / ±1.8 → 左转(+) / 右转(-), 档位 20/40/60/80 (%)
- *
- *        档位与 UI 编码器调试页 (ui_encoder.c) 的调速档位同源,
- *        都取自 motor_spd_levels[]。
- *
- * @note  ⚠ 2026-10-26: 指令**不再直接给 PWM**, 而是换算成目标轮速,
- *        由速度环 (目标轮速 → 目标倾角) 驱动, 平衡环全程在线。
- *        (以前是"直驱": 平衡环整个暂停, 车站着的时候一推就歪,
- *         松手时平衡环接手必然剧烈纠偏 → "一让走就剧烈抖"。)
- *        车没起立 (平衡没开) 时才退回开环直驱, 方便调电机/编码器。
  */
 static void apply_move_cmd(float v)
 {
@@ -879,7 +824,6 @@ static void handle_led_control(const char *json)
 /**
  * @brief 处理舵机角度属性
  * @param json 收到的 JSON
- * @note  servo1_angle / servo2_angle, 范围 30~120 度
  */
 static void handle_servo_control(const char *json)
 {
@@ -981,7 +925,6 @@ static void handle_desired_reply(const char *data, int data_len)
  * @param name    服务标识符 (stop / stand / ...)
  * @param req_id  请求里的消息 id (必须原样回传)
  * @param data_json data 字段的 JSON 片段 (没有就传 "{}")
- * @note  topic 是 .../thing/service/{name}/invoke_reply (下划线!)
  */
 static void service_reply(const char *name, const char *req_id, const char *data_json)
 {

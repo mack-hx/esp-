@@ -51,9 +51,6 @@ static const char *TAG = "MAIN";
  * 按下电平约定: P0~P7 内部上拉到 VCC (4.7kΩ 外部上拉), 按键按下时拉低 (接地).
  *   "按下"对应位 = 0, "松开"对应位 = 1
  *   例: 按下 K1 (P0) → 读 0xFE, 全松开 0xFF
- *
- * @note  本函数仅做 "位图 → UI 键值" 映射, 不做消抖
- *        消抖由 pcf8574_scan_buttons() 内部状态机 + lcd_ui_loop() 边沿检测共同完成
  */
 static ui_key_t key_get_from_pcf8574(void)
 {

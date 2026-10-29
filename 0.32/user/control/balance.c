@@ -2,24 +2,15 @@
  * @file balance.c
  * @brief 平衡控制串级控制器实现 (传感器 + 状态机 + 电机输出)
  *
- * @note  控制结构 (串级, 从外到内):
- *     速度环 (外环): 轮速误差 → 目标倾角 (°)
- *     平衡环 (内环): 姿态误差 → 电机输出 (%), 双轮同向
+ * 控制结构 (串级, 从外到内):
+ *   行走时:  速度环 (speed_pid.c)      轮速误差 → 目标倾角 (°)
+ *   站住时:  位置环 (position_pid.c)    位置误差 → 目标速度 (cm/s)
+ *            → 锁位速度环 (hold_pid.c)  速度误差 → 目标倾角 (°)
+ *   内环:    平衡环 (balance_pid.c)    姿态误差 → 电机输出 (%), 双轮同向
  *
- * @note  ⚠ 各个控制环的 PID 运算已经拆到独立组件 user/pid/ 里了:
- *        user/pid/balance_pid.c  平衡环 (内环)
- *        user/pid/speed_pid.c    速度环 (外环)
- *        user/pid/steer_pid.c    转向环 (差速环)
- *        user/pid/position_pid.c 位置环 (预留, 暂未接入)
- *     本文件只管: 传感器采样 / 状态机 / 摔倒检测 / 电机输出 / 对外 API。
- *
- * @note  姿态读数的修正链 (采样阶段做, 在算误差之前):
- *
- *     修正后 pitch = 原始 pitch − 配平表补偿(φ) − 配平零点
- *                      └─ user/trim ─┘        └─ 配平动作记录的基准角 ┘
- *
- *   0.13 起不再有 ang_zero / bal_sign / gyro_sign 三个参数
- *   (详见 balance.h 顶部的方向常量)
+ * 两个外环按模式轮流接管, 同一时刻只有一个在给倾角 (见 pos_mode_t)。
+ * 各环的 PID 运算在 user/pid/ 里, 本文件只管:
+ * 传感器采样 / 状态机 / 摔倒检测 / 电机输出 / 对外 API。
  *
  * @author ESP32 平衡轮腿机器人
  * @date 2026-10-07
@@ -32,6 +23,7 @@
 #include "speed_pid.h"
 #include "steer_pid.h"
 #include "position_pid.h"
+#include "hold_pid.h"
 #include "trim.h"
 #include "mpu9250.h"
 #include "encoder.h"
@@ -46,7 +38,6 @@
 #include "nvs.h"
 #include <math.h>
 #include "freertos/task.h"
-#include <math.h>
 
 static const char *TAG = "BALANCE";
 
@@ -113,14 +104,40 @@ static float s_tgt_avg      = 0.0f;   /* 斜坡后的实际目标 */
 static float s_tgt_diff     = 0.0f;   /* 斜坡后的实际目标差 */
 
 /* ========== 位置环 (最外环) / 里程计 ==========
- * s_pos_target_cm = **命令目标位置** (cm, 前进为正) —— 车该停在哪儿
- *   - 前进/后退方向键按住时: 按前馈速度往前累积 (键 = 调目标位置)
- *   - 松手后: 目标位置**锁死**, 车停在那儿; 被推歪了位置环把它拉回来
- *   - 转向 (原地转) 不产生前后位移, 所以不累积目标位置
- * s_pos_out = 位置环输出 (rpm, 加到目标轮速上的纠偏量), 经斜坡 + 低通后送出
+ * s_pos_target_cm = **目标位置** (cm, 前进为正) —— 车该停在哪儿
+ *   - 行走 (方向键按住) 时: 目标位置**跟着实际位置走** (= 当前里程计位置),
+ *     所以行走过程中位置误差恒为 0, 位置环不干预 (两个环对着干会前后摆)
+ *   - 停手之后: 目标位置**锁死**, 车停在那儿; 被推歪了位置环把它拉回来
+ *   - 转向 (原地转) 不产生前后位移, 目标位置不变
+ * s_pos_hold = 位置环是否接管 (true = 站住不动, 位置环纠偏)
+ * s_pos_vref = 位置环算出的**目标速度** (cm/s, 前进为正) → 交给锁位速度环
+ * s_pos_out = 锁位速度环算出的**目标倾角** (°, **正 = 车头往前倾**),
+ *              经斜坡 + 低通后送出, 直接加到平衡环的目标倾角上
+ * 站住不动时的完整链路 (见 position_pid.h):
+ *     位置误差 → [位置环] → 目标速度 → [锁位速度环] → 目标倾角 → [平衡环] → 电机
  * 位置环的输出放在 s_data.pos_out 里 (对外可观测)。 */
 static float s_pos_target_cm = 0.0f;
-static float s_pos_out       = 0.0f;   /* 位置环输出 (rpm), 送到速度环 */
+static float s_pos_vref      = 0.0f;   /* 位置环的目标速度 (cm/s, 正 = 前进) */
+static float s_pos_out       = 0.0f;   /* 锁位速度环的目标倾角 (°, 正 = 前倾) */
+static bool  s_pos_hold      = false;  /* 站住不动 → 位置环接管 */
+
+/* 位置环的"接管模式" (三态):
+ *   WALK   : 有行走指令 (或在斜坡退完之前) → 目标位置跟随实际位置, 位置环让位
+ *   SETTLE : 指令已撤但车还在滑行 → 目标位置继续跟随实际位置 (此时**不能**锁目标,
+ *            否则锁的是滑行途中的位置, 车停稳后误差突然变大 → 猛纠 → 前后大晃)
+ *   HOLD   : 车已停稳 → 目标位置锁死在停稳那一刻, 位置环接管纠偏
+ * ⚠ 推车 (HOLD 态) 时轮子会被推着转, 轮速会短暂变大 ——
+ *   所以**不能**用 "轮速大" 判断是否在行走, 否则位置环被误判成让位,
+ *   车就再也回不到原位了。 */
+typedef enum {
+    POS_MODE_WALK = 0,
+    POS_MODE_SETTLE,
+    POS_MODE_HOLD
+} pos_mode_t;
+static pos_mode_t s_pos_mode = POS_MODE_WALK;
+
+/* SETTLE 状态已持续的时间 (秒): 防止车一直微幅晃 → 永远锁不了位 */
+static float s_pos_settle_t = 0.0f;
 
 /* ========== 轮速统计 (300ms 滑动窗口) ==========
  * 换算公式: rpm = 脉冲数 × 60 / (窗口秒数 × 44 × gear)
@@ -130,22 +147,21 @@ static float s_pos_out       = 0.0f;   /* 位置环输出 (rpm), 送到速度环
  *     10ms 窗口:  60/(0.01 × 44 × 30) = 4.55 rpm
  *     100ms 窗口: 60/(0.1  × 44 × 30) = 0.45 rpm
  *     300ms 窗口: 60/(0.3  × 44 × 30) = 0.15 rpm
- *   (gear=1 时算出来是 136 / 13.6 / 4.5 rpm, 那个数已经作废)
  *
  * 为什么用 300ms 累加窗口: 窗口太短时读数是量化跳变 (一个脉冲就跳一格),
  * 速度环拿到这种读数, 误差几 rpm 就把目标倾角打到限幅, 平衡环随即饱和
  * → 电机前后猛顶。300ms 窗口把台阶压到 0.15 rpm, 读数平滑可用。
- * (顺带一提: 减速比改成 30 之后, 连 100ms 窗口的台阶都只有 0.45 rpm 了 ——
- *  但 300ms 窗口还额外起低通作用, 测速延迟也小得多, 所以保持不变。)
+ * (300ms 窗口还额外起低通作用, 测速延迟也小得多。)
  *
  * ⚠ 不走 encoder_get_rpm(): 它的快照状态和 UI 编码器页共用, 会被抢。 */
-#define SPD_WIN_MS       100                                  /* 基本窗口长度 (ms) */
-#define SPD_ACC_WIN      3                                   /* 累加几个基本窗口 (300ms) */
-#define SPD_WIN_CYCLES   (SPD_WIN_MS / CONTROL_PERIOD_MS)    /* 窗口内的控制周期数 */
-static int   s_enc_last_cnt[2] = {0, 0};  /* 上个窗口结束时的编码器计数值 */
-static int   s_enc_win_cnt    = 0;        /* 当前窗口已过的控制周期数 */
-static int   s_enc_acc_pulse[2] = {0, 0}; /* 累加窗口内累计的脉冲数 */
-static int   s_enc_acc_win    = 0;        /* 已累加了几个基本窗口 */
+/* 轮速统计窗口 (ms): 300ms 滑动窗口。
+ * ⚠ 编码器计数每 10ms 取一次 (里程计要用), 轮速仍然攒够 300ms 再换算 ——
+ *   量化台阶保持 0.15 rpm 不变。 */
+#define SPD_RPM_WIN_MS    300
+#define SPD_RPM_WIN_CYCLES (SPD_RPM_WIN_MS / CONTROL_PERIOD_MS)
+static int   s_enc_last_cnt[2] = {0, 0};  /* 上个周期末的编码器计数值 */
+static int   s_enc_win_cnt    = 0;        /* 轮速窗口已过的控制周期数 */
+static int   s_enc_acc_pulse[2] = {0, 0}; /* 轮速窗口内累计的脉冲数 */
 static float s_rpm_raw[2]      = {0.0f, 0.0f}; /* 编码器空间的轮速 (左/右) */
 static float s_speed_fwd       = 0.0f;   /* 实测平均轮速 (前进为正, rpm) */
 static float s_diff_fwd        = 0.0f;   /* 实测 左−右 轮速差 (前进为正, rpm) */
@@ -194,7 +210,6 @@ static bool  s_calib_active = false;
 
 /**
  * @brief 从 NVS 读配平零点
- * @note  存成整数 (角度×10), 避免 float 存 NVS 的对齐问题
  */
 static void balance_load_zero(void)
 {
@@ -238,14 +253,6 @@ static void balance_save_zero(void)
 
 /**
  * @brief 从 param 表读出所有控制参数, 配置各控制环
- * @note  **每个控制周期都调一次**: 网页/App 上拖滑块后, 下一次运算立刻用新值,
- *        不用重启。
- *        ⚠ 2026-10-26 修正: 之前这个函数只在启动时调一次, 而且用的是
- *          pid_config() (带 pid_reset(), 会清积分) —— 结果 App 上把
- *          bal_kp 拖到 0 也**完全不生效**, 用户误以为"降 Kp 没用"。
- *          现在各环内部改用 pid_set_gains() (只改系数, 保留积分/微分历史),
- *          并且每周期调用, 参数改动立刻生效。
- * @note  各环自己的增益/限幅常量都在 user/pid/ 各自的模块里, 这里只转调。
  */
 static void balance_load_params(void)
 {
@@ -253,6 +260,7 @@ static void balance_load_params(void)
     speed_pid_load_params();     /* 速度环 */
     steer_pid_load_params();     /* 转向环 */
     position_pid_load_params();  /* 位置环 */
+    hold_pid_load_params();      /* 锁位速度环 */
 }
 
 /**
@@ -264,6 +272,7 @@ static void balance_reset_pid(void)
     speed_pid_reset();
     steer_pid_reset();
     position_pid_reset();
+    hold_pid_reset();
     s_lpf_primed = false;
     /* 目标轮速也归零: 摔倒 / 停机时不能还挂着"往前走"的目标 */
     s_tgt_avg  = 0.0f;
@@ -275,11 +284,6 @@ static void balance_reset_pid(void)
  * @param phi      当前舵机角 (°)
  * @param phi_home 舵机中心角 (°) —— 补偿在这一档为 0
  * @return 补偿量 (°)
- * @note  表里没数据 (点数 < 2) 时返回 0, 行为与不标定时完全一致。
- *
- *   两路舵机现在是镜像的, 逻辑角始终相同, 所以一次查询就够。
- *   标定表是"一起扶"测出来的, 左右腿的装配差异已经包含在测出来的 Pitch 里,
- *   不需要再分左右。
  */
 static float balance_trim_compensation(float phi, float phi_home)
 {
@@ -289,7 +293,6 @@ static float balance_trim_compensation(float phi, float phi_home)
 
 /**
  * @brief 读传感器, 填到 s_data 的输入段
- * @note  MPU 没接时姿态/角速度填 0, 不阻塞控制任务
  */
 static void balance_read_sensors(void)
 {
@@ -305,7 +308,7 @@ static void balance_read_sensors(void)
             /* 姿态修正链: 原始 pitch − 配平表补偿 − 配平零点。
              *   - 配平表补偿: 腿角度带来的偏移 (trim_pitch)
              *   - 配平零点:   车"摆正"时的 pitch (配平动作记录的基准角)
-             * 0.13 起 ang_zero 已删除: 配平表每个腿角都采, 零偏自然包含在测出的 Pitch 里 */
+             * 配平表每个腿角都采, 零偏自然包含在测出的 Pitch 里 */
             float phi = (float)servo_get_angle(SERVO_1);
             float comp = balance_trim_compensation(phi,
                                                    param_get_float(PARAM_SERVO_CENTER));
@@ -340,7 +343,7 @@ static void balance_read_sensors(void)
         s_data.trim_comp = 0.0f;
     }
 
-    /* --- 编码器: 300ms 滑动窗口统计两轮轮速 ---
+    /* --- 编码器: 每周期取增量 (里程计) + 300ms 滑动窗口统计轮速 ---
      *
      * ⚠ 不用 encoder_get_rpm(..., 10ms) 的原因:
      *   编码器 44 脉冲/转, 10ms 窗口里轮子常常转不到 1 个脉冲,
@@ -348,21 +351,20 @@ static void balance_read_sensors(void)
      *   gear=30 时的真实值; gear=1 时是 136 rpm, 那个数已作废)。
      *   速度环拿到这种读数, 误差几 rpm 就把目标倾角打到限幅,
      *   平衡环随即饱和 → 电机前后猛顶 (起立剧烈抖动的直接来源)。
-     *   100ms 窗口把量化误差降到 1/10 (1 脉冲 = 0.45 rpm), 已经够细,
-     *   这里累加 3 个 100ms 窗口 (300ms) 再多滤一点, 量化台阶 = 0.15 rpm。
+     *   这里累加 30 个 10ms 周期 (300ms) 再换算速度, 量化台阶 = 0.15 rpm。
      *
      * ⚠ 台阶大小**依赖 gear 参数**: 改了 gear 就要重算 (见上面那段注释)。
      *
      * ⚠ 自己记快照, 不走 encoder_get_rpm(): 它内部存的是"上次调用时刻",
      *   和 UI 编码器调试页 (150ms 一读) 是同一份状态, 两边互抢会算出
-     *   错误的瞬时转速。 */
+     *   错误的瞬时转速。
+     *
+     * ⚠ 计数**每周期 (10ms) 取一次**: 里程计的速度反馈要用它 (锁位环的阻尼)。
+     *   里程计每 10ms 更新 (60ms 滑动窗口), 滞后降到 ~30ms。 */
     float gear = param_get_float(PARAM_ENCODER_GEAR);
     if (gear < 0.01f) gear = 0.01f;      /* 防除零 */
 
-    s_enc_win_cnt++;
-    if (s_enc_win_cnt >= SPD_WIN_CYCLES) {
-        s_enc_win_cnt = 0;
-
+    {
         int c1 = encoder_get_count(ENCODER_1);
         int c2 = encoder_get_count(ENCODER_2);
         /* 用 int16 取模差值: PCNT 计数到 ±32767 会回绕,
@@ -372,21 +374,25 @@ static void balance_read_sensors(void)
         s_enc_last_cnt[0] = c1;
         s_enc_last_cnt[1] = c2;
 
-        /* 里程计: 位移要挂在**每个 100ms 窗口的脉冲增量**上。
-         * ⚠ 不能挂在下面的 rpm 换算之后 —— 那样 300ms 才动一次,
-         *   位置反馈太粗, 车纠偏会一顿一顿的。
+        /* 里程计: 每周期累加一次位移。
          * d1/d2 是编码器空间的增量 (正 = 车尾方向), 取 BAL_ENC_FWD_SIGN
-         * 换成"前进为正"再交给里程计。 */
+         * 换成"前进为正"再交给里程计。
+         * ⚠ 不能挂在下面的 rpm 换算之后 —— 那样 300ms 才动一次,
+         *   位置反馈太粗, 车纠偏会一顿一顿的。 */
         odom_update((int)(BAL_ENC_FWD_SIGN * d1),
                     (int)(BAL_ENC_FWD_SIGN * d2));
 
-        /* 累加脉冲数, 攒够 SPD_ACC_WIN 个窗口再换算速度 */
+        /* 累加脉冲数, 攒够 300ms 再换算轮速 (给速度环/UI 用) */
         s_enc_acc_pulse[0] += d1;
         s_enc_acc_pulse[1] += d2;
-        s_enc_acc_win++;
+    }
 
-        if (s_enc_acc_win >= SPD_ACC_WIN) {
-            float win_sec = (float)(SPD_WIN_MS * SPD_ACC_WIN) / 1000.0f;
+    s_enc_win_cnt++;
+    if (s_enc_win_cnt >= SPD_RPM_WIN_CYCLES) {
+        s_enc_win_cnt = 0;
+
+        {
+            float win_sec = (float)(SPD_RPM_WIN_CYCLES * CONTROL_PERIOD_MS) / 1000.0f;
             /* rpm = 脉冲数 / 每转脉冲数 / 窗口秒数 × 60 / 减速比
              * ⚠ 这里的 gear 来自参数表 (默认 30): 编码器装在电机轴上,
              *   轮子转一圈对应 44×30 = 1320 个脉冲。
@@ -397,7 +403,6 @@ static void balance_read_sensors(void)
             s_rpm_raw[1] = (float)s_enc_acc_pulse[1] * k;
             s_enc_acc_pulse[0] = 0;
             s_enc_acc_pulse[1] = 0;
-            s_enc_acc_win    = 0;
         }
     }
 
@@ -415,8 +420,6 @@ static void balance_read_sensors(void)
  * @brief 摔倒检测
  * @param pitch 修正后姿态角 (°)
  * @return true=判定摔倒
- * @note  超过 param 的 ang_limit 就认为车已经倒了, 立刻停电机。
- *        宁可误停 (车还立着但先不跑) 也不能不停 (车倒了还在输出把电机烧了)
  */
 static bool balance_check_fallen(float pitch)
 {
@@ -455,8 +458,6 @@ static void balance_arm_reset(void)
 /**
  * @brief 开机以来的秒数
  * @return 秒
- * @note  物模型里 armed / fallen 事件的 time 参数单位是"秒" (不是毫秒),
- *        平台会按上限校验, 发毫秒会被拒收。
  */
 static int64_t balance_uptime_sec(void)
 {
@@ -466,7 +467,6 @@ static int64_t balance_uptime_sec(void)
 /**
  * @brief 判断当前姿态是否**瞬时**满足门控条件
  * @return true=满足
- * @note  与"持续了多久"无关, 那部分由 s_arm_hold_ms 累积
  */
 static bool balance_arm_conditions_ok(void)
 {
@@ -589,11 +589,6 @@ static float balance_move_toward(float cur, float tgt, float up, float down)
 /**
  * @brief 走路目标轮速的上限 (rpm)
  * @return 上限值
- * @note 优先用参数表里的 move_rpm_max (App 参数页可实时调),
- *       为 0 时退回代码里的兜底值 BAL_MOVE_RPM_MAX。
- *       上限的意义: 目标轮速越大, 速度环要求的车身倾角越大,
- *       而倾角被 SPD_PID_WALK_PITCH_MAX (4°) 卡着 —— 目标太大时车只会
- *       一直倾着追速度, 表现为左右猛摇。
  */
 static float balance_move_rpm_max(void)
 {
@@ -607,11 +602,6 @@ static float balance_move_rpm_max(void)
  * @param level    档位百分比 (20/40/60/80)
  * @param out_avg  [出参] 两轮平均目标轮速 (前进为正, rpm); 前进/后退用它
  * @param out_diff [出参] 左轮 − 右轮 的目标差 (前进为正, rpm); 转向用它
- *
- * @note  前进/后退: 两轮同向 → 平均 = ±rpm, 差 = 0
- *       左/右转:  两轮反向 (原地转) → 平均 = 0, 差 = ±2×rpm
- *       (这个换算只有这一处, balance_set_move() 的日志和
- *        balance_update_target() 的斜坡都用它, 免得两处算出不一样的值)
  */
 static void balance_move_targets(bal_move_t dir, int8_t level,
                                  float *out_avg, float *out_diff)
@@ -633,40 +623,8 @@ static void balance_move_targets(bal_move_t dir, int8_t level,
 }
 
 /**
- * @brief 轮速 (rpm) → 线速度 (cm/s)
- * @param rpm 轮速 (前进为正)
- * @return 线速度 (cm/s, 前进为正)
- * @note  车轮每转一圈前进 π × 轮径 cm, 所以
- *        线速度 = rpm × π × 轮径 / 60
- *        轮径来自参数表 (wheel_dia, 本机 6.5 cm)。
- *        用它把"目标轮速"换算成"目标位置每秒推进多少厘米"。
- */
-static float balance_rpm_to_cmps(float rpm)
-{
-    float dia = param_get_float(PARAM_WHEEL_DIA);
-    if (dia < 0.1f) dia = 6.5f;      /* 参数没填/填错时的兜底 */
-    return rpm * 3.14159265f * dia / 60.0f;
-}
-
-/**
  * @brief 由遥控指令算出目标轮速, 并用斜坡逼近
  * @param dt 控制周期 (秒)
- * @note  目标轮速一阶斜坡:
- *        - 起步时目标不会瞬间跳到 80 rpm (100% 档 = move_rpm_max, 默认 100;
- *          否则速度环一上来就要求很大的前倾角 → 车猛地一冲);
- *        - 松手时目标慢慢退到 0, 车自然减速站稳 (跟人手推车的习惯一致)。
- *
- * @note  ⚠ 指令 (s_move_dir / s_move_level) 是 MQTT 任务写的, 这里只读,
- *   不在两个任务之间传递"目标值", 免得两个任务同时改一个变量。
- *
- * @note  **目标位置累积** (0.33 起):
- *        前进/后退键按住时, 目标位置按**前馈速度** (s_tgt_avg) 往前推:
- *            s_pos_target_cm += 线速度(s_tgt_avg) × dt
- *        这样 App 的方向键就是在"调目标位置", 位置环去跟它走。
- *        - 转向 (原地转) 的 s_tgt_avg = 0 → 不累积 (原地转没有前后位移)
- *        - 松手后 s_tgt_avg 斜坡退回 0 → 目标位置锁死, 车停在最后的位置
- *        - 用斜坡后的 s_tgt_avg (而不是原始指令) 累积, 保证"计划位置"
- *          和"实际下发的速度"始终一致, 位置环不会攒出一个虚假的误差
  */
 static void balance_update_target(float dt)
 {
@@ -686,31 +644,77 @@ static void balance_update_target(float dt)
     s_tgt_avg  = balance_move_toward(s_tgt_avg,  cmd_avg,  step_up, step_down);
     s_tgt_diff = balance_move_toward(s_tgt_diff, cmd_diff, step_up, step_down);
 
-    /* 目标位置跟着前馈速度往前累积 (只在前馈为前进/后退时才有位移) */
-    if (s_state == BAL_STATE_BALANCING) {
-        s_pos_target_cm += balance_rpm_to_cmps(s_tgt_avg) * dt;
+    /* --- 目标位置: 三态 (WALK / SETTLE / HOLD), 见 pos_mode_t 的注释 ---
+     *
+     * WALK   : 有行走指令, 或松手后目标轮速斜坡还没退完
+     *          → 目标位置**跟随实际位置** (误差恒为 0, 位置环让位)
+     * SETTLE : 指令已撤, 但车还在滑行 (轮速还没降下来)
+     *          → 目标位置**继续跟随实际位置**, 位置环仍然让位
+     *          ⚠ 这里绝不能锁目标: 锁的是"滑行途中"的位置,
+     *            车真正停稳后位置误差会突然变大 → 位置环猛纠 → 前后大晃
+     * HOLD   : 车已停稳 → 目标位置锁死, 位置环接管纠偏
+     *          ⚠ 推车时轮子会被推着转 (轮速变大), 但**模式不变**:
+     *            只有"收到行走指令"才会离开 HOLD。
+     *            否则位置环会被误判成让位 → 车再也回不到原位。 */
+    if (s_state != BAL_STATE_BALANCING) {
+        s_pos_mode = POS_MODE_WALK;   /* 复位: 下次起立从行走态重新开始 */
+        s_pos_hold = false;
+        s_pos_settle_t = 0.0f;
+    } else if (cmd_avg != 0.0f || s_tgt_avg != 0.0f) {
+        /* 行走中: 目标位置跟着实际位置走 */
+        s_pos_mode      = POS_MODE_WALK;
+        s_pos_target_cm = odom_get_position_cm();
+        s_pos_hold      = false;
+        s_pos_settle_t  = 0.0f;
+    } else if (s_pos_mode == POS_MODE_WALK) {
+        /* 刚撤指令: 进入收尾态 (车还在滑行, 目标继续跟随)
+         * ⚠ 同时清掉速度环的积分: 斜坡减速期间速度环攒下的"刹车积分"
+         *   (正的目标倾角, 最多能到 2°) 会残留下来 → 停稳后车还被推着往后走
+         *   → 位置环跟它对着干 → 前后大幅晃。
+         *   这就是"用按键走一段后更严重"的直接原因。 */
+        s_pos_mode      = POS_MODE_SETTLE;
+        s_pos_target_cm = odom_get_position_cm();
+        s_pos_hold      = false;
+        s_pos_settle_t  = 0.0f;
+        speed_pid_reset();
+        hold_pid_reset();     /* 锁位速度环的积分 (常驻倾角) 也不能留着 */
+    } else if (s_pos_mode == POS_MODE_SETTLE) {
+        /* 收尾态: 目标继续跟随实际位置, 直到车真的停稳 */
+        s_pos_target_cm = odom_get_position_cm();
+        s_pos_hold      = false;
+        s_pos_settle_t += dt;
+        if (fabsf(s_speed_fwd) <= BAL_POS_SETTLE_RPM ||
+            s_pos_settle_t >= BAL_POS_SETTLE_MAX_S) {
+            /* 停稳了 (或等太久了): 把"车停下的这个位置"锁成目标, 位置环接管
+             * ⚠ 同时清掉速度环的积分: 滑行/减速期间速度环攒下的积分
+             *   会残留, 进 HOLD 后速度环虽然被停掉, 但下次开始行走时
+             *   这段残留会立刻变成一个倾角 → 车猛地一窜。
+             *   (HOLD 期间速度环整个不参与运算, 见 balance_control_step) */
+            s_pos_target_cm = odom_get_position_cm();
+            s_pos_mode      = POS_MODE_HOLD;
+            s_pos_hold      = true;
+            s_pos_settle_t  = 0.0f;
+            speed_pid_reset();
+        }
+    } else {
+        /* HOLD: 目标位置锁死, 位置环接管纠偏 (推车也在这里纠) */
+        s_pos_hold = true;
     }
 }
 
 /**
- * @brief 位置环: 位置误差 → 目标轮速修正 (rpm)
+ * @brief 站住不动时的串级位置链: 位置误差 → 目标速度 → 目标倾角
  * @param dt 控制周期 (秒)
- * @return 目标轮速修正量 (rpm, 正 = 需要往前走)
+ * @return 目标倾角 (°, **正 = 车头往前倾**)
  *
- * @note  控制结构 (串级, 从外到内):
- *        位置环 (cm → rpm) → 速度环 (rpm → °) → 平衡环 (° → %)
+ * 只在站住不动时接管 (s_pos_hold):
+ *   - 行走时: 目标位置跟着实际位置走 (误差恒为 0), 位置环输出恒为 0,
+ *     倾角由速度环给 (两个环不同时说话, 不会对着干)。
+ *   - 站住时: 目标位置锁死, 车被推歪了 (轮子被推着滚 → 里程计位移)
+ *     位置环会让车"歪回来", 车自己走回原来的位置。
  *
- * @note  什么时候接管: **一直接管**。
- *   - 行走时: 目标位置由方向键往前累积 (见 balance_update_target),
- *     位置环负责"车要走到那个位置去", 走得不够快时自动加一点速度。
- *   - 站住不动时: 目标位置锁死, 车被推歪了 (轮子被推着滚 → 里程计位移)
- *     位置环会把车拉回原来的位置。
- *
- * @note  位置误差的符号: 目标在前方 (还没走到) → err > 0 → 需要往前走 → 输出为正。
- *
- * @note  输出做了**限速 + 一阶低通** (BAL_POS_OUT_SLEW / BAL_POS_OUT_LPF_TAU):
- *   位置误差一变, PID 输出就跳变 → 目标轮速跳变 → 目标倾角跳变 →
- *   平衡环被迫猛纠 → 前后摆。限速让输出平滑地跟上去, 低通再滤一层噪声。
+ * 位置误差的符号: 目标在前方 (还没走到) → err > 0 → 需要往前走 →
+ *   目标速度为正 → 速度环要求前倾 → 轮子往车头跑 → 车往前走 ✓
  */
 static float balance_update_position(float dt)
 {
@@ -720,15 +724,35 @@ static float balance_update_position(float dt)
     if (s_state != BAL_STATE_BALANCING) {
         /* 没在平衡状态: 位置没有意义, 目标跟着当前走, 顺便清积分 */
         s_pos_target_cm = cur;
+        s_pos_vref = 0.0f;
         s_pos_out = 0.0f;
         s_data.pos_out = 0.0f;
         position_pid_reset();
+        hold_pid_reset();
+        return 0.0f;
+    }
+
+    if (!s_pos_hold) {
+        /* 行走中: 位置环让位 (输出恒为 0), 顺便清积分和整形状态 */
+        s_pos_vref = 0.0f;
+        s_pos_out = 0.0f;
+        s_data.pos_out = 0.0f;
+        position_pid_reset();
+        hold_pid_reset();
         return 0.0f;
     }
 
     float err = s_pos_target_cm - cur;
-    /* position_pid 内部已经做了死区软化 + 输出限速 + 一阶低通, 这里直接用 */
-    s_pos_out = position_pid_update(dt, err);
+
+    /* --- 位置环: 位置误差 → 目标速度 (cm/s) ---
+     * 内部已经做了死区软化 + 输出限幅 (±POS_PID_V_MAX)。 */
+    s_pos_vref = position_pid_update(dt, err);
+
+    /* --- 锁位速度环: 平移速度误差 → 目标倾角 (°) ---
+     * 反馈用**里程计速度** (odom, 60ms 窗口), 不用 s_speed_fwd
+     * (编码器轮速, 300ms 窗口): 300ms 滞后太多, 阻尼相位落后 →
+     * 等价负阻尼 → 实测 4~6 秒周期、幅度越甩越大的前后振荡。 */
+    s_pos_out = hold_pid_update(dt, odom_get_velocity_cmps(), s_pos_vref);
     s_data.pos_out = s_pos_out;
     return s_pos_out;
 }
@@ -736,15 +760,11 @@ static float balance_update_position(float dt)
 /**
  * @brief 跑一次串级控制运算并输出到电机
  * @param dt 控制周期 (秒)
- * @note  驱动方式: **双轮同向** (平衡环) + 可选的**差速** (转向环)。
- *        车往前倒 (pitch < 0) 时两个轮子都往"追着倒的方向"转,
- *        轮子跑出去 → 重心被甩到轮轴上方 → 车身被托回竖直。
  */
 static void balance_control_step(float dt)
 {
     /* --- 实时读取调参表 ---
-     * App / 网页上改的 Kp/Ki/Kd/限幅/死区, 在**下一个控制周期**就生效。
-     * (2026-10-26 修正: 之前只在启动时读一次, App 上改参数完全没用) */
+     * App / 网页上改的 Kp/Ki/Kd/限幅/死区, 在**下一个控制周期**就生效。 */
     balance_load_params();
 
     /* --- 起立软启动: 输出限幅慢慢放开到 100% ---
@@ -759,18 +779,35 @@ static void balance_control_step(float dt)
     /* --- 目标轮速斜坡 (App 方向键 → 目标轮速) --- */
     balance_update_target(dt);
 
-    /* --- 最外环: 位置环 → 目标轮速修正 ---
-     * 站住不动时位置环把车拉回目标位置; 行走时输出恒为 0 (让位给方向键)。 */
-    float pos_out = balance_update_position(dt);
+    /* --- 外环仲裁: 这一周期谁给倾角? ---
+     * 行走 (WALK): 速度环给 (走多快), 位置环让位
+     * 站住 (HOLD): 位置环给 (回原位), 速度环**完全不算**
+     *
+     * ⚠ HOLD 期间必须把速度环整个停掉 (输出 0):
+     *   速度环的目标轮速此时是 0, 它的误差 = 实测轮速 - 0 = "车正在回位
+     *   时的速度" → 速度环把这段速度当成"要刹住的误差"攒进积分 →
+     *   回位结束后积分还残留 → 车又被推着走 → 位置环再纠 → 前后大晃。
+     *   (进入 HOLD 时会 speed_pid_reset() 清掉残留, 见 balance_update_target) */
+    float pos_lean = balance_update_position(dt);   /* 位置环要求的倾角 (°, 正 = 前倾) */
 
-    /* 位置环的修正量直接叠加到目标轮速上, 再交给速度环 */
-    float tgt_speed = s_tgt_avg + pos_out;
+    /* 目标轮速只剩行走指令 (方向键): 位置环不再往目标轮速里塞修正量 */
+    float tgt_speed = s_tgt_avg;
     s_data.target_speed = tgt_speed;
 
-    /* --- 外环: 速度环 → 目标倾角 ---
-     * 误差方向、死区、倾角限幅都在 user/pid/speed_pid.c 里,
-     * 这里只把实测/目标喂进去, 拿回目标倾角。 */
-    s_data.target_pitch = speed_pid_update(dt, s_speed_fwd, tgt_speed);
+    float pitch_from_speed = 0.0f;
+    if (!s_pos_hold) {
+        pitch_from_speed = speed_pid_update(dt, s_speed_fwd, tgt_speed);
+    }
+
+    /* --- 倾角设定点 (°): 本工程 pitch **前倾为负**,
+     *     而位置环的输出是"前倾为正" → 这里取负号换算。 --- */
+    float target_pitch = pitch_from_speed - pos_lean;
+
+    /* 安全阀: 倾角设定点不能超过走路时的上限 (4°), 防止外环把车放倒 */
+    if (target_pitch >  SPD_PID_WALK_PITCH_MAX) target_pitch =  SPD_PID_WALK_PITCH_MAX;
+    if (target_pitch < -SPD_PID_WALK_PITCH_MAX) target_pitch = -SPD_PID_WALK_PITCH_MAX;
+
+    s_data.target_pitch = target_pitch;
 
     /* --- 差速环 (转向): 左−右 轮速差 → 两轮输出的差 ---
      * 转向时两轮反向转 (原地转), 平均轮速保持 0, 平衡环照常扶住车身。 */
@@ -784,10 +821,9 @@ static void balance_control_step(float dt)
                                         s_data.target_pitch, s_data.gyro);
 
     /* --- 执行: 双轮同向输出 (+ 差速) ---
-     * BAL_MOTOR_SIGN 烘焙在代码里 (0.13 起不在网页上可调):
+     * BAL_MOTOR_SIGN 烘焙在代码里 (不在网页上可调):
      * 改电机装配方向后, 要改的是 balance.h 的宏, 然后重烧固件。
-     * ⚠ 2026-10-25 实测: 这个符号之前取反了 (原 -1), 导致前倾时轮子往后跑,
-     *   车必然往前扑倒。现在是 +1, 详见 balance.h 的方向常量说明。 */
+     * 方向常量的含义见 balance.h 的说明。 */
     float out = s_data.bal_out * BAL_MOTOR_SIGN;
 
     float out_max = param_get_float(PARAM_MOTOR_OUT_MAX);
@@ -839,7 +875,6 @@ static void balance_control_step(float dt)
  * @param level 档位百分比 (正数)
  * @param out_a [出参] 电机 A (左轮) PWM
  * @param out_b [出参] 电机 B (右轮) PWM
- * @note  前进/后退 = 两轮同向; 左转/右转 = 两轮反向 (原地转向)
  */
 static void balance_move_wheels(bal_move_t dir, int8_t level,
                                 int8_t *out_a, int8_t *out_b)
@@ -869,12 +904,6 @@ static void balance_move_wheels(bal_move_t dir, int8_t level,
 
 /**
  * @brief 开环直驱: 直接给两轮 PWM (不走平衡环)
- * @note  **只在平衡没开 (车没起立) 时用**, 方便单独调电机/编码器
- *        (跟 UI 编码器调试页 ui_encoder.c 行为一致):
- *        - 前进/后退: 两轮同向
- *        - 左转/右转: 两轮反向 (原地转向)
- *        档位取自 motor_spd_levels[], 与 ui_encoder 的调速档位同源。
- *        平衡开着的时候方向键走速度环, 不会走到这里。
  */
 static void balance_apply_direct_move(void)
 {
@@ -890,8 +919,6 @@ static void balance_apply_direct_move(void)
 
 /**
  * @brief 配平采样: 控制任务里连续采 CALIB_SAMPLES 个 pitch 取平均
- * @note  采样的是**未扣零点**的 pitch (s_pitch_corr),
- *        否则第二次配平会把零点又减一遍, 越配越偏。
  */
 static void balance_calib_step(void)
 {
@@ -959,10 +986,7 @@ static void balance_task(void *arg)
         balance_calib_step();
 
         /* 2) 状态机 (摔倒检测) —— **始终运行**
-         * ⚠ 2026-10-26: 以前按方向键时这里被整个跳过 (直驱优先),
-         *   平衡环和摔倒检测都不跑 → 车站着的时候一推, 平衡环等于被关掉,
-         *   松手时车已经歪了, 平衡环接手必然剧烈纠偏。
-         *   现在方向键走速度环, 平衡环全程在线。 */
+         * 方向键走速度环, 平衡环全程在线 (没起立时才退回开环直驱)。 */
         balance_state_machine(dt);
 
         /* 2.5) 陀螺零偏慢漂跟随的开关
@@ -1003,8 +1027,7 @@ static void balance_task(void *arg)
          * ⚠ 必须放在**电机输出写完之后**:
          *   磁力计的 I2C 事务要 0.3~1ms, 如果夹在"读传感器"和"写电机"
          *   之间, 就等于给平衡内环加了一段**可变延迟**。内环本来就在
-         *   相位裕度边缘, 这种延迟足以把 8~12Hz 的自激振荡顶起来
-         *   (0.31 相对 0.30 唯一的功能差异就是多了这颗磁力计)。
+         *   相位裕度边缘, 这种延迟足以把 8~12Hz 的自激振荡顶起来。
          *   放在输出之后: 环路延迟不受影响; 本周期多花的时间由
          *   vTaskDelayUntil 自动吸收 (实测 dt 仍稳定 10.0ms)。 */
         mpu9250_update_mag();
@@ -1034,7 +1057,9 @@ static void balance_task(void *arg)
             ts.spd     = s_data.speed;
             ts.yaw     = s_data.yaw_out;
             ts.pos     = s_data.position_cm;
+            ts.pos_err = s_pos_target_cm - s_data.position_cm;
             ts.pos_out = s_data.pos_out;
+            ts.pos_vel = odom_get_velocity_cmps();
             /* kd 可以热改, 必须逐条记采样时刻的值 */
             ts.kd      = param_get_float(PARAM_PID_BAL_KD);
             ts.dt      = dt * 1000.0f;
@@ -1065,15 +1090,14 @@ esp_err_t balance_init(void)
     speed_pid_init();
     steer_pid_init();
     position_pid_init();
+    hold_pid_init();
     odom_init();
     s_lpf_primed = false;
 
     /* 载入配平表 (空表也 OK, 补偿恒为 0)
-     * ⚠ 2026-10-25 修正: 原来这里每次上电都 trim_erase_nvs() + trim_load(),
-     *   等于"每次上电都把标定好的配平表擦掉" —— 网页上标定半天,
-     *   一断电就回到原点, 配平功能等于没有。
-     *   现在只加载不擦; 换机械结构后要丢弃旧标定数据时,
-     *   再显式调用 trim_erase_nvs() (见 trim.h)。 */
+     * ⚠ 只加载不擦: 每次上电都 trim_erase_nvs() 会把标定好的配平表擦掉,
+     *   网页上标定半天, 一断电就回到原点。
+     *   换机械结构后要丢弃旧标定数据时, 显式调用 trim_erase_nvs() (见 trim.h)。 */
     trim_load();
 
     /* 配平零点 (跟配平表分开存, 不受 trim 表的存/取影响) */
@@ -1087,14 +1111,13 @@ esp_err_t balance_init(void)
     s_move_level = 0;
     s_out_ramp   = BAL_RAMP_START_PCT;
 
-    /* 轮速统计的初始快照: 第一个 100ms 窗口只当基准, 不算速度。
+    /* 轮速统计的初始快照: 第一个周期只当基准, 不算速度。
      * (否则会拿"从 0 开始"的计数差算出一个假的巨大转速) */
     s_enc_last_cnt[0] = encoder_get_count(ENCODER_1);
     s_enc_last_cnt[1] = encoder_get_count(ENCODER_2);
     s_enc_win_cnt    = 0;
     s_enc_acc_pulse[0] = 0;
     s_enc_acc_pulse[1] = 0;
-    s_enc_acc_win    = 0;
     s_rpm_raw[0]      = 0.0f;
     s_rpm_raw[1]      = 0.0f;
     s_speed_fwd       = 0.0f;
@@ -1124,12 +1147,12 @@ esp_err_t balance_init(void)
     trace_init();
 
     /* 增大任务栈: 平衡控制涉及大量浮点运算, 需要足够空间避免溢出
-     * ⚠ 优先级 7 (2026-10-26): 必须高于所有网络/上报任务
+     * ⚠ 优先级 7, 必须高于所有网络/上报任务
      *   (OneNet 高速上报 5/4、MQTT 客户端 5), 否则 WiFi 收发或 MQTT 发布会
      *   抢占控制任务 → 控制周期抖动 (dt 突然变大) → 阻尼相位失配 →
      *   表现为"站一会之后开始高频抖"。
      *
-     * ⚠ 2026-10-26 追加: **绑到 core 1**
+     * ⚠ 绑到 core 1
      *   IDF 的 WiFi 任务优先级 23 且固定跑在 core 0, lwIP 的 tcpip 任务
      *   优先级 18 (默认两个 core 都能跑)。它们一忙就会抢占优先级 7 的
      *   控制任务 → 控制周期从 10ms 变成 20~30ms → 反馈相位错位 →
@@ -1169,6 +1192,8 @@ esp_err_t balance_set_enable(bool on)
         balance_reset_pid();
         odom_reset();                 /* 位置基准重设: 当前位置 = 原点 */
         s_pos_target_cm = 0.0f;
+        s_pos_mode      = POS_MODE_WALK;   /* 起立后从行走态开始, 让位置环慢慢接管 */
+        s_pos_settle_t  = 0.0f;
         balance_arm_reset();          /* 门控从零开始计时 */
         s_state   = BAL_STATE_STANDBY;
         s_enabled = true;
@@ -1249,6 +1274,7 @@ esp_err_t balance_reload_params(void)
     speed_pid_init();
     steer_pid_init();
     position_pid_init();
+    hold_pid_init();
     ESP_LOGI(TAG, "控制参数已从 param 表重新读取");
     return ESP_OK;
 }

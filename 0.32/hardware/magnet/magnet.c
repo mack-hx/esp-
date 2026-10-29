@@ -1,7 +1,6 @@
 /**
  * @file magnet.c
  * @brief 电磁铁控制驱动实现
- * @note  通过 74HC595 Q5/Q6 控制电磁铁, 高电平开启。
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */

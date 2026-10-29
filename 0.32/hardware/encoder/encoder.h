@@ -63,7 +63,6 @@ esp_err_t encoder_clear(encoder_id_t id);
 
 /**
  * @brief 计算转速 (RPM)
- * @note  调用间隔由内部 tick 快照自动推导, 保持固定间隔调用可得稳定转速
  * @param id 编码器 ID
  * @param interval_ms 预期的调用间隔 (ms), 实际间隔偏差超过 ±50% 时本次返回 0
  * @return 转速 (RPM, 有符号, 正值正转)

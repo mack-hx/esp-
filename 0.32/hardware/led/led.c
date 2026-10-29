@@ -1,12 +1,6 @@
 /**
  * @file led.c
  * @brief SK6812 RGB LED 控制驱动实现 (ESP32 RMT 直驱版)
- * @note  硬件改动记录 (2026-10-01):
- *        - SK6812 DIN 已从 74HC595 Q0 改接至 ESP32 GPIO9
- *        - 使用 ESP32-S3 RMT TX 通道 0 驱动
- *        - RMT 时钟 10MHz, 100ns 精度, 满足 SK6812 时序要求
- *        - 使用 ESP-IDF 内置 led_strip_encoder 自动生成 0码/1码/复位码
- *
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */
@@ -120,8 +114,6 @@ static esp_err_t flush_led(led_id_t id)
 
 /**
  * @brief 开机自检: 红 → 绿 → 蓝 → 灭, 每档 300ms
- * @note  用来肉眼确认 "SK6812 到底有没有接到 GPIO9" —— 灯不亮时,
- *        先看这三个颜色有没有依次出现, 再去查 App / 云端。
  */
 void led_selftest(void)
 {

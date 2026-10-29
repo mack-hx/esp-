@@ -66,19 +66,20 @@ static SemaphoreHandle_t s_push_lock = NULL;
 /**
  * @brief 把一条采样打印成统一的 TRACE 行
  * @param r 采样记录
- * @note  先拼进一个整行再一次性输出 —— 免得 printf 分多次写串口,
- *        跟别的任务的日志交错, 把一行 TRACE 拦腰截断。
  */
 static void trace_print_one(const trace_sample_t *r)
 {
     char line[160];
     int n = snprintf(line, sizeof(line),
                      "TRACE t=%.3f pitch=%.2f gyro=%.1f out=%.1f tgt=%.2f "
-                     "spd=%.1f yaw=%.1f pos=%.1f pos_out=%.1f kd=%.2f dt=%.1f st=%d\n",
+                     "spd=%.1f yaw=%.1f pos=%.1f pos_err=%.2f pos_out=%.1f "
+                     "pos_vel=%.2f "
+                     "kd=%.2f dt=%.1f st=%d\n",
                      (double)r->t,
                      (double)r->pitch, (double)r->gyro, (double)r->out,
                      (double)r->tgt,  (double)r->spd,   (double)r->yaw,
-                     (double)r->pos,  (double)r->pos_out,
+                     (double)r->pos,  (double)r->pos_err,
+                     (double)r->pos_out, (double)r->pos_vel,
                      (double)r->kd,   (double)r->dt,    (int)r->st);
     if (n > 0) {
         fwrite(line, 1, (size_t)n, stdout);

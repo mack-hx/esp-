@@ -136,9 +136,6 @@ esp_err_t encoder_clear(encoder_id_t id)
 
 /**
  * @brief 计算转速 (RPM)
- * @note  周期由内部 tick 快照自动推导 (对比上次调用),
- *        所以调用间隔最好固定 (UI 里是 150ms);
- *        interval_ms 仅用于校验间隔是否明显偏离, 偏离时返回 0 避免算出错误的瞬时值
  */
 float encoder_get_rpm(encoder_id_t id, uint32_t interval_ms)
 {

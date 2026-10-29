@@ -1,12 +1,6 @@
 /**
  * @file lcd_ui.c
  * @brief LCD UI 系统主调度实现
- * @note  单任务轮询架构:
- *        - lcd_ui_init: 注册按键回调
- *        - lcd_ui_loop: 每 50ms 调用一次
- *            * 读取按键 → 派发到当前页面的 on_key
- *            * 累加 tick 计数器, 每 150ms 调用 on_refresh (实时数据刷新)
- *        - lcd_ui_switch_to: 处理旧页退出 + 新页进入
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */

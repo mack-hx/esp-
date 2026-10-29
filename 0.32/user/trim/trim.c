@@ -62,8 +62,6 @@ static uint8_t find_slot(const trim_t *m, float deg, bool *found)
  * @param m    表指针
  * @param deg  舵机角 (°)
  * @return 查到的俯仰角 (°)
- * @note  越界夹到端点, 不外推 (理由见 trim_pitch 注释)
- * @note  只用 1 个点时直接返回那个点的值
  */
 static float lookup(const trim_t *m, float deg)
 {

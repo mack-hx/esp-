@@ -1,8 +1,6 @@
 /**
  * @file motor_driver.h
  * @brief TB6612FNG 双路直流电机驱动
- * @note  方向控制 (AIN1/AIN2/BIN1/BIN2) 由 74HC595 提供,
- *        本模块只负责 PWM 速度控制 (PWMA/PWMB)。
  * @author ESP32 机械狗项目
  * @date 2026-10-01
  */
@@ -62,7 +60,6 @@ extern const int8_t motor_spd_levels[MOTOR_SPD_LEVEL_COUNT];
  * @brief 把任意百分比吸附到最近的合法档位
  * @param pct 目标百分比 (0~100)
  * @return 合法档位的百分比 (20 / 40 / 60 / 80 之一)
- * @note  0 表示停止, 原样返回 0
  */
 int8_t motor_spd_level_snap(int8_t pct);
 
@@ -77,7 +74,6 @@ typedef enum {
 
 /**
  * @brief 初始化电机驱动
- * @note  本函数只初始化 PWM 通道; 方向控制依赖 hc595 模块
  * @return ESP_OK 成功, 其他值失败
  */
 esp_err_t motor_driver_init(void);
@@ -123,13 +119,6 @@ esp_err_t motor_brake_all(void);
  * @brief 设置电机起动死区补偿值
  * @param deadzone 最小启动占空比 (0~MOTOR_DEADBAND_MAX, 单位 %; 0=不补偿)
  * @return ESP_OK 成功
- * @note  直流电机在极小占空比下转不动, 对平衡车表现为"慢慢爬行 + 突跳"。
- *        本函数把**非零**输出**加上** deadzone 的占空比, 抵消硬件死区,
- *        让小输出也能得到连续、可控的力矩。
- * @note  0 输出与制动**不受影响** (停车必须真的停)。
- * @note  deadzone 应填电机真正能转起来的最小占空比 (硬件死区),
- *        填偏了都会带来抖动。
- * @note  超范围自动夹到 [0, MOTOR_DEADBAND_MAX]。
  */
 esp_err_t motor_set_deadband(int8_t deadzone);
 
