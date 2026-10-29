@@ -70,30 +70,36 @@ static void test_deadband_softening(void)
     CHECK(fabsf(out_edge) < 1e-6f,
           "死区边界 (err=1.0) 输出=%.6f (期望 0)", out_edge);
 
-    /* 过渡带内: err=1.1, 压缩系数 = (1.1-1.0)/0.5 = 0.2 */
+    /* 过渡带内: err=1.1, t = (1.1-1.0)/0.5 = 0.2, 有效误差 = 0.5×0.2² = 0.02 */
     speed_pid_init();
     float out_soft = speed_pid_update(0.01f, 1.1f, 0.0f);
-    float expect = 0.06f * 0.2f;   /* kp × 压缩后的误差 */
+    float expect = 0.06f * 0.02f;   /* kp × 有效误差 */
     CHECK(fabsf(out_soft - expect) < 1e-4f,
-          "过渡带内 (err=1.1) 输出=%.5f (期望 %.5f = kp×0.2)", out_soft, expect);
+          "过渡带内 (err=1.1) 输出=%.5f (期望 %.5f = kp×0.02)", out_soft, expect);
 
-    /* 过渡带末端: err=1.5, 压缩系数 = 1.0, 等于原始值。
-     * 用"接近"而不是精确相等 —— 积分项 (ki*i) 会叠加一点。
-     * 对照: 硬归零版本在这里会输出 kp×(1.5-1.0)=0.03 (因为 1.5 在死区外
-     * 会被完整保留, 但 1.0~1.5 之间是跳变的)。 */
+    /* 过渡带末端: err=1.5 → 有效误差 = 1.5 − 1.0 = 0.5。
+     * 用"接近"而不是精确相等 —— 积分项 (ki*i) 会叠加一点。 */
     speed_pid_init();
     float out_full = speed_pid_update(0.01f, 1.5f, 0.0f);
-    float expect_full = 0.06f * 1.5f;
+    float expect_full = 0.06f * 0.5f;
     CHECK(fabsf(out_full - expect_full) < 0.005f,
-          "过渡带末端 (err=1.5) 输出=%.5f (期望 ≈%.5f = kp×1.5)",
+          "过渡带末端 (err=1.5) 输出=%.5f (期望 ≈%.5f = kp×0.5)",
           out_full, expect_full);
 
     /* 负方向对称 */
     speed_pid_init();
     float out_neg = speed_pid_update(0.01f, -1.1f, 0.0f);
-    CHECK(fabsf(out_neg + 0.06f * 0.2f) < 1e-4f,
+    CHECK(fabsf(out_neg + 0.06f * 0.02f) < 1e-4f,
           "负方向 (err=-1.1) 输出=%.5f (期望 %.5f, 与正方向对称)",
-          out_neg, -0.06f * 0.2f);
+          out_neg, -0.06f * 0.02f);
+
+    /* 过渡带末端两侧必须连续 (回归: 以前这里输出会从 0.06° 跳到 0.09°) */
+    speed_pid_init();
+    float below = speed_pid_update(0.01f, 1.49f, 0.0f);
+    speed_pid_init();
+    float above = speed_pid_update(0.01f, 1.51f, 0.0f);
+    CHECK(fabsf(above - below) < 0.005f,
+          "过渡带末端两侧应连续 (%.5f → %.5f)", below, above);
 }
 
 /**
@@ -119,8 +125,8 @@ static void test_quantization_no_jump(void)
           "跨台阶跳变=%.5f (期望 <0.02; 硬归零会是 %.5f)",
           jump, 0.06f * 1.05f);
 
-    /* 再跨一步 (0.9 -> 1.20): 压缩后误差差 = (1.20-1.0)/0.5 = 0.4,
-     * 乘 kp = 0.024。跳变确实比硬归零小, 但不是零 ——
+    /* 再跨一步 (0.9 -> 1.20): 有效误差 = 0.5×((1.20-1.0)/0.5)² = 0.08,
+     * 乘 kp = 0.0048。跳变确实比硬归零小, 但不是零 ——
      * 因为 0.30 rpm 的误差差是**真实存在**的速度差, 本来就该有响应。
      * 所以判据是"比硬归零版本小", 而不是绝对阈值。 */
     speed_pid_init();

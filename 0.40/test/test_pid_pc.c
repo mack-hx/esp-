@@ -347,6 +347,44 @@ static void test_integral_decay(void)
     CHECK(pid.i == 0.0f, "负积分衰减后归零 (期望 0, 实际 %.6f)", pid.i);
 }
 
+/**
+ * @brief 用例 10: 死区软化映射 pid_soft_deadband()
+ */
+static void test_soft_deadband(void)
+{
+    printf("\n[10] 死区软化: 死区内归零, 带内平滑起步, 带外按误差减死区\n");
+
+    const float D = 0.3f;   /* 死区 */
+    const float S = 0.4f;   /* 过渡带 */
+
+    CHECK(pid_soft_deadband(0.0f, D, S) == 0.0f, "误差 0 应映射为 0");
+    CHECK(pid_soft_deadband(0.3f, D, S) == 0.0f, "死区边界应映射为 0");
+    CHECK(pid_soft_deadband(-0.2f, D, S) == 0.0f, "负向死区内应映射为 0");
+
+    /* 过渡带内: 二次曲线, 死区边缘斜率为 0 */
+    float t = (0.5f - D) / S;
+    CHECK(fabsf(pid_soft_deadband(0.5f, D, S) - S * t * t) < 1e-6f,
+          "过渡带内 (0.5) 应为 %.5f", S * t * t);
+    CHECK(pid_soft_deadband(-0.5f, D, S) < 0.0f, "负向过渡带内应为负");
+
+    /* 过渡带末端: 取值必须与带外公式一致 (否则这里会跳变) */
+    float at_end = pid_soft_deadband(D + S, D, S);
+    float after = pid_soft_deadband(D + S + 0.01f, D, S);
+    CHECK(fabsf(at_end - S) < 1e-6f, "过渡带末端应为 %.2f", S);
+    CHECK(fabsf(after - (S + 0.01f)) < 1e-6f, "带外应为误差减死区");
+
+    /* 处处连续: 扫一遍, 相邻取值的差不能超过斜率上限 */
+    float prev = pid_soft_deadband(0.0f, D, S);
+    float max_step = 0.0f;
+    for (float e = 0.01f; e <= 2.0f; e += 0.01f) {
+        float v = pid_soft_deadband(e, D, S);
+        float step = v - prev;
+        if (step > max_step) max_step = step;
+        prev = v;
+    }
+    CHECK(max_step < 0.05f, "扫描时最大跳变 %.5f (期望 <0.05)", max_step);
+}
+
 int main(void)
 {
     printf("==== pid_update_rate() 离线验证 ====\n\n");
@@ -359,6 +397,7 @@ int main(void)
     test_anti_windup();
     test_set_gains_keeps_integral();
     test_integral_decay();
+    test_soft_deadband();
 
     printf("\n==== %d/%d 通过, %d 失败 ====\n",
            g_pass + g_fail, g_pass + g_fail, g_fail);

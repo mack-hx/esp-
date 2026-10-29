@@ -16,6 +16,33 @@ static float clamp_sym(float v, float limit)
 }
 
 /**
+ * @brief 死区软化: 把误差映射成"有效误差"
+ * @param err       误差 (带符号)
+ * @param deadband  死区宽度 (绝对值)
+ * @param soft_band 过渡带宽度 (绝对值)
+ * @return 有效误差 (带符号)
+ *
+ * @note  |err| <= deadband → 0
+ * @note  过渡带内 (deadband < |err| < deadband+soft_band) → soft_band·t², t = (|err|−deadband)/soft_band
+ * @note  过渡带外 → |err| − deadband
+ * @note  过渡带末端的取值 = soft_band, 与带外公式在同一处相等 → 输出处处连续
+ */
+float pid_soft_deadband(float err, float deadband, float soft_band)
+{
+    float a = fabsf(err);
+    if (a <= deadband) return 0.0f;
+
+    float eff;
+    if (soft_band > 0.0f && a < deadband + soft_band) {
+        float t = (a - deadband) / soft_band;
+        eff = soft_band * t * t;      /* 二次曲线: 死区边缘斜率为 0, 输出不跳变 */
+    } else {
+        eff = a - deadband;
+    }
+    return (err > 0.0f) ? eff : -eff;
+}
+
+/**
  * @brief 判断"输出已饱和且误差还在往同一方向推" → 此时不能再积分
  * @param pid   PID 结构指针
  * @param out   当前完整输出 (含积分项)

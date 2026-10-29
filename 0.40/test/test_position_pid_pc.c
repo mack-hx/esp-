@@ -88,10 +88,11 @@ static void test_deadband_softening(void)
     CHECK(fabsf(out_in) < 1e-3f,
           "死区内 (err=0.2cm) 输出=%.6f cm/s (期望 0)", out_in);
 
-    /* 过渡带: 压缩后误差 = (|err| − 死区) / 过渡带 */
+    /* 过渡带: 有效误差 = 过渡带宽度 × ((|err| − 死区) / 过渡带宽度)² */
     position_pid_init();
     float out_soft = settle(0.5f, 100);
-    float expect = (0.5f - POS_PID_ERR_DEADBAND) / POS_PID_ERR_SOFT_BAND;
+    float t = (0.5f - POS_PID_ERR_DEADBAND) / POS_PID_ERR_SOFT_BAND;
+    float expect = POS_PID_ERR_SOFT_BAND * t * t;
     CHECK(fabsf(out_soft - expect) < 1e-3f,
           "过渡带内 (err=0.5cm) 输出=%.5f cm/s (期望 ≈%.5f)", out_soft, expect);
 
@@ -100,16 +101,18 @@ static void test_deadband_softening(void)
     CHECK(fabsf(out_neg + expect) < 1e-3f,
           "负方向 (err=-0.5cm) 输出=%.5f cm/s (期望 ≈-%.5f)", out_neg, expect);
 
-    /* 过渡带之外: 误差原样进 PID */
+    /* 过渡带之外: 有效误差 = 误差 − 死区 */
     position_pid_init();
     float out_full = settle(5.0f, 100);
-    CHECK(fabsf(out_full - 5.0f) < 0.05f,
-          "过渡带外 (err=5cm) 输出=%.5f cm/s (期望 ≈5.0 = kp×err)", out_full);
+    float expect_full = 5.0f - POS_PID_ERR_DEADBAND;
+    CHECK(fabsf(out_full - expect_full) < 0.05f,
+          "过渡带外 (err=5cm) 输出=%.5f cm/s (期望 ≈%.2f = kp×(err−死区))",
+          out_full, expect_full);
 
     position_pid_init();
     float out_full_neg = settle(-5.0f, 100);
-    CHECK(fabsf(out_full_neg + 5.0f) < 0.05f,
-          "负方向 (err=-5cm) 输出=%.5f cm/s (期望 ≈-5.0)", out_full_neg);
+    CHECK(fabsf(out_full_neg + expect_full) < 0.05f,
+          "负方向 (err=-5cm) 输出=%.5f cm/s (期望 ≈-%.2f)", out_full_neg, expect_full);
 
     /* 死区边界: 误差从小到大扫过去, 输出不能跳一大截 */
     position_pid_init();
@@ -118,6 +121,14 @@ static void test_deadband_softening(void)
     float above = settle(POS_PID_ERR_DEADBAND + 0.01f, 100);
     CHECK(fabsf(above - below) < 0.05f,
           "死区边界输出应连续 (%.5f → %.5f cm/s)", below, above);
+
+    /* 过渡带末端两侧必须连续 (回归: 以前这里输出会从 2.0 掉回 1.4 cm/s) */
+    position_pid_init();
+    float band_below = settle(POS_PID_ERR_DEADBAND + POS_PID_ERR_SOFT_BAND - 0.01f, 100);
+    position_pid_init();
+    float band_above = settle(POS_PID_ERR_DEADBAND + POS_PID_ERR_SOFT_BAND + 0.01f, 100);
+    CHECK(fabsf(band_above - band_below) < 0.05f,
+          "过渡带末端两侧应连续 (%.5f → %.5f cm/s)", band_below, band_above);
 }
 
 /**
@@ -158,10 +169,11 @@ static void test_integral_decay_in_deadband(void)
 
     position_pid_init();
 
-    /* 过渡带内的误差: 输出不撞限幅, 积分能正常累积 */
-    float out_big = settle(0.5f, 200);
-    CHECK(out_big > 0.5f,
-          "偏 0.5cm 时输出=%.3f cm/s (期望 >0.5, 积分在工作)", out_big);
+    /* 过渡带外的误差: 输出不撞限幅, 积分能正常累积 */
+    float out_big = settle(2.0f, 200);
+    CHECK(out_big > 2.0f - POS_PID_ERR_DEADBAND,
+          "偏 2cm 时输出=%.3f cm/s (期望 >%.2f, 积分在工作)",
+          out_big, 2.0f - POS_PID_ERR_DEADBAND);
 
     /* 回正 (进死区) 后, 积分要退干净, 输出不能一直挂着 */
     float out_at_zero = settle(0.1f, 200);

@@ -45,6 +45,20 @@ typedef struct {
 float pid_i_max(float ki, float out_max);
 
 /**
+ * @brief 死区软化: 把误差映射成"有效误差"
+ * @param err       误差 (带符号)
+ * @param deadband  死区宽度 (绝对值)
+ * @param soft_band 过渡带宽度 (绝对值)
+ * @return 有效误差 (带符号)
+ *
+ * @note  |err| <= deadband → 0
+ * @note  过渡带内 (deadband < |err| < deadband+soft_band) → soft_band·t², t = (|err|−deadband)/soft_band
+ * @note  过渡带外 → |err| − deadband
+ * @note  过渡带末端的取值 = soft_band, 与带外公式在同一处相等 → 输出处处连续
+ */
+float pid_soft_deadband(float err, float deadband, float soft_band);
+
+/**
  * @brief 初始化 PID 系数
  * @param pid     PID 结构指针
  * @param kp      比例系数

@@ -53,10 +53,9 @@ float position_pid_update(float dt, float err)
          * (跟速度环同一个坑, 见 position_pid.h 的说明) */
         err = 0.0f;
         pid_decay_integral(&s_pid, dt, POS_PID_I_DECAY_TAU);
-    } else if (abs_err < POS_PID_ERR_DEADBAND + POS_PID_ERR_SOFT_BAND) {
-        /* 过渡带: 线性压缩, 保证误差连续 (消除边界跳变) */
-        float t = (abs_err - POS_PID_ERR_DEADBAND) / POS_PID_ERR_SOFT_BAND;
-        err = (err > 0.0f) ? t : -t;
+    } else {
+        /* 死区外: 有效误差 = 误差 − 死区宽度, 过渡带内平滑起步 (输出处处连续) */
+        err = pid_soft_deadband(err, POS_PID_ERR_DEADBAND, POS_PID_ERR_SOFT_BAND);
     }
 
     /* P (+可选 I): 输出 = 目标速度 (cm/s), 已在 PID 内部限幅到 ±V_MAX */

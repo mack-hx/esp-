@@ -64,10 +64,9 @@ float speed_pid_update(float dt, float speed, float target)
          * 残留积分会永久冻结在非零值。这里用指数衰减 (SPD_PID_I_DECAY_TAU)
          * 让积分平滑滑向 0, 输出连续不抖。死区外正常累积。 */
         pid_decay_integral(&s_pid, dt, SPD_PID_I_DECAY_TAU);
-    } else if (abs_err < SPD_PID_ERR_DEADBAND + SPD_PID_ERR_SOFT_BAND) {
-        /* 过渡带: 按比例线性压缩, 保证误差连续 (消除边界跳变) */
-        float t = (abs_err - SPD_PID_ERR_DEADBAND) / SPD_PID_ERR_SOFT_BAND;
-        err = (err > 0.0f) ? t : -t;
+    } else {
+        /* 死区外: 有效误差 = 误差 − 死区宽度, 过渡带内平滑起步 (输出处处连续) */
+        err = pid_soft_deadband(err, SPD_PID_ERR_DEADBAND, SPD_PID_ERR_SOFT_BAND);
     }
 
     return pid_update(&s_pid, err, dt);

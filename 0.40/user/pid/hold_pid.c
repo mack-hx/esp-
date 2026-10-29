@@ -6,6 +6,7 @@
 
 #include "hold_pid.h"
 #include "param.h"
+#include "pid.h"
 #include <math.h>
 
 /* 增益 (每周期从 param 表刷新) */
@@ -80,9 +81,8 @@ float hold_pid_update(float dt, float v_cmps, float v_ref_cmps)
     float abs_err = fabsf(err);
     if (abs_err <= HOLD_PID_V_DEADBAND) {
         p_err = 0.0f;
-    } else if (abs_err < HOLD_PID_V_DEADBAND + HOLD_PID_V_SOFT_BAND) {
-        float t = (abs_err - HOLD_PID_V_DEADBAND) / HOLD_PID_V_SOFT_BAND;
-        p_err = (err > 0.0f) ? t : -t;
+    } else {
+        p_err = pid_soft_deadband(err, HOLD_PID_V_DEADBAND, HOLD_PID_V_SOFT_BAND);
     }
 
     /* --- I 项 + 抗积分饱和 ---
