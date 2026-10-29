@@ -1,8 +1,9 @@
 /**
  * @file ui_balance.c
  * @brief UI 平衡控制页实现
+ * @note  屏幕只有 128x160, 每行最多 21 个字符, 所有显示串必须 ≤21 字符
+ *        (超了 ui_draw_string 会自动换行, 把下面的布局冲掉)。
  * @author ESP32 平衡轮腿机器人
- * @date 2026-10-04
  */
 
 #include "ui_balance.h"

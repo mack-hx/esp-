@@ -9,7 +9,7 @@
  *   sign = base64( hmac_sha1( base64decode(accessKey), "{et}\n{method}\n{res}\n{version}" ) )
  *   token = version=2018-10-31&res=<urlencoded>&et=<et>&method=sha1&sign=<urlencoded>
  *
- * 平台地址 (2026-10-21 实测确认):
+ * 平台地址 (实测确认):
  *   - 开放接口  https://iot-api.heclouds.com        ← App 走这里
  *   - 设备接入  https://studio-mqtt.heclouds.com   ← ESP32 走 MQTT
  *   - 旧的 https://open.iot.10086.cn/application?action=... 已经废弃,
@@ -25,6 +25,9 @@
  *   POST /thingmodel/call-service
  *        → 调用物模型服务 (急停/起立/配平/读参数/写参数/保存参数)
  *        body: {product_id, device_name, project_id, identifier, params}
+ *
+ * @note  AccessKey 必须是**产品级** key: 设备级 key 调上面这些接口一律
+ *        authPermissionDeny (设备级 key 只能给设备自己用)。
  */
 
 import { getConfig } from './config.js'
@@ -34,21 +37,13 @@ const API_BASE = 'https://iot-api.heclouds.com'
 
 /**
  * @brief 接口地址
+ * @note  H5 / App 都直接连 OneNet (平台已开放 CORS: Access-Control-Allow-Origin: *),
+ *        不需要本地代理, 也不需要改 vite.config.js
  */
 function getApiBase() {
   return API_BASE
 }
 
-/* ===================== 平台服务器时间 =====================
- * 为什么要这个:
- *   属性历史接口是按**时间窗口**查的 (start_time / end_time),
- *   而时间窗口是用**手机本地时钟**算的。手机时钟一旦不准 (手动改过时间、
- *   没开自动对时、时区设置错乱), 查出来的就全是**过去**的数据,
- *   表现为"车动了, 要好几秒后曲线才变"。
- *   平台 HTTP 响应头里有 Date (服务器时间), 拿它当时间基准,
- *   手机时钟偏多少都不影响查到最新数据。
- * ⚠ H5 端受 CORS 限制读不到 Date 头 (Date 不是 CORS safelisted 响应头),
- *   那时退化为本地时间 + 大余量兜底 (见 status.vue 的窗口计算)。 */
 
 /** 平台服务器时间基准 (Unix 毫秒), 0 = 还没拿到 */
 let _serverNowMs = 0
@@ -60,6 +55,7 @@ let _serverSkewMs = 0
 /**
  * @brief 用响应头里的 Date 更新平台时间基准
  * @param {string} dateHeader 形如 "Sun, 25 Oct 2026 11:09:56 GMT"
+ * @note Date 头只有秒级精度, 误差 ±500ms, 对本项目够用
  */
 function updateServerClock(dateHeader) {
   if (!dateHeader) return
@@ -306,6 +302,9 @@ function sha1(bytes) {
  * @param {Object} res  平台返回的 JSON
  * @param {string} what 操作名 (用于拼错误提示)
  * @return {Object} 原样返回 res
+ * @note  平台 HTTP 状态码永远是 200, 真正的错误在 body 的 code 里:
+ *        10412 = 标识符不存在 (物模型没建这个属性)
+ *        10415 = 服务调用失败 (设备没应答 / 应答跟物模型对不上)
  */
 function checkResult(res, what) {
   if (res && typeof res.code === 'number' && res.code !== 0) {
@@ -401,6 +400,9 @@ export function queryDeviceProperty() {
  * @param {number} startTime 起始时间戳 (Unix 毫秒, 含)
  * @param {number} endTime   结束时间戳 (Unix 毫秒, 含)
  * @returns {Promise<Object>} { code:0, data:{ list:[{time, value}, ...] } }
+ * @note  平台每次最多返回 10 个点, 且是**倒序** (最新在前)。
+ * @note  设备端把 pitch 的上报频率提到 20Hz, 这个接口一次就能拿回一批采样点,
+ *        比轮询"最新值"快得多 —— 曲线的点密度取决于这个接口, 不是轮询间隔。
  */
 export function queryDevicePropertyHistory(identifier, startTime, endTime) {
   const cfg = getConfig()
@@ -415,6 +417,7 @@ export function queryDevicePropertyHistory(identifier, startTime, endTime) {
 /**
  * @brief 设置属性期望值 (云→设备)
  * @param {Object} values 形如 { speed: 0.3 }
+ * @note  设备会收到 $sys/.../thing/property/set 消息, 参数是**裸值**
  * @returns {Promise<Object>} { code:0, msg:'succ' }
  */
 export function setDesiredProperty(values) {
@@ -424,7 +427,7 @@ export function setDesiredProperty(values) {
     device_name: cfg.deviceName,
     params: values || {}
   }
-  /* project_id 不填也能用 (实测 2026-10-21), 填了才带上 */
+  /* project_id 不填也能用, 填了才带上 */
   const pid = getProjectId()
   if (pid) body.project_id = pid
   return httpRequest('POST', '/thingmodel/set-device-desired-property', body)

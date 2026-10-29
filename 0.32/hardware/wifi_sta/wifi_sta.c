@@ -2,14 +2,13 @@
  * @file wifi_sta.c
  * @brief WiFi STA 模式 + AP 配网实现
  *
- * 设计:
- *   1. wifi_sta_start() 检查 NVS:
- *      - 有 ssid+pass → STA 模式连家里 WiFi
- *      - 没有 → AP 模式开 BalanceRobot_Setup 热点 + 起配网页
- *   2. STA 模式连上后, 配网页服务器**关闭** (释放 80 端口), onenet_client 可启动
- *   3. AP 配网模式下, 收到 /api/wifi POST → 存 NVS → 软重启
+ * 流程:
+ *   1. wifi_sta_start() 检查 NVS: 有 ssid+pass 走 STA, 没有走 AP 配网
+ *   2. STA 连上后关闭配网页服务器 (释放 80 端口), onenet_client 可启动
+ *   3. AP 模式下收到 /api/wifi POST → 存 NVS → 软重启
+ *
+ * @note  WiFi 事件处理用 esp_event 异步模式
  * @author ESP32 机械狗项目
- * @date 2026-10-12
  */
 
 #include "wifi_sta.h"
@@ -107,22 +106,6 @@ static esp_err_t save_credentials_to_nvs(const char *ssid, const char *pass)
     nvs_close(h);
     return err;
 }
-
-/**
- * @brief 清空 NVS 里的 SSID/密码, 下次启动会进 AP 配网
- */
-static esp_err_t clear_credentials_in_nvs(void)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(WIFI_STA_NVS_NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-    nvs_erase_key(h, WIFI_STA_NVS_KEY_SSID);
-    nvs_erase_key(h, WIFI_STA_NVS_KEY_PASS);
-    err = nvs_commit(h);
-    nvs_close(h);
-    return err;
-}
-
 /* ========== 配网页 HTTP handler ========== */
 
 /**
@@ -294,10 +277,9 @@ static esp_err_t start_ap_mode(void)
         return ESP_FAIL;
     }
 
-    /* 关键: create_default_wifi_ap() 已经自动把 DHCP server 起来了,
-     * 此时调 esp_netif_set_ip_info() 会返回 ESP_ERR_ESP_NETIF_DHCP_NOT_STOPPED,
-     * 导致整个 AP 启动流程中断 → esp_wifi_start() 永远不被调用 → 热点根本不广播。
-     * 所以必须先停 DHCP 再设 IP (和 wifi_sta_start_ap() 的做法一致)。 */
+    /* create_default_wifi_ap() 已自动起 DHCP server, 必须先停 DHCP 再设 IP,
+     * 否则 esp_netif_set_ip_info() 返回 ESP_ERR_ESP_NETIF_DHCP_NOT_STOPPED,
+     * AP 启动流程会中断。 */
     esp_netif_dhcps_stop(s_ap_netif);
 
     /* 固定 IP 192.168.4.1
@@ -348,6 +330,7 @@ static esp_err_t start_ap_mode(void)
 
 /**
  * @brief 启动 STA 模式连家里 WiFi
+ * @note  使用纯 STA 模式确保 DHCP 能正常工作
  */
 static esp_err_t start_sta_mode(const char *ssid, const char *pass)
 {
@@ -524,12 +507,6 @@ wifi_sta_state_t wifi_sta_get_state(void)
 {
     return s_state;
 }
-
-bool wifi_sta_is_connected(void)
-{
-    return (s_state == WIFI_STA_CONNECTED);
-}
-
 esp_err_t wifi_sta_get_ip(esp_netif_ip_info_t *info)
 {
     if (info == NULL) return ESP_ERR_INVALID_ARG;
@@ -548,6 +525,7 @@ esp_err_t wifi_sta_get_ssid(char *buf, uint32_t len)
 
 /**
  * @brief 启动 AP 模式 + 配网页 (用于运行时切换配网)
+ * @note  从 STA 模式切换时会关闭 STA，切换到纯 AP 模式
  */
 /**
  * @brief 获取当前 AP 配网热点的真实 SSID (含 MAC 后缀)
@@ -642,12 +620,4 @@ esp_err_t wifi_sta_start_ap(void)
     ESP_LOGI(TAG, "AP 配网已开启: SSID=%s  IP=http://192.168.4.1/", s_ap_ssid);
 
     return ESP_OK;
-}
-
-void wifi_sta_reprovision(void)
-{
-    ESP_LOGW(TAG, "主动触发重新配网, 清 NVS, 重启...");
-    clear_credentials_in_nvs();
-    vTaskDelay(pdMS_TO_TICKS(200));
-    esp_restart();
 }

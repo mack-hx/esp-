@@ -1,7 +1,6 @@
 /**
  * @file onenet_client.h
  * @brief OneNet MQTT 客户端 (连 mqtts.heclouds.com, 走物模型 topic)
- * @date 2026-10-10
  *
  * 平台: OneNet Studio (Masa 平台)
  *   - Broker:   mqtts://mqtts.heclouds.com:1883
@@ -36,25 +35,15 @@
 #define ONENET_DEVICE_NAME   "balancing_dog"
 /** 设备级 AccessKey (Base64 字符串), 跟 App 端 onenet.js 里写的一致 */
 #define ONENET_DEVICE_AK     "YlpFVXlONlMzTUNnMHRocTRXSG04SkZMbmVrdEdmQTI="
-/** Token 有效期 (秒), 跟 App 端 tokenExpireSec 一致 */
-#define ONENET_TOKEN_TTL     (86400)
 
 /* ========== 对外 API ========== */
 
 /**
  * @brief 启动 MQTT 客户端 (后台任务)
+ * @note  内部建一条任务处理 MQTT 事件循环, 不需要外部喂事件
  * @return ESP_OK 成功
  */
 esp_err_t mqtt_client_start(void);
-
-/**
- * @brief 上报一帧设备属性 (走 $sys/.../thing/property/post)
- * @param json_payload OneJSON 格式的完整属性 post body
- *                     (含 id / version / params 三段, 不带 topic)
- * @return ESP_OK 已加入发送队列
- */
-esp_err_t mqtt_client_post_property(const char *json_payload);
-
 /**
  * @brief 上报一个事件 (走 $sys/.../thing/event/post)
  * @param name 事件名 (fallen / armed / error)

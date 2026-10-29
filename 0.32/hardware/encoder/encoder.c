@@ -2,7 +2,6 @@
  * @file encoder.c
  * @brief 增量式正交编码器驱动实现 (ESP32-S3 PCNT 外设)
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #include "encoder.h"
@@ -108,34 +107,11 @@ int encoder_get_count(encoder_id_t id)
     pcnt_get_counter_value(encoder_map[id].unit, &count);
     return count;
 }
-
-/**
- * @brief 获取编码器计数值并清除
- */
-int encoder_get_and_clear(encoder_id_t id)
-{
-    if (id > ENCODER_2) return 0;
-
-    int count = encoder_get_count(id);
-    pcnt_counter_clear(encoder_map[id].unit);
-    return count;
-}
-
-/**
- * @brief 清除编码器计数值
- */
-esp_err_t encoder_clear(encoder_id_t id)
-{
-    if (id > ENCODER_2) return ESP_ERR_INVALID_ARG;
-
-    pcnt_counter_pause(encoder_map[id].unit);
-    pcnt_counter_clear(encoder_map[id].unit);
-    pcnt_counter_resume(encoder_map[id].unit);
-    return ESP_OK;
-}
-
 /**
  * @brief 计算转速 (RPM)
+ * @note  周期由内部 tick 快照自动推导 (对比上次调用),
+ *        所以调用间隔最好固定 (UI 里是 150ms);
+ *        interval_ms 仅用于校验间隔是否明显偏离, 偏离时返回 0 避免算出错误的瞬时值
  */
 float encoder_get_rpm(encoder_id_t id, uint32_t interval_ms)
 {
@@ -166,14 +142,4 @@ float encoder_get_rpm(encoder_id_t id, uint32_t interval_ms)
     /* 转数 = 脉冲数 / 每转脉冲数, 再换算到每分钟 */
     float revs = (float)delta / ENCODER_PULSES_PER_REV;
     return revs * 60.0f / elapsed_sec;
-}
-
-/**
- * @brief 计算累计转数
- */
-float encoder_get_revolutions(encoder_id_t id)
-{
-    if (id > ENCODER_2) return 0.0f;
-    int count = encoder_get_count(id);
-    return (float)count / ENCODER_PULSES_PER_REV;
 }

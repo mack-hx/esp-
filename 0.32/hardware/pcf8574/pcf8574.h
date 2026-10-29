@@ -2,7 +2,6 @@
  * @file pcf8574.h
  * @brief PCF8574 I2C IO 扩展芯片驱动 (按键输入)
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #ifndef PCF8574_H
@@ -76,19 +75,14 @@ esp_err_t pcf8574_read_all(uint8_t *state);
  * @return ESP_OK 成功, 其他值失败
  */
 esp_err_t pcf8574_read_pin(pcf8574_pin_t pin, bool *state);
-
-/**
- * @brief 检测按键是否按下 (高电平有效)
- * @param id 按键/开关 ID
- * @param pressed 状态指针 (true=按下)
- * @return ESP_OK 成功, 其他值失败
- */
-esp_err_t pcf8574_is_pressed(btn_id_t id, bool *pressed);
-
 /**
  * @brief 扫描按键状态 (含多采样消抖 + 按下/释放状态机)
  * @param[out] pressed_mask 当前稳定按下的按键位图 (bit=1 表示按下, 全松开=0xFF)
  * @return ESP_OK 成功, 其他值失败
+ *
+ * @note  推荐调用周期 SCAN_INTERVAL_MS (8ms). 函数内部维护状态机,
+ *        相同采样连续 DEBOUNCE_SAMPLES 次才视为稳定 (总消抖时间 ≈ 40ms).
+ *        一次完整的按下-释放周期才会触发一次 BTN_EVENT_PRESS / BTN_EVENT_RELEASE 回调.
  */
 esp_err_t pcf8574_scan_buttons(uint8_t *pressed_mask);
 
@@ -97,19 +91,8 @@ esp_err_t pcf8574_scan_buttons(uint8_t *pressed_mask);
  * @param[out] sw1 微动开关1 是否压下 (左), 压下= true
  * @param[out] sw2 微动开关2 是否压下 (右), 压下= true
  * @return ESP_OK 成功; 读取失败时两个开关都按"未压下"处理
+ * @note  PCF8574 的 P4/P5 接微动开关, 内部上拉, 压下拉低 (跟按键同约定)。
+ *        云端上报和屏上显示都调这个函数, 保证两边看到的完全一致。
  */
 esp_err_t pcf8574_read_dock_switches(bool *sw1, bool *sw2);
-/**
- * @brief 注册按键事件回调
- * @param cb 回调函数指针
- * @return ESP_OK 成功, 其他值失败
- */
-esp_err_t pcf8574_register_callback(pcf8574_btn_cb_t cb);
-
-/**
- * @brief 启用中断 (GPIO 下降沿触发)
- * @return ESP_OK 成功, 其他值失败
- */
-esp_err_t pcf8574_enable_interrupt(void);
-
 #endif // PCF8574_H

@@ -2,17 +2,12 @@
  * @file wifi_sta.h
  * @brief WiFi STA 模式 + AP 配网
  *
- * 工作流程:
- *   1. 启动时读 NVS `wifi_ssid` / `wifi_pass`
- *   2. 有存 → 直接 STA 模式连家里 WiFi
- *   3. 没存 → 开 AP 热点 (默认 SSID BalanceRobot_Setup) + 起极简配网页
- *      用户连上热点 → 浏览器开 192.168.4.1 → 填家里 WiFi 名/密码 → 保存
- *      保存后 ESP32 软重启, 回到步骤 1 走 STA 模式
+ * 流程: 启动读 NVS `wifi_ssid`/`wifi_pass`; 有存走 STA 连接, 没存开 AP 热点
+ *       (默认 SSID BalanceRobot_Setup) + 配网页 (192.168.4.1), 保存后软重启。
+ *       主循环看到 STA 连上后再启动 onenet_client。
  *
- * 联网成功后, 外部通过 wifi_sta_is_connected() / wifi_sta_get_ip() 查状态,
- * 主循环里看到 STA 已连上后再启动 onenet_client
+ * @note  AP 模式仅用于配网, 不提供调参网页
  * @author ESP32 机械狗项目
- * @date 2026-10-12
  */
 
 #ifndef WIFI_STA_H
@@ -53,6 +48,7 @@ typedef enum {
 
 /**
  * @brief 启动 WiFi (自动选 STA 或 AP 配网模式)
+ * @note  必须在 nvs_flash_init() 之后调用 (WiFi 驱动要用 NVS)
  * @return ESP_OK 启动指令成功下发, 异步结果看事件 / wifi_sta_get_state()
  */
 esp_err_t wifi_sta_start(void);
@@ -61,12 +57,6 @@ esp_err_t wifi_sta_start(void);
  * @brief 查询当前状态
  */
 wifi_sta_state_t wifi_sta_get_state(void);
-
-/**
- * @brief 是否已连上外网 (STA 已连)
- */
-bool wifi_sta_is_connected(void);
-
 /**
  * @brief 获取当前 STA 模式下的 IP 信息
  * @param info [出参] IP 信息
@@ -87,18 +77,15 @@ esp_err_t wifi_sta_get_ssid(char *buf, uint32_t len);
  * @param buf 输出缓冲区
  * @param len 缓冲区大小
  * @return ESP_OK 成功, ESP_ERR_INVALID_STATE 当前不在 AP 模式
+ * @note  真实 SSID = WIFI_STA_AP_SSID + "_" + MAC 后两字节 (大写 hex),
+ *        手机搜热点必须按这个名字找
  */
 esp_err_t wifi_sta_get_ap_ssid(char *buf, uint32_t len);
 
 /**
  * @brief 切换到 AP 配网模式 (运行时调用，不重启)
+ * @note  用于在已连接状态下按K4进入配网模式
  * @return ESP_OK 成功
  */
 esp_err_t wifi_sta_start_ap(void);
-
-/**
- * @brief 主动触发重新配网 (清空 NVS, 重启)
- */
-void wifi_sta_reprovision(void);
-
 #endif // WIFI_STA_H

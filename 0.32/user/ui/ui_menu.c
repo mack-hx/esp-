@@ -1,8 +1,11 @@
 /**
  * @file ui_menu.c
  * @brief UI 菜单页实现
+ * @note  - 显示所有可进入的功能页面条目 (第一项是 "Back to Home")
+ *        - K2 上移 / K3 下移 切换选中条目 (循环)
+ *        - 选中行画右箭头 ">" + 反白显示
+ *        - K1 进入当前选中条目对应页面
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #include "ui_menu.h"

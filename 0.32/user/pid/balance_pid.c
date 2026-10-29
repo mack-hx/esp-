@@ -2,7 +2,6 @@
  * @file balance_pid.c
  * @brief 平衡环 (内环) 实现: 姿态误差 → 电机输出 (%)
  * @author ESP32 平衡轮腿机器人
- * @date 2026-10-27
  */
 
 #include "balance_pid.h"

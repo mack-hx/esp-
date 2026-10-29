@@ -1,8 +1,9 @@
 /**
  * @file servo.c
  * @brief 舵机控制驱动实现 (标准 PWM 舵机, 50Hz, 1-2ms 脉宽)
+ * @note  - 双路独立目标角度 (逻辑角度), 物理安装不对称由 servo_logic_to_phys() 补偿
+ *        - 后台任务每 SERVO_KEEP_ALIVE_MS ms 重新同步硬件, 跨页不失力不跳变
  * @author ESP32 机械狗项目
- * @date 2026-10-03
  */
 
 #include "servo.h"
@@ -34,6 +35,8 @@ static uint32_t s_update_errors = 0;   // 更新失败次数
 
 /**
  * @brief 将逻辑角度转换为舵机 ID 对应的物理角度
+ * @note  SERVO_1 = GPIO14 (正向舵机) → 物理角 = 180-逻辑
+ *        SERVO_2 = GPIO13 (反向舵机, 调 80° 实际转 100°) → 不映射
  * @param id 舵机 ID
  * @param logic_angle 逻辑角度 (0-180)
  * @return 物理角度 (0-180)

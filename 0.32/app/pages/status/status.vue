@@ -145,6 +145,7 @@ const REDRAW_MS = 100
  * @brief 生成绘图适配器, 屏蔽各端 canvas API 的差异
  * @param ctx  H5: 原生 canvas 2d 上下文; 其它端: uni.createCanvasContext 返回的上下文
  * @param isH5 true = H5 (原生 API), false = App/小程序 (uni 命令式 API)
+ * @note 所有方法的坐标单位都是 CSS 像素
  */
 function createPainter(ctx, isH5) {
   if (isH5) {
@@ -253,6 +254,8 @@ export default {
     },
     /**
      * @brief 遥控指令文字
+     * @note  `speed` 属性是打包指令 (见 app/utils/control.js 的编码说明):
+     *        0=停止, ±0.2~0.8=前进/后退, ±1.2~1.8=左转/右转
      */
     moveText() {
       const v = Number(this.motor.speed) || 0
@@ -266,6 +269,7 @@ export default {
     },
     /**
      * @brief 心跳文字: 链路有多稳
+     * @note  依赖 _tick (每秒自增) 和 _lastDataAt 才能定时刷新
      */
     heartbeatText() {
       if (!this._lastDataAt) return '无数据'
@@ -275,6 +279,7 @@ export default {
     },
     /**
      * @brief 数据延迟文字
+     * @note  最新采样点的平台时间戳与平台当前时间的差值, 用来判断"曲线跟不跟手"
      */
     latencyText() {
       if (this.pitchLatency === null || this.pitchLatency === undefined) return '--'
@@ -282,6 +287,10 @@ export default {
     },
     /**
      * @brief 平台时钟与手机本地时钟的偏差文字
+     * @note  正数 = 平台比手机快 (手机本地时钟慢了), 这正是"车动了要好几秒
+     *        才看到变化"的元凶 —— 查询窗口必须以平台时间为准。
+     *        ⚠ 偏差值必须放在 data 里 (skewMs), 直接在 computed 里调
+     *        getServerSkewMs() 的话没有响应式依赖, 计算结果会被缓存住不更新
      */
     skewText() {
       if (!this.skewMs) return '--'
@@ -330,6 +339,8 @@ export default {
   methods: {
     /**
      * @brief 初始化绘图上下文
+     * @note  H5 端: 直接用 DOM 里的 <canvas> 取 2d 上下文
+     *        App/小程序端: 逻辑层没有 DOM, 只能用 uni.createCanvasContext 命令式 API
      */
     _initCanvas() {
       if (this.painter) return
@@ -379,6 +390,9 @@ export default {
     
     /**
      * @brief 启动重绘循环
+     * @note  用 setInterval 而不是 requestAnimationFrame:
+     *        App 端逻辑层没有 DOM, rAF / document 都是 undefined, 调用会抛
+     *        "ReferenceError: requestAnimationFrame is not defined"。
      */
     _startDrawLoop() {
       if (this._redrawTick) clearInterval(this._redrawTick)
@@ -513,6 +527,9 @@ export default {
 
     /**
      * @brief 拉一次俯仰角历史 (高速通道)
+     * @note  平台的属性历史接口一次最多返回 10 个点 (倒序),
+     *        设备端 20Hz 上报 → 每 120ms 拉一次就能攒出很密的曲线。
+     * @note  返回的点带毫秒时间戳, 用来 (1) 排序去重 (2) 算数据延迟
      */
     async _pollPitch() {
       if (oneApi.getState().state !== 'ready') return

@@ -347,6 +347,7 @@ export default {
     },
     /**
      * @brief 下发灯控制
+     * @note  led_color 用 0x00RRGGBB (和设备端解析一致); SK6812 只有 RGB 三通道
      */
     _sendLed() {
       const { r, g, b, brightness, on } = this.ledState
@@ -371,6 +372,7 @@ export default {
      * @brief 用设备上报的值同步界面
      * @param {string} key  标识符
      * @param {number} val  设备上的值
+     * @note  刚下发过 (2.5s 内) 不覆盖, 防止把用户正在拖的滑块弹回去
      */
     _syncFromDevice(key, val) {
       const now = Date.now()

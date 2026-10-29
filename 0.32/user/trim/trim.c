@@ -2,7 +2,6 @@
  * @file trim.c
  * @brief 配平表实现: 查表 + 线性插值 + NVS 持久化
  * @author ESP32 平衡轮腿机器人
- * @date 2026-10-05
  */
 
 #include "trim.h"
@@ -62,6 +61,8 @@ static uint8_t find_slot(const trim_t *m, float deg, bool *found)
  * @param m    表指针
  * @param deg  舵机角 (°)
  * @return 查到的俯仰角 (°)
+ * @note  越界夹到端点, 不外推
+ * @note  只用 1 个点时直接返回那个点的值
  */
 static float lookup(const trim_t *m, float deg)
 {
@@ -138,48 +139,11 @@ esp_err_t trim_set_point(float servo_deg, float pitch_deg)
     s_trim.count++;
     return ESP_OK;
 }
-
-esp_err_t trim_del_point(float servo_deg)
-{
-    for (uint8_t i = 0; i < s_trim.count; i++) {
-        if (s_trim.pts[i].servo_deg != servo_deg) continue;
-        /* 前移补洞 */
-        for (uint8_t j = i; j + 1 < s_trim.count; j++) {
-            s_trim.pts[j] = s_trim.pts[j + 1];
-        }
-        s_trim.count--;
-        memset(&s_trim.pts[s_trim.count], 0, sizeof(s_trim.pts[0]));
-        return ESP_OK;
-    }
-    return ESP_OK;   /* 本来就没有, 也算成功 */
-}
-
 esp_err_t trim_clear(void)
 {
     memset(&s_trim, 0, sizeof(s_trim));
     return ESP_OK;
 }
-
-esp_err_t trim_erase_nvs(void)
-{
-#ifndef TRIM_OFFLINE_TEST
-    nvs_handle_t h;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
-        return ESP_OK;   /* namespace 不存在直接返回 OK */
-    }
-    esp_err_t ret = nvs_erase_all(h);
-    if (ret == ESP_OK) {
-        ret = nvs_commit(h);
-    }
-    nvs_close(h);
-    ESP_LOGI(TAG, "NVS trim 数据已擦除");
-    return ret;
-#else
-    /* 离线测试没有 NVS, 直接返回 OK */
-    return ESP_OK;
-#endif
-}
-
 float trim_pitch_span(void)
 {
     if (s_trim.count == 0) return 0.0f;

@@ -1,48 +1,51 @@
-# HANDOFF
+# HANDOFF.md
 
 ## 当前状态
-- 最新版本工程：`0.32/`（0.31 为历史版本，只读不改）。
-- 0.32 控制链现状：**三级串级**
-  位置环(position_pid) → 锁位速度环(hold_pid) → 平衡环(balance_pid)。
-  行走时由速度环(speed_pid)给倾角；站住不动时位置环接管。
-  各环 PID 实现在 `user/pid/`，编排/状态机在 `user/control/balance.c`。
-- 参数表：22 项，`PARAM_DATA_VERSION = 24`（车端 param.c 与 App paramDef.js 必须一致）。
+- 最新版本工程：`0.32/`（0.31 为历史版本，**不得修改**）。
+- 本轮工作：**代码整洁度清理**（注释精简 + 文件头去日期戳），上一轮已删死代码与零调用 API。
+- 编译状态：`pio run` 通过，**零 warning 零 error**（RAM 26.6% / 87052 B，Flash 28.4% / 1041357 B）。
+- 未烧录验证：本机没接开发板（`/dev/cu.usbmodem*` 不存在），需用户接板后自行烧录。
 
-## 本轮已做（2026-10-29）
-1. 全工程 `@note` 注释清零（66 个文件）。
-2. 整理 0.32 的代码和注释：清掉描述"改了什么"的历史流水账、修正与实际行为
-   矛盾的注释（odom.h 的 100ms→10ms、balance.c 的旧架构描述、position 环
-   两句互斥的说法）、补回被删掉的串级结构图和控制原理说明。
-3. **补回 `user/pid/CMakeLists.txt`**（之前缺失，全新 configure 会失败），
-   并把 `hold_pid.c` 加进 SRCS。
-4. 删死常量 `POS_PID_V_TOTAL_MAX` / `POS_PID_KD_DEFAULT`（全工程零引用）。
+## 注释规则（最新，用户拍板，后续照此执行）
+- **只写三类内容**：① 变量含义 ② 接口契约 ③ 技术事实。
+- **不要写**：理由/推导、改动历史（"xx 日修改补充"、"原来…改成…"）、日期戳、版本标记、长篇大论。
+- 文件头**不再写 `@date`**（`@file` / `@brief` / `@author` 保留，`@param` / `@return` 永远保留）。
+- 代码与注释都以**简洁**为先。
+- 已落地到 `.cursor/rules/project-workflow.mdc` 第 10 条。
 
-## 验证状态
-- `pio run` 通过：RAM 26.6%，Flash 28.4%。
-- 删掉 `.pio/build` 后全新 configure + 全量编译通过（CMakeLists 修复已确认有效）。
-- 从 GitHub 拉下来的干净副本再全量编译一遍，同样通过。
-- App `.js` 通过 `node --check`；`.vue` 注释块闭合检查通过。
+## 本轮（第三轮）改了什么
+- **删掉全部 67 个文件头的 `@date` 行**（`@date 2026-10-xx`），文件头只留 `@file/@brief/@author`。
+- **全工程注释再精简一轮**：只保留变量含义、接口契约、技术事实；删掉理由推导、长说明、大段 ASCII 图。
+  - 头文件重点：`user/pid/*.h`、`user/control/balance.h`、`user/trim/trim.h`、`user/param/param.h`、
+    `hardware/{servo,motor_driver,hc595,magnet,mpu9250,lcd,wifi_sta,tft_display}/*.h`。
+  - 源文件重点：`user/control/balance.c`、`user/onenet_client/onenet_client.c`、
+    `hardware/mpu9250/mpu9250.c`、`hardware/pcf8574/pcf8574.c`、`hardware/motor_driver/motor_driver.c`、
+    `hardware/servo/servo.c`、`hardware/wifi_sta/wifi_sta.c`、`user/pid/*.c`、`main/main.c`、`user/ui/*.c`。
+- **顺手修正一处注释与代码不符**：`magnet.h` 写"电磁铁1 = Q5"，实际代码是 `Q2`（电磁铁2 = Q1），已改正。
 
-## Git 状态
-- 已推送到 GitHub：`mack-hx/esp-` main 分支，提交 `217843b`
-  「refactor(0.32): 整理代码与注释, 补回 user/pid/CMakeLists.txt」。
-- 注意：**本地工作区本身不是 git 仓库**，历史在远端。本次是把本地 0.32
-  整棵树同步进 `/tmp/esp_git_probe` 克隆再提交的（该克隆是临时目录，重启会没）。
+## 前两轮改了什么（只删无用代码，不改控制逻辑）
+- **删掉 3 个零引用硬件组件目录**：`hardware/voice_module`、`hardware/i2c_scanner`、`hardware/k230_uart`
+  （根 `CMakeLists.txt` 的 `EXTRA_COMPONENT_DIRS` 同步去掉）。
+- **删掉 29 个零调用公共函数**（定义+声明）：`param_to_json`、`param_count`、`param_get_item`、
+  `param_stale_write`、`trim_del_point`、`trim_erase_nvs`、`balance_get_arm_ms`、`balance_get_move`、
+  `balance_reload_params`、`mqtt_client_post_property`、`encoder_get_and_clear`、`encoder_clear`、
+  `encoder_get_revolutions`、`hc595_get_state`、`lcd_ui_get_current_page`、`led_deinit`、
+  `led_color_to_brightness`、`motor_get_deadband`、`motor_set_direction`、`mpu9250_read_accel`、
+  `mpu9250_read_mag`、`mpu9250_read_temperature`、`pcf8574_is_pressed`、`pcf8574_register_callback`,
+  `pcf8574_enable_interrupt`、`tft_draw_pixel`、`tft_draw_string`、`wifi_sta_is_connected`、
+  `wifi_sta_reprovision`；连带删 2 个孤儿：`wifi_sta.c:clear_credentials_in_nvs()`、
+  `pcf8574.c:pcf8574_isr_handler()`。
+- **删掉 26 个零引用宏**（`LED_BRIGHTNESS_*`、`SERVO_PERIOD_MS`、`LOOP_TICK_MS` 等）。
+- **删掉 3 个只写不读字段**：`bal_data_t.speed_raw` / `.target_speed` / `.spd_out`。
+- 重复 include 各删一份；`BAL_MOVE_TURN_BASE` 改为接上（`onenet_client.c` 里 1.0f/2.0f 换成宏，数值等价）。
 
-## 约定
-- 注释用 `@brief` / `@param` / `@return`；**不要引入 `@note`**（已清零）。
-- `@brief` 一个函数只能有一个，不要重复用。
-- 注释写"现在是什么、为什么这么做"，**不写"什么时候从什么改成什么"**
-  （改动历史属于 logs/ 和 git）。
-- 改固件时 `pio run` 自行验证；改 App 时 `node --check` 验证。
+## 待办 / 注意
+- **需要用户烧录验证**：动过 `balance.c` 控制任务与 `onenet_client.c` 指令解码，建议接板跑一次起立 + 方向键。
+- `app/unpackage/dist/` 是构建产物，未同步注释改动，重新打包会覆盖。
+- 本轮备份：`/tmp/bak032d`（0.32 全量副本，除 `.pio`/`build`）；上一轮：`/tmp/bak032c`。
+- 本轮有**另一个 Cursor 会话可能同时改同一批文件**，动文件前先确认当前内容。
+- 详细过程见 `logs/2026-10-29.md`。
 
-## 注意事项
-- 本轮有**另一个 Cursor 会话同时在改 0.32 同一批文件**（14:03 那批 pid 文件）。
-  它的方向是"删掉所有解释性注释"，把 pid.h / hold_pid.h / position_pid.h /
-  speed_pid.h 的结构说明和原理段落删干净了；本次会话已把关键原理补回。
-  继续动这几个文件前先确认当前内容。
-
-## 待办
-- 真机回归：位置环→锁位速度环→平衡环的串级改动还没上真机验证。
-- `test/` 和 `scripts/` 目录只在远端仓库有（GitHub mack-hx/esp-），本地 0.32 没有；
-  跑离线仿真测试需要先从远端拉这两个目录。
+## 等价性核对结论
+去注释后逐文件 diff（Python 剥注释比对，70 个文件）：**代码差异 0**，本轮只动注释。
+前两轮的唯一"改写"是 `1.0f/2.0f` → `BAL_MOVE_TURN_BASE`（数值等价），控制逻辑零变化。

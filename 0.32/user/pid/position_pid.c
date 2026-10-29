@@ -2,7 +2,6 @@
  * @file position_pid.c
  * @brief 位置环实现: 位置误差 (cm) → 目标速度 (cm/s)
  * @author ESP32 平衡轮腿机器人
- * @date 2026-10-29
  */
 
 #include "position_pid.h"
@@ -23,10 +22,8 @@ void position_pid_load_params(void)
     float kp_eff = (kp > 0.001f) ? kp : 0.0f;
     float ki_eff = (ki > 0.001f) ? ki : 0.0f;
 
-    /* ⚠ 只改系数, 不清积分 (每周期都调, 用 pid_config 会让积分永远为 0)
-     * ⚠ kd 传 0: PID 内部的 D 项是"误差导数", 对编码器量化噪声太敏感。
-     *   位置环的阻尼由**速度环**提供 (速度 = 位置误差的导数),
-     *   见 hold_pid.h —— 这才是标准串级, 不需要手写 D 项。 */
+    /* 只改系数, 不清积分 (每周期都调, 用 pid_config 会让积分永远为 0)
+     * kd 传 0: 位置环的阻尼由锁位速度环提供 (见 hold_pid.h), 不需要手写 D 项。 */
     pid_set_gains(&s_pid,
                   kp_eff, ki_eff, 0.0f,
                   pid_i_max(ki_eff, POS_PID_V_MAX),

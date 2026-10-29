@@ -125,7 +125,7 @@
 <script>
 /**
  * @file trim.vue
- * @brief 配平表标定页 (0.31 新增)
+ * @brief 配平表标定页
  *
  * 配平表 = "舵机角 → 平衡俯仰角" 的一维表, 车端用来自动补偿换腿高带来的
  * 平衡俯仰角偏差 (实测从最低到最高差约 10°)。
@@ -135,6 +135,11 @@
  *   trim_save    表落盘 (NVS, 断电不丢)
  *   trim_clear   清空表并落盘 (换机械结构后用)
  *   trim_get     读回整张表 (JSON 字符串: {n, ref, pz, pts})
+ *
+ * @note  为什么页面上的 pitch 与表里的 pitch 不是同一个数:
+ *        页面上显示的是遥测上报的**修正后** pitch (已经扣了配平表补偿和配平零点),
+ *        表里存的是车端取的**原始** pitch (没扣任何补偿) —— 修正链里还会再扣一次
+ *        trim_pitch(), 存修正后的会重复扣, 补偿就废了。所以两者本来就不该相等。
  */
 import { controller } from '../../utils/control.js'
 import { oneApi } from '../../common/oneapi.js'
@@ -215,6 +220,8 @@ export default {
 
     /**
      * @brief 拉一次遥测属性 (pitch / servo1_angle)
+     * @note  照状态页 status.vue 的做法: 调平台的属性查询接口, 拿回一个
+     *        {identifier: value} 的表, 取自己关心的字段。
      */
     async _poll() {
       if (oneApi.getState().state !== 'ready') return
@@ -277,6 +284,8 @@ export default {
 
     /**
      * @brief 「拨腿」: 两路舵机转到选定的角度
+     * @note  走物模型属性 servo1_angle / servo2_angle (跟 UI 舵机页同一条通道)。
+     *        两路舵机是镜像安装的, 逻辑角始终相同, 所以两个值给一样的。
      */
     async onMoveLeg() {
       const v = Number(this.servoAngle)

@@ -1,8 +1,17 @@
 /**
  * @file trace.h
  * @brief 控制回路跟踪: 环形缓冲采集 + 独立任务回灌串口
+ *
+ * @note  采集 (trace_push) 只写内存环形缓冲, 控制任务调用, 不碰串口;
+ *        打印与历史回灌在钉在 core 0 的独立任务里做 (控制任务钉在 core 1)。
+ *
+ * @note  数据格式 (固件 / 采集脚本 / 分析脚本 三方统一):
+ *   TRACE t=1.234 pitch=-0.50 gyro=-12.3 out=8.0 tgt=0.20 spd=2.0
+ *         yaw=0.0 pos=1.2 pos_err=0.3 pos_out=0.0 kd=0.40 dt=10.0 st=2
+ *   对应 CSV 表头:
+ *     t_ms,pitch,gyro,out,tgt,spd,yaw,pos,pos_err,pos_out,pos_vel,kd,dt,st
+ *
  * @author ESP32 平衡轮腿机器人
- * @date 2026-10-27
  */
 
 #ifndef TRACE_H
@@ -35,17 +44,20 @@ typedef struct {
 
 /**
  * @brief 初始化跟踪模块 (创建输出任务)
+ * @note  必须在控制任务启动**之前**调用
  */
 void trace_init(void);
 
 /**
  * @brief 采一条样存进环形缓冲 (控制任务调用, 不做串口 I/O)
  * @param s 采样数据 (内部按值拷贝)
+ * @note  耗时几百纳秒, 每个控制周期调一次即可 (10ms → 100Hz)
  */
 void trace_push(const trace_sample_t *s);
 
 /**
  * @brief 请求把环形缓冲里的历史回灌到串口 (控制任务调用, 不阻塞)
+ * @note  真正的打印在独立任务里做, 调用方立即返回
  */
 void trace_request_dump(void);
 

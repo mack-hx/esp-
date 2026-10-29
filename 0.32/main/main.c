@@ -1,7 +1,6 @@
 /**
  * @file main.c
  * @brief ESP32-S3R8R8N8 平衡轮腿机械狗主程序
- * @date 2026-10-01
  */
 
 #include <stdio.h>
@@ -48,9 +47,11 @@ static const char *TAG = "MAIN";
  *
  * 多键同时按下: 只返回优先级最高的那个键
  *
- * 按下电平约定: P0~P7 内部上拉到 VCC (4.7kΩ 外部上拉), 按键按下时拉低 (接地).
- *   "按下"对应位 = 0, "松开"对应位 = 1
+ * 按下电平约定: P0~P7 上拉到 VCC, 按键按下拉低, 即"按下"对应位 = 0。
  *   例: 按下 K1 (P0) → 读 0xFE, 全松开 0xFF
+ *
+ * @note  本函数只做位图 → UI 键值映射, 不做消抖
+ *        (消抖由 pcf8574_scan_buttons() 状态机 + lcd_ui_loop() 边沿检测完成)
  */
 static ui_key_t key_get_from_pcf8574(void)
 {
@@ -132,10 +133,9 @@ void app_main(void)
                  PCF8574_SCL_GPIO, PCF8574_SDA_GPIO, PCF8574_INT_GPIO);
     }
 
-    /* 7. 初始化 MPU9250 (允许失败: 模块可能未接, UI 会显示 "NOT READY")
-     * ⚠ 重试 10 次: 上电瞬间 IMU 的供电/内部时钟可能还没稳,
-     *   单次读 WHO_AM_I 失败就放弃, 会让整次上电都处于"MPU 不可用"状态
-     *   (实测过一次: 第 1 次读失败, 500ms 后重试就正常了)。 */
+    /* 7. 初始化 MPU9250 (允许失败: 模块可能未接, UI 显示 "NOT READY")
+     * 重试 10 次: 上电瞬间 IMU 供电/内部时钟可能未稳, 单次读 WHO_AM_I
+     * 失败会导致整次上电都处于 MPU 不可用状态。 */
     esp_err_t mpu_ret = ESP_FAIL;
     for (int i = 0; i < 10 && mpu_ret != ESP_OK; i++) {
         mpu_ret = mpu9250_init();
@@ -150,27 +150,23 @@ void app_main(void)
                  MPU9250_SCL_GPIO, MPU9250_SDA_GPIO);
     }
 
-    /* 8. 初始化平衡控制 (读 param 参数 + 载入配平表 + 启动控制任务)
-     * 注意: 必须在 MPU9250 / 编码器 / 电机 / 舵机 之后, 控制任务要读它们。
-     * 允许失败: MPU 没接时控制任务仍会跑, 只是没有姿态数据不会输出。 */
+    /* 8. 初始化平衡控制 (读 param + 载入配平表 + 启动控制任务)
+     * 必须在 MPU9250 / 编码器 / 电机 / 舵机 之后; 允许失败 */
     esp_err_t bal_ret = balance_init();
     if (bal_ret != ESP_OK) {
         ESP_LOGE(TAG, "平衡控制初始化失败 (%s)", esp_err_to_name(bal_ret));
     }
 
-    /* 8.1 启动 WiFi (STA 模式连家里 WiFi, 没配过的话进 AP 配网)
-     * 注意: WiFi 驱动依赖 NVS, 必须在 nvs_flash_init 之后调用。
-     *       两者都允许失败: 失败只是没法用 OneNet, 屏上按键调试照常 */
+    /* 8.1 启动 WiFi (STA 模式连家里 WiFi, 没配过进 AP 配网)
+     * WiFi 驱动依赖 NVS, 必须在 nvs_flash_init 之后调用; 允许失败 */
     esp_err_t wifi_ret = wifi_sta_start();
     if (wifi_ret != ESP_OK) {
         ESP_LOGE(TAG, "WiFi 启动失败, OneNet 远程不可用 (%s)",
                  esp_err_to_name(wifi_ret));
     }
 
-    /* 8.2 启动 OneNet MQTT 客户端 (走物模型 topic, 跟 App 端 onenet.js 对齐)
-     * 注意: mqtts.heclouds.com:1883 要走外网, 所以**必须在 wifi_sta_start() 之后**
-     * 依赖: 已经在 sdkconfig.defaults 里开了 CONFIG_MQTT_PROTOCOL_311=y
-     * 失败: 只是没法用 App 远程, 屏上按键调试照常 */
+    /* 8.2 启动 OneNet MQTT 客户端 (走物模型 topic)
+     * 必须在 wifi_sta_start() 之后 (要走外网); 允许失败 */
     esp_err_t mqtt_ret = mqtt_client_start();
     if (mqtt_ret != ESP_OK) {
         ESP_LOGE(TAG, "OneNet MQTT 启动失败 (%s), App 远程不可用", esp_err_to_name(mqtt_ret));

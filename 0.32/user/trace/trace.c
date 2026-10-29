@@ -2,10 +2,9 @@
  * @file trace.c
  * @brief 控制回路跟踪: 环形缓冲采集 + 独立任务回灌串口
  *
- * @see trace.h (接口说明 + 为什么要有这个组件)
+ * @see trace.h (接口说明)
  *
  * @author ESP32 平衡轮腿机器人
- * @date 2026-10-27
  */
 
 #include "trace.h"
@@ -18,13 +17,10 @@
 #include <string.h>
 
 /* ========== 环形缓冲 ==========
- * 600 条 × 10ms = **6 秒**历史。
- * 12Hz 量级的振荡在 6 秒里有 72 个周期, 频谱足够分辨。
- * 每条 48 字节 → 约 29KB 常驻 RAM。 */
+ * 600 条 × 10ms = 6 秒历史, 每条 48 字节 → 约 29KB 常驻 RAM */
 #define TRACE_RING_N      600
 
-/* 输出任务: 堆 4KB, 优先级压到最低 (2),
- * 钉在 core 0 —— 控制任务钉在 core 1, 串口阻塞不跟控制环抢 CPU。 */
+/* 输出任务: 堆 4KB, 优先级 2, 钉在 core 0 (控制任务在 core 1) */
 #define TRACE_TASK_STACK  4096
 #define TRACE_TASK_PRIO   2
 #define TRACE_TASK_CORE   0
@@ -54,18 +50,13 @@ static volatile bool     s_freeze  = false; /* 回灌期间冻结采集 */
 /* 回灌请求信号量 (二值): 控制任务 give, 输出任务 take */
 static SemaphoreHandle_t s_dump_sem = NULL;
 
-/* 采集锁 (二值信号量): 保证"冻结检查 + 写环形缓冲"是原子的。
- * ⚠ 为什么需要: 环形缓冲的写槽位 s_total % N **恰好就是最老那条所在的槽位**
- *   (因为 N 是整数倍关系), 也就是说回灌正在读的那条, 正是生产者下一步要覆盖的那条。
- *   如果只在"检查 s_freeze"和"写数据"之间被打断一次, 回灌就会读到一条
- *   写了一半的记录 (撕裂)。
- *   用信号量把"检查 + 写"包成临界区就彻底没有这个窗口了。
- *   代价: 控制任务每 10ms 抢一次信号量 (无竞争时 ~100ns), 可以忽略。 */
 static SemaphoreHandle_t s_push_lock = NULL;
 
 /**
  * @brief 把一条采样打印成统一的 TRACE 行
  * @param r 采样记录
+ * @note  先拼进一个整行再一次性输出 —— 免得 printf 分多次写串口,
+ *        跟别的任务的日志交错, 把一行 TRACE 拦腰截断。
  */
 static void trace_print_one(const trace_sample_t *r)
 {

@@ -2,7 +2,6 @@
  * @file pcf8574.c
  * @brief PCF8574 I2C IO 扩展芯片驱动实现
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #include "pcf8574.h"
@@ -21,19 +20,9 @@ static pcf8574_btn_cb_t btn_callback = NULL;
 /* ========== 消抖参数 ========== */
 /**
  * 时间窗消抖: candidate 状态 (与 last_stable 不同) 持续 DEBOUNCE_MS
- * (推荐 30ms) 后, 才更新 last_stable 并派发边沿事件.
- *
- * 设计依据:
- * - 机械按键抖动期一般 5-20ms (按下瞬间多次通断)
- * - 人手短按 50-100ms, 长按 200ms+
- * - 30ms 持续确认: 抖动期会被过滤 (持续时间不够), 短按仍可被识别
- * - scan 函数推荐 50ms 周期调用 (与 lcd_ui_loop 一致), 抖动样本会被刷掉
- *
- * 实际效果:
- *   单次短按 100ms: scan 在 50ms, 100ms 时读到 0xFE, last_stable 在 50ms 时
- *                   已更新; scan 在 150ms 时读到 0xFF, last_stable 在 200ms 时更新
- *                   → 完整识别"按下-释放"周期
- *   抖动 10ms: scan 期间只采到 1 次 0xFE (50ms 周期), 持续时间 < 30ms → 被过滤
+ * (推荐 30ms) 后, 才更新 last_stable 并派发边沿事件。
+ * 机械抖动期一般 5-20ms, 30ms 持续确认可过滤抖动而不误伤短按;
+ * scan 推荐 50ms 周期调用 (与 lcd_ui_loop 一致)。
  */
 #define DEBOUNCE_MS              30   // 状态变化需持续 N ms 才确认
 #define PULLUP_STABLE_MS         2    // PCF8574 内部上拉稳定时间 (替代原 10ms)
@@ -41,10 +30,7 @@ static pcf8574_btn_cb_t btn_callback = NULL;
 /**
  * @brief 内部消抖状态机 (时间窗消抖)
  *
- * 设计: candidate 状态 (与 last_stable 不同) 持续 DEBOUNCE_MS 才确认.
- *   - 抖动期短 (<DEBOUNCE_MS) 被自动过滤
- *   - 人手短按 (>= DEBOUNCE_MS) 完整识别
- *   - 按住期间不再触发 (last_stable 不变, 不产生边沿)
+ * 设计: candidate 持续 DEBOUNCE_MS 才确认; 抖动期被过滤, 按住期间不重复触发。
  *
  * 字段说明:
  *   - state: 仅用于日志 (不再用于控制流)
@@ -80,6 +66,12 @@ static esp_err_t pcf8574_write_byte(uint8_t data)
 
 /**
  * @brief 读取 1 字节 (含预写 0xFF 刷新 + 全低重试 + 兜底)
+ * @note  PCF8574 是准双向 IO, 内部 100µA 上拉很弱, 引脚被拉低时公共 VCC
+ *       跌落会导致其他引脚误读为低。
+ *       办法: 1) 读前写 0xFF 刷新锁存器 2) 等 2ms 让 4.7kΩ 上拉稳定
+ *             3) 读真实电平 4) 读到 0x00 (VCC 跌落) 则重试一次
+ *             5) 仍为 0x00 → 视为全松开 (返回 0xFF)
+ *       耗时: 正常 ~3-4ms, 重试 ~6-8ms
  */
 static esp_err_t pcf8574_read_byte(uint8_t *data)
 {
@@ -204,18 +196,6 @@ esp_err_t pcf8574_read_pin(pcf8574_pin_t pin, bool *state)
     *state = (data >> pin) & 0x01;
     return ESP_OK;
 }
-
-/**
- * @brief 检测按键是否按下
- */
-esp_err_t pcf8574_is_pressed(btn_id_t id, bool *pressed)
-{
-    if (id > SW_K6 || pressed == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    return pcf8574_read_pin((pcf8574_pin_t)id, pressed);
-}
-
 /**
  * @brief 扫描按键状态 (含时间窗消抖 + 按下/释放边沿事件)
  *
@@ -295,52 +275,6 @@ esp_err_t pcf8574_scan_buttons(uint8_t *pressed_mask)
     *pressed_mask = s_key_fsm.last_stable;
     return ESP_OK;
 }
-
-/**
- * @brief 注册按键事件回调
- */
-esp_err_t pcf8574_register_callback(pcf8574_btn_cb_t cb)
-{
-    if (cb == NULL) return ESP_ERR_INVALID_ARG;
-    btn_callback = cb;
-    return ESP_OK;
-}
-
-/**
- * @brief 中断处理函数 (由 ISR 调用)
- */
-static void IRAM_ATTR pcf8574_isr_handler(void *arg)
-{
-    // 中断只做标志位标记, 实际处理放到任务中
-    (void)arg;
-}
-
-/**
- * @brief 启用中断 (GPIO 下降沿触发)
- */
-esp_err_t pcf8574_enable_interrupt(void)
-{
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << PCF8574_INT_GPIO),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_NEGEDGE,   // 下降沿触发
-    };
-
-    esp_err_t ret = gpio_config(&io_conf);
-    if (ret != ESP_OK) return ret;
-
-    ret = gpio_install_isr_service(0);
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) return ret;
-
-    ret = gpio_isr_handler_add(PCF8574_INT_GPIO, pcf8574_isr_handler, NULL);
-    if (ret != ESP_OK) return ret;
-
-    ESP_LOGI(TAG, "PCF8574 中断已启用 (GPIO=%d)", PCF8574_INT_GPIO);
-    return ESP_OK;
-}
-
 /**
  * @brief 读取两个对接微动开关的状态
  */

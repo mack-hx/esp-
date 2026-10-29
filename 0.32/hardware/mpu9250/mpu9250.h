@@ -2,7 +2,6 @@
  * @file mpu9250.h
  * @brief MPU9250 九轴惯性测量单元驱动
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #ifndef MPU9250_H
@@ -16,7 +15,6 @@
 /* ========== 引脚配置 ========== */
 #define MPU9250_SCL_GPIO        1       // I2C 时钟线
 #define MPU9250_SDA_GPIO        2       // I2C 数据线
-#define MPU9250_INT_GPIO        3       // 中断引脚
 
 /* ========== I2C 配置 ========== */
 #define MPU9250_I2C_NUM         I2C_NUM_0
@@ -31,30 +29,22 @@
 #define MPU9250_ACCEL_CONFIG    0x1C
 #define MPU9250_ACCEL_CONFIG2   0x1D
 #define MPU9250_INT_PIN_CFG     0x37
-#define MPU9250_INT_ENABLE      0x38
-#define MPU9250_INT_STATUS      0x3A
 #define MPU9250_USER_CTRL       0x6D    /* bypass 位: bit0 = 磁力计 bypass, bit1 = 陀螺/加速度 bypass */
 
 #define MPU9250_ACCEL_XOUT_H    0x3B    // 加速度计数据起始地址
-#define MPU9250_TEMP_OUT_H      0x41    // 温度数据起始地址
 #define MPU9250_GYRO_XOUT_H     0x43    // 陀螺仪数据起始地址
 
 /* ========== AK8963 磁力计 (MPU9250 内置, bypass 后独立挂在 0x0C) ==========
- * ⚠ 寄存器地址按 AK8963 原厂数据手册:
- *   0x00 WIA, 0x01 INFO, 0x02 ST1, 0x03~0x08 HXL..HZH, 0x09 ST2,
- *   0x0A CNTL1, 0x0B CNTL2, 0x0C~0x0F ASTC, 0x10 ASAX, 0x11 ASAY, 0x12 ASAZ
- *
- * ⚠ 走 bypass 模式时, AK8963 才能被当成"独立器件"用 0x0C 直接访问。
- *   MPU9250 的 INT_PIN_CFG 要置 bit1 (0x02, 让 INT 引脚直通 AK8963)
- *   和 bit6 (0x40, 允许 bypass), USER_CTRL 置 0 (退出 I2C master 模式)。 */
+ * 寄存器: 0x00 WIA, 0x01 INFO, 0x02 ST1, 0x03~0x08 HXL..HZH, 0x09 ST2,
+ *         0x0A CNTL1, 0x0B CNTL2, 0x0C~0x0F ASTC, 0x10~0x12 ASAX/ASAY/ASAZ
+ * bypass 模式: INT_PIN_CFG 置 bit1 (INT 直通 AK8963) 与 bit6 (允许 bypass),
+ *              USER_CTRL 置 0 (退出 I2C master 模式)。 */
 #define AK8963_I2C_ADDR         0x0C
 #define AK8963_WHO_AM_I_VAL     0x48
 
 #define AK8963_REG_WIA          0x00    /* 器件 ID, 期望 0x48 */
-#define AK8963_REG_INFO         0x01
 #define AK8963_REG_ST1          0x02    /* bit0 = DRDY (数据就绪) */
 #define AK8963_REG_HXL          0x03    /* 数据起始 (HXL..HZH, 小端) */
-#define AK8963_REG_ST2          0x09    /* 读完必须读一次, 清 DRDY 标志 */
 #define AK8963_REG_CNTL1        0x0A    /* 模式控制 */
 #define AK8963_REG_ASAX         0x10    /* 厂标敏感度系数起始 (ASAX/Y/Z) */
 
@@ -113,6 +103,7 @@ esp_err_t mpu9250_init(void);
 
 /**
  * @brief 查询 MPU9250 是否就绪
+ * @note  mpu9250_init() 成功后才为 true
  * @return true=可用
  */
 bool mpu9250_is_ready(void);
@@ -137,32 +128,17 @@ esp_err_t mpu9250_set_gyro_fs(mpu9250_gyro_fs_t fs);
  * @return ESP_OK 成功, 其他值失败
  */
 esp_err_t mpu9250_read_data(mpu9250_data_t *data);
-
-/**
- * @brief 读取加速度数据
- * @param accel 加速度数据指针
- * @return ESP_OK 成功, 其他值失败
- */
-esp_err_t mpu9250_read_accel(mpu9250_axis_t *accel);
-
 /**
  * @brief 读取陀螺仪数据
  * @param gyro 陀螺仪数据指针
  * @return ESP_OK 成功, 其他值失败
  */
 esp_err_t mpu9250_read_gyro(mpu9250_axis_t *gyro);
-
-/**
- * @brief 读取温度
- * @param temp 温度指针 (°C)
- * @return ESP_OK 成功, 其他值失败
- */
-esp_err_t mpu9250_read_temperature(float *temp);
-
 /**
  * @brief 获取欧拉角 (互补滤波)
  * @param angle 欧拉角指针
  * @return ESP_OK 成功, 其他值失败
+ * @note  mpu9250_get_pose() 的兼容包装, 内部同样只读一次 I2C
  */
 esp_err_t mpu9250_get_euler_angle(euler_angle_t *angle);
 
@@ -171,6 +147,8 @@ esp_err_t mpu9250_get_euler_angle(euler_angle_t *angle);
  * @param out      [出参] 欧拉角指针
  * @param gyro_out [出参] 三轴角速度指针 (°/s), 可传 NULL 只要姿态
  * @return ESP_OK 成功, 其他值失败
+ * @note  控制任务用本接口, 不用 mpu9250_get_euler_angle() + mpu9250_read_gyro():
+ *        分开调会读两次 I2C, 姿态角与角速度错位会让平衡环 D 项失准。
  */
 esp_err_t mpu9250_get_pose(euler_angle_t *out, mpu9250_axis_t *gyro_out);
 
@@ -180,28 +158,25 @@ esp_err_t mpu9250_get_pose(euler_angle_t *out, mpu9250_axis_t *gyro_out);
  * @return ESP_OK 成功; ESP_ERR_INVALID_STATE 采样失败或整段都没找到稳的一段
  */
 esp_err_t mpu9250_calibrate_gyro(uint16_t samples);
-
-/**
- * @brief 读磁力计 (AK8963)
- * @param out [出参] 三轴磁场 (uT), 没找到磁力计时不写
- * @return ESP_OK 读到; ESP_ERR_INVALID_STATE 这块板没有可用的 AK8963
- */
-esp_err_t mpu9250_read_mag(mpu9250_axis_t *out);
-
 /**
  * @brief 读磁力计 + 打观察日志 (给**低频**任务用)
  * @return ESP_OK 成功; ESP_ERR_INVALID_STATE 这块板没有可用的 AK8963
+ * @note  不要在控制任务里调用: 磁力计 I2C 事务会给平衡内环叠加 1~2ms 抖动。
+ *        磁力计不参与姿态解算, UI 任务 (50ms) 里读即可。
  */
 esp_err_t mpu9250_update_mag(void);
 
 /**
  * @brief 开/关"零偏慢漂跟随"
  * @param on true=允许零偏在设备静止时缓慢向当前读数靠拢
+ * @note  默认关闭; 由上层 (balance.c) 在"车没在平衡状态"时打开。
  */
 void mpu9250_set_bias_tracking(bool on);
 
 /**
  * @brief 获取陀螺仪零点偏移 (校准得到的偏置值, °/s)
+ * @note  mpu9250_read_data() 已把该偏移从读数中扣除,
+ *        此接口用于查看偏置本身有多大 (判断校准是否正常)
  * @param offset 三轴偏移数据结构指针
  */
 void mpu9250_get_gyro_offset(mpu9250_axis_t *offset);

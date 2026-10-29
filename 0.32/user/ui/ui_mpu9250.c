@@ -1,8 +1,14 @@
 /**
  * @file ui_mpu9250.c
  * @brief UI MPU9250 IMU 调试页实现
+ * @note  - ACC / GYR 采用两列排布 (左右对照, 每轴占一行)
+ *        - 显示欧拉角 (Roll/Pitch/Yaw) - 取自 mpu9250_get_euler_angle()
+ *        - 显示平衡车重点参数: 姿态角 Pitch / 角速度 gx / 温度 / 陀螺仪零偏
+ *        - K1 退出回菜单
+ *        - K2 触发陀螺仪校准
+ *        - K3 触发软复位
+ *        - 当 MPU9250 初始化失败 (模块未接), 显示 "NOT READY" 并禁用 K2/K3
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #include "ui_mpu9250.h"
@@ -91,9 +97,6 @@ static void ui_mpu9250_draw_static(void)
     ui_draw_hline(0, Y_SEP3, UI_SCREEN_W, TFT_COLOR_BLUE);
     ui_draw_string(2, Y_HINT, "[K1]Bk [K2]Cal [K3]Rs",
                    TFT_COLOR_WHITE, TFT_COLOR_BLACK);
-    /* 第二行: 说明 K2 校准的用法。
-     * ⚠ 2026-10-31 改: 标定逻辑改成"挑最稳的 0.25 秒窗口", 所以
-     *   拿稳 0.25 秒即可, 不再要求全程静止 (手持也能标)。 */
     ui_draw_string(2, Y_HINT2, "Cal: hold 0.25s",
                    TFT_COLOR_YELLOW, TFT_COLOR_BLACK);
 }
@@ -208,10 +211,6 @@ static void page_key(ui_key_t key)
         /* 模块未就绪, K2/K3 无效 */
         return;
     } else if (key == UI_KEY_K2) {
-        /* 触发陀螺仪零点校准 (200 次采样, 约 2 秒)
-         * ⚠ 2026-10-31 改动: 采样数 200 (原来 100) —— 标定逻辑改成了
-         *   "从整段采样里挑最稳的 0.25 秒窗口", 素材越多越容易挑到稳的一段。
-         *   拿稳 0.25 秒即可, 不要求全程静止。 */
         ESP_LOGI("UI_MPU9250", "开始陀螺仪校准: 请拿稳设备 0.25 秒 (手拿也行, 别晃)");
         if (mpu9250_calibrate_gyro(200) == ESP_OK) {
             ESP_LOGI("UI_MPU9250", "陀螺仪校准完成");

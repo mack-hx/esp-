@@ -12,7 +12,6 @@
  *   - K4 进入AP配网模式
  *
  * @author ESP32 机械狗项目
- * @date 2026-10-19
  */
 
 #include "ui_netstat.h"
@@ -27,9 +26,6 @@
 static const char *TAG = "UI_NET";
 
 /* ========== 布局 ========== */
-/* 128/6 ≈ 21 字符/行 */
-#define LINE_CHARS     20
-
 #define Y_TITLE       1
 #define Y_STATUS      12      /* 连接状态 */
 #define Y_SSID        28      /* WiFi名称 */

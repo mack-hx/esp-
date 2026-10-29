@@ -2,7 +2,6 @@
  * @file ui_servo.h
  * @brief UI 舵机调试页
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #ifndef UI_SERVO_H

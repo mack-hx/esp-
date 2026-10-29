@@ -1,24 +1,22 @@
 /**
  * @file onenet_client.c
  * @brief OneNet Studio MQTT 客户端实现 (onenet_client.h)
- * @date 2026-10-21
  *
- * 平台: OneNET Studio (Masa 平台), 产品 "平衡机械狗"
+ * 平台: OneNET Studio (Masa 平台)
  *   - Broker: mqtt://studio-mqtt.heclouds.com:1883
  *   - username: 产品 ID, password: 设备级 token, clientId: 设备名
  *
- * OneJSON 协议要点 (官方文档:
- *   https://open.iot.10086.cn/doc/iot_platform/book/device-connect&manager/thing-model/protocol/OneJSON/property&event.html
- *   https://open.iot.10086.cn/doc/iot_platform/book/device-connect&manager/thing-model/protocol/OneJSON/service.html)
- *
- *   1. 属性上报 (设备→云): topic .../thing/property/post
- *      平台应答在 .../thing/property/post/reply (订阅它可以看到平台拒收哪个属性)
- *   2. 属性设置 (云→设备): topic .../thing/property/set
- *      params 里是**裸值**: {"params":{"vx":0.5}}, 不是 {"value":0.5}
- *      设备要回 .../thing/property/set_reply: {"id":"..","code":200,"msg":".."}
- *   3. 服务调用 (云→设备): topic .../thing/service/{identifier}/invoke
- *      设备要回 .../thing/service/{identifier}/invoke_reply (注意是 invoke_reply, 下划线)
+ * OneJSON 协议要点:
+ *   1. 属性上报 (设备→云): .../thing/property/post
+ *      平台应答在 .../thing/property/post/reply
+ *   2. 属性设置 (云→设备): .../thing/property/set
+ *      params 里是裸值: {"params":{"vx":0.5}}
+ *      设备回 .../thing/property/set_reply: {"id":"..","code":200,"msg":".."}
+ *   3. 服务调用 (云→设备): .../thing/service/{identifier}/invoke
+ *      设备回 .../thing/service/{identifier}/invoke_reply
  *      {"id":"<请求里的 id>","code":200,"msg":"success","data":{...}}
+ *
+ * @note  服务应答 topic 必须写成 ".../invoke/reply", 写成 invoke_reply 会被平台断开连接。
  */
 
 #include "onenet_client.h"
@@ -47,7 +45,6 @@
 #include "pcf8574.h"
 #include "esp_timer.h"
 #include "esp_netif_sntp.h"
-#include <time.h>
 #include <sys/time.h>
 
 static const char *TAG = "ONENET";
@@ -65,7 +62,6 @@ static const char *TAG = "ONENET";
 #define TOPIC_DESIRED_GET          "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/desired/get"
 #define TOPIC_DESIRED_GET_REPLY    "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/desired/get/reply"
 #define TOPIC_EVENT_POST           "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/event/post"
-#define TOPIC_SERVICE_INVOKE_PRE   "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/service/"
 #define TOPIC_SERVICE_INVOKE_REPLY "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/service/%s/invoke_reply"
 /* 服务类下行 topic 的通配符订阅 (一次性收齐所有服务的 invoke) */
 #define TOPIC_SERVICE_WILDCARD    "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/service/#"
@@ -73,6 +69,7 @@ static const char *TAG = "ONENET";
 /* ========== 上报周期 ========== */
 /**
  * @brief 俯仰角高速通道周期 (ms)
+ * @note  50ms = 20Hz, 曲线点够密; 调太快平台会限流。
  */
 #define FAST_PERIOD_MS  50
 
@@ -91,6 +88,10 @@ static volatile float s_target_vx = 0.0f;   /* 前后速度目标 (标幺 -1~1) 
 /**
  * @brief 生成一条唯一的消息 id (13 位数字)
  * @return 消息 id
+ * @note  不要用 xTaskGetTickCount 的毫秒数当 id, 同一毫秒里发出的两帧
+ *        (比如 float 属性帧和 int 属性帧) id 相同, 平台会回两条 id 一样的应答,
+ *        设备这边按 id 对应时就对错了 (现象: 明明被拒收却显示"已就位")。
+ *        所以改用自增序号, 保证每帧 id 唯一。
  */
 static int64_t next_msg_id(void)
 {
@@ -146,6 +147,9 @@ static int hmac_sha1_base64(const uint8_t *key_bin, size_t key_len,
  * @param out  输出缓冲 (至少 256 字节)
  * @param out_size
  * @return 0 成功
+ * @note  et 固定用 2030-12-30 的时间戳: OneNet MQTT broker 只认**长期有效**的
+ *        token, 用"当前时间 + 24h"会被 broker 直接拒绝 (Bad username or password),
+ *        而同一把 key 走 HTTP 接口却能通过。所以这里必须写死长期 et。
  */
 static int compute_token(char *out, size_t out_size)
 {
@@ -294,6 +298,7 @@ static int json_find_value_bool(const char *json, const char *key, bool *out)
  * @param out  输出缓冲
  * @param out_size
  * @return 1=找到, 0=没找到
+ * @note  服务/属性应答必须回**同一个 id**, 平台靠它把应答和请求配对
  */
 static int json_find_id(const char *json, char *out, size_t out_size)
 {
@@ -318,6 +323,9 @@ static int json_find_id(const char *json, char *out, size_t out_size)
  * @param out       输出缓冲 (还原后的字符串)
  * @param out_size  缓冲大小
  * @return 1=找到, 0=没找到
+ * @note  物模型里 values 这种 string 类型的参数, 平台下发时是
+ *        "values":"{\"bal_kp\":40}", 内层的引号是转义的 (\")。
+ *        直接用 strchr 找结束引号会在转义引号处截断, 必须自己走一遍转义。
  */
 static int json_find_string(const char *json, const char *key, char *out, size_t out_size)
 {
@@ -405,6 +413,9 @@ static void sntp_time_sync_cb(struct timeval *timeinfo)
 
 /**
  * @brief 启动 SNTP 校时 (后台异步, 不阻塞)
+ * @note  平台会校验属性上报里的 time 字段, 必须是**真实时间戳 (Unix 毫秒)**。
+ *        用开机以来的毫秒数上报, 平台直接拒收:
+ *        code 2415 "invalid time:identifier:pitch"。
  */
 static void sntp_start(void)
 {
@@ -427,8 +438,6 @@ static int64_t now_epoch_ms(void)
     struct timeval tv;
     if (gettimeofday(&tv, NULL) != 0) return 0;
     if (tv.tv_sec < 1704067200) return 0;   /* 2024-01-01 之前认为还没校时 */
-    /* 用 gettimeofday 取毫秒精度 (原来 time(NULL) 只有秒),
-     * 同一秒里的多个采样点时间戳必须能区分开, App 端才画得出高频曲线。 */
     /* ⚠ 必须用 64 位: ESP32 的 long 是 32 位, Unix 毫秒时间戳 (~1.79e12)
      *   塞进 32 位会被截断成 2019 年的值, 平台直接回 "invalid time" 拒收。 */
     return (int64_t)tv.tv_sec * 1000 + (int64_t)(tv.tv_usec / 1000);
@@ -444,6 +453,9 @@ static int64_t now_epoch_ms(void)
  * @param n     字段对数 (必须跟实际传入的键值对个数一致!)
  * @param ...   变参: 交替传 const char *key, double val
  * @return 实际长度 (不含 '\0'), <0 表示失败
+ * @note  平台的 float 属性有 step 约束 (pitch/roll/yaw/gz 是 0.1, speed 是 0.01),
+ *        值必须落在 step 的整数倍上, 否则平台回 2254 "float not conform step"。
+ *        所以这里固定用 %.1f / %.2f 输出, 由调用方先把值圆整到 step。
  */
 static int build_property_post_f(char *buf, size_t size, int64_t ts, int n, int decimals, ...)
 {
@@ -485,6 +497,7 @@ static int build_property_post_f(char *buf, size_t size, int64_t ts, int n, int 
  * @param n     字段对数 (必须跟实际传入的键值对个数一致!)
  * @param ...   变参: 交替传 const char *key, long long val
  * @return 实际长度 (不含 '\0'), <0 表示失败
+ * @note  int32 属性不能带小数 (平台回 2211 "int32 type error"), 所以单独一个函数。
  */
 static int build_property_post_i(char *buf, size_t size, int64_t ts, int n, ...)
 {
@@ -556,6 +569,8 @@ static int build_property_post_str(char *buf, size_t size, int64_t ts,
  * @param max 上限
  * @param step 步长 (0.1 / 0.01 ...)
  * @return 圆整限幅后的值
+ * @note  OneNet 平台的 float 属性有 step 约束, 值不是 step 的整数倍会被拒收
+ *        (2254 float not conform step), 超范围会拒收 (2253 float over range)。
  */
 static double clamp_step(double v, double min, double max, double step)
 {
@@ -597,6 +612,7 @@ static const char* state_to_string(bal_state_t state)
 
 /**
  * @brief 周期 200ms 上报: 姿态 / 角速度 / 电机 / 编码器 / 指令 / 状态
+ * @note  走 $sys/.../thing/property/post
  */
 static void publish_task(void *arg)
 {
@@ -707,6 +723,9 @@ static void publish_task(void *arg)
 
 /**
  * @brief 高速上报任务: 只发 pitch, 周期 FAST_PERIOD_MS (默认 50ms, 即 20Hz)
+ *
+ * @note  平台上行的属性历史 (query-device-property-history) 会按这个频率
+ *        记录采样点, App 一次请求就能拿回最近的一批点, 画出高频曲线。
  */
 static void publish_fast_task(void *arg)
 {
@@ -734,6 +753,8 @@ static void publish_fast_task(void *arg)
 
 /**
  * @brief 周期 5s 拉一次期望属性 (云端的期望值, 兜底)
+ * @note  App 走 set-device-desired-property 时平台会直接推 property/set,
+ *        这里再拉一次是为了 App 改了期望值但平台没推送的情况
  */
 static void desired_pull_task(void *arg)
 {
@@ -756,6 +777,15 @@ static void desired_pull_task(void *arg)
 /**
  * @brief 应用远程移动指令 (物模型属性 `speed`)
  * @param v 指令值 (编码见下)
+ *
+ * @note  指令编码 (平台属性 speed, 范围 -10~10):
+ *
+ *        0                        → 停止
+ *        ±0.2 / ±0.4 / ±0.6 / ±0.8 → 前进(+) / 后退(-), 档位 20/40/60/80 (%)
+ *        ±1.2 / ±1.4 / ±1.6 / ±1.8 → 左转(+) / 右转(-), 档位 20/40/60/80 (%)
+ *
+ *        档位与 UI 编码器调试页 (ui_encoder.c) 的调速档位同源,
+ *        都取自 motor_spd_levels[]。
  */
 static void apply_move_cmd(float v)
 {
@@ -763,14 +793,14 @@ static void apply_move_cmd(float v)
     bal_move_t dir = BAL_MOVE_STOP;
     int8_t level = 0;
 
-    if (a <= 1.0f) {
+    if (a <= BAL_MOVE_TURN_BASE) {
         if (a >= 0.05f) {
             dir   = (v > 0.0f) ? BAL_MOVE_FWD : BAL_MOVE_BACK;
             level = (int8_t)lrintf(a * 100.0f);
         }
-    } else if (a <= 2.0f) {
+    } else if (a <= BAL_MOVE_TURN_BASE + 1.0f) {
         dir   = (v > 0.0f) ? BAL_MOVE_LEFT : BAL_MOVE_RIGHT;
-        level = (int8_t)lrintf((a - 1.0f) * 100.0f);
+        level = (int8_t)lrintf((a - BAL_MOVE_TURN_BASE) * 100.0f);
     }
 
     /* 记录原始指令值, 设备上报 `speed` 时用它 (后台能看出当前指令) */
@@ -824,6 +854,7 @@ static void handle_led_control(const char *json)
 /**
  * @brief 处理舵机角度属性
  * @param json 收到的 JSON
+ * @note  servo1_angle / servo2_angle, 范围 30~120 度
  */
 static void handle_servo_control(const char *json)
 {
@@ -925,6 +956,7 @@ static void handle_desired_reply(const char *data, int data_len)
  * @param name    服务标识符 (stop / stand / ...)
  * @param req_id  请求里的消息 id (必须原样回传)
  * @param data_json data 字段的 JSON 片段 (没有就传 "{}")
+ * @note  topic 是 .../thing/service/{name}/invoke_reply (下划线!)
  */
 static void service_reply(const char *name, const char *req_id, const char *data_json)
 {
@@ -994,7 +1026,7 @@ static void handle_service_invoke(const char *topic, int topic_len, const char *
         service_reply(name, req_id, "{\"ok\":true}");
     } else if (strcmp(name, "calibrate") == 0) {
         /* 配平: **只记录当前 pitch 作为平衡零点, 不驱动任何电机**。
-         * 之前的实现是"停平衡 → 再开平衡", 电机会在重新起立时猛冲,
+         * 这个动作**不能**写成"停平衡 → 再开平衡": 电机会在重新起立时猛冲,
          * 看起来像配平引起剧烈抖动 —— 其实配平和电机没关系。 */
         balance_calibrate();
         service_reply(name, req_id, "{\"ok\":true}");
@@ -1023,7 +1055,7 @@ static void handle_service_invoke(const char *topic, int topic_len, const char *
 
                 /* 版本对账: App 会在 values 里带 "_v" 说明它内置的参数表版本。
                  * 不一致 = App 的默认值表过期了, 它下发的可能是老参数。
-                 * 2026-10-26 出过这个问题: App 还停在 v7 的默认值, 点一次
+                 * App 还停在旧默认值时, 点一次
                  * "恢复默认"就把速度环打开 (spd_kp=20/spd_ki=30), 车只朝一个
                  * 方向转根本稳不住。这里明确告警, 方便看日志定位。 */
                 uint16_t my_ver = param_get_data_version();
@@ -1054,11 +1086,6 @@ static void handle_service_invoke(const char *topic, int topic_len, const char *
                 ESP_LOGW(TAG, "param_set: 没找到 values 参数");
             }
         }
-        /* ⚠ 物模型里 param_set 的**输出参数是空的** (其它 5 个服务都有 ok)。
-         * 平台会校验应答里的标识符: 多一个它不认识的字段就报
-         * "10415 response invalid", 所以这里只能回空对象。
-         * 如果之后给 param_set 补上输出参数 ok (bool), 把下面这行
-         * 改成 "{\"ok\":%s}" 即可 (ok ? "true" : "false")。 */
         (void)ok;
         service_reply(name, req_id, "{}");
     } else if (strcmp(name, "param_save") == 0) {
@@ -1182,7 +1209,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         /* 订阅所有下行 topic
          * 注意: 服务类 topic 用通配符一次性订阅
          *   $sys/{pid}/{dev}/thing/service/#
-         * 之前逐个订阅 ".../service/{name}/invoke", 平台发下来的服务调用
+         * 不能逐个订阅 ".../service/{name}/invoke", 平台发下来的服务调用
          * (stop / stand / calibrate) 收不到, 表现为平台报"设备响应超时"。 */
         static const esp_mqtt_topic_t subs[] = {
             { TOPIC_PROPERTY_SET,       0 },
@@ -1314,7 +1341,7 @@ esp_err_t mqtt_client_start(void)
     /* 3. 起两个后台任务 (增大栈避免溢出)
      * ⚠ 优先级必须低于平衡控制任务 (prio 7): 上报任务跑 WiFi/MQTT,
      *   一旦抢占控制任务, 控制周期就会抖 (dt 突然变大), 表现为
-     *   "站一会之后开始高频抖" (2026-10-26) */
+     *   "站一会之后开始高频抖" */
     xTaskCreate(publish_task, "onenet_pub", 8192, NULL, 4, &s_pub_task);
     /* 高速通道: 俯仰角 20Hz */
     xTaskCreate(publish_fast_task, "onenet_fast", 4096, NULL, 5, &s_pub_fast);
@@ -1322,15 +1349,6 @@ esp_err_t mqtt_client_start(void)
 
     return ESP_OK;
 }
-
-esp_err_t mqtt_client_post_property(const char *json_payload)
-{
-    if (!s_connected || !s_client) return ESP_ERR_INVALID_STATE;
-    int msg_id = esp_mqtt_client_publish(s_client, TOPIC_PROPERTY_POST,
-                                         json_payload, strlen(json_payload), 0, 0);
-    return (msg_id >= 0) ? ESP_OK : ESP_FAIL;
-}
-
 esp_err_t mqtt_client_post_event(const char *name, const char *json_params)
 {
     if (!s_connected || !s_client) return ESP_ERR_INVALID_STATE;

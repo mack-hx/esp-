@@ -2,12 +2,12 @@
  * @file param.h
  * @brief 全局可调参数表 (网页滑块调参的唯一数据源)
  *
- * 方向符号参数 (bal_sign / gyro_sign) 与 MPU 安装零偏 (ang_zero) 已经
- * 从这张表里删除, 烘焙成代码里的常量 (balance.h / mpu9250.c)。
- * 少 3 个滑块 = 少 3 个被乱拖的隐患。
+ * 方向符号参数 (bal_sign / gyro_sign) 与 MPU 安装零偏 (ang_zero) 不在这张表里,
+ * 是代码里的常量 (balance.h / mpu9250.c)。
  *
+ * @note  加参数两步: PARAM_ID 里加枚举 + param.c 的 g_param_items[] 里加一行描述,
+ *        网页滑块与 NVS 无需改动。
  * @author ESP32 平衡轮腿机器人
- * @date 2026-10-07
  */
 
 #ifndef PARAM_H
@@ -31,8 +31,7 @@ typedef enum {
 } param_group_t;
 
 /* ========== 参数 ID (每个滑块一个) ==========
- * ⚠ 顺序 = NVS blob 的下标顺序, 中间插一行会让所有旧数据错位。
- *   所以**只在末尾追加**, 改了数量就把 PARAM_DATA_VERSION +1。 */
+ * 顺序 = NVS blob 的下标顺序, 只在末尾追加; 改了数量就把 PARAM_DATA_VERSION +1 */
 typedef enum {
     /* --- 平衡环: 靠 Pitch 把车扶正 --- */
     PARAM_PID_BAL_KP = 0,    // 平衡 Kp (越大越"硬", 但容易抖)
@@ -56,27 +55,12 @@ typedef enum {
     PARAM_ARM_TIME,          // 需要连续稳定的时长 (ms)
     /* --- 舵机 --- */
     PARAM_SERVO_CENTER,      // 舵机中心角 (°) —— 配平表的参考角
-    /* --- 走路目标轮速上限 ---
-     * ⚠ **追加在末尾** (不能插在中间, 否则 NVS blob 下标全乱)。
-     *   App 方向键 100% 档位对应的目标轮速 (rpm)。 */
-    PARAM_MOVE_RPM_MAX,
-    /* --- 轮子直径 (里程计用, 位置环靠它算位移) ---
-     * ⚠ 追加在末尾。单位 cm。
-     *   距离 = 脉冲数 / (44 × gear) × π × 轮径。
-     *   本机轮子直径 **6.5 cm**。填错会让位置反馈整体缩放错误。 */
-    PARAM_WHEEL_DIA,
-    /* --- 位置环增益 ((cm/s)/cm) ---
-     * ⚠ 追加在末尾。位置环输出的是**目标速度** (cm/s), 不直接给倾角
-     *   (见 position_pid.h)。 */
-    PARAM_POS_KP,
-    PARAM_POS_KI,
-    /* --- 锁位速度环增益 ---
-     * ⚠ 追加在末尾。id 20 复用: 原来的 pos_kd (位置环的手写速度阻尼)
-     *   已删除 —— 位置环改成"位置 → 速度 → 倾角"之后, 阻尼由速度环提供
-     *   (速度就是位置误差的导数), 位置环不需要再手写 D 项。
-     *   PARAM_DATA_VERSION 已 +1, 旧的 NVS blob 整体作废, 不会串值。 */
-    PARAM_HOLD_KP,
-    PARAM_HOLD_KI,
+    PARAM_MOVE_RPM_MAX,     // 走路上限 (rpm): App 方向键 100% 档位对应的目标轮速
+    PARAM_WHEEL_DIA,        // 轮子直径 (cm): 里程计用, 距离 = 脉冲数 / (44 × gear) × π × 轮径
+    PARAM_POS_KP,           // 位置环比例增益 ((cm/s)/cm)
+    PARAM_POS_KI,           // 位置环积分增益 ((cm/s)/(cm·s))
+    PARAM_HOLD_KP,          // 锁位速度环比例增益 (°/(cm/s))
+    PARAM_HOLD_KI,          // 锁位速度环积分增益 (°/((cm/s)·s))
     PARAM_MAX                // 哨兵
 } param_id_t;
 
@@ -106,6 +90,7 @@ typedef struct {
 
 /**
  * @brief 全部参数的描述表
+ * @note  顺序必须与 param_id_t 一致 (NVS 按下标顺序存 blob)
  */
 extern const param_item_t g_param_items[];
 
@@ -113,6 +98,7 @@ extern const param_item_t g_param_items[];
 
 /**
  * @brief 从 NVS 载入参数 (上电调用一次)
+ * @note  首次上电 / NVS 无数据 / 数据版本不匹配时, 自动填默认值
  * @return ESP_OK 成功
  */
 esp_err_t param_load(void);
@@ -128,31 +114,19 @@ esp_err_t param_save(void);
  * @return ESP_OK 成功
  */
 esp_err_t param_reset_default(void);
-
-/**
- * @brief 取参数表条目总数
- * @return 条目数
- */
-uint8_t param_count(void);
-
 /**
  * @brief 取当前参数表结构版本号 (PARAM_DATA_VERSION)
  * @return 版本号
+ * @note  App 下发参数可带 "_v" 字段表示其内置的参数表版本 (见 onenet_client.c 的 param_set 分支)
  */
 uint16_t param_get_data_version(void);
 
 /**
  * @brief 标记"最近一次参数写入来自旧版 App"
  * @param on true=标记 (会随 param_get 的 "_w" 字段提示给 App), false=清除
+ * @note  车端只提示不拦截, 下发参数照常生效; 标记随 param_save() 存进 NVS。
  */
 void param_mark_stale_write(bool on);
-
-/**
- * @brief 查询"旧版 App 写过参数"这个标记
- * @return true=最近一次写入来自旧版 App
- */
-bool param_stale_write(void);
-
 /**
  * @brief 读取一个浮点参数
  * @param id 参数 ID
@@ -167,27 +141,12 @@ float param_get_float(param_id_t id);
  * @return ESP_OK 成功, ESP_ERR_INVALID_ARG id 非法或 val 是 NaN/Inf
  */
 esp_err_t param_set_float(param_id_t id, float val);
-
-/**
- * @brief 取某条参数的描述
- * @param id 参数 ID
- * @return 描述指针, id 非法返回 NULL
- */
-const param_item_t *param_get_item(param_id_t id);
-
-/**
- * @brief 把整个参数表序列化成 JSON (网页加载时拉一次)
- * @param buf  输出缓冲区
- * @param len  缓冲区大小
- * @return 实际写入长度 (不含 '\0')
- */
-int param_to_json(char *buf, uint32_t len);
-
 /**
  * @brief 把整个参数表序列化成"扁平键值对" JSON
  * @param buf  输出缓冲区
  * @param len  缓冲区大小
  * @return 实际写入长度 (不含 '\0')
+ * @note  格式: {"bal_kp":40,"bal_ki":0,...}, 与 param_from_json 的输入格式一致
  */
 int param_to_map_json(char *buf, uint32_t len);
 

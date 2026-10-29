@@ -1,8 +1,10 @@
 /**
  * @file lcd_ui.c
  * @brief LCD UI 系统主调度实现
+ * @note  单任务轮询: lcd_ui_init 注册按键回调; lcd_ui_loop 每 50ms 读按键并派发
+ *        给当前页面的 on_key, 每 150ms 调一次 on_refresh; lcd_ui_switch_to 处理
+ *        旧页退出 + 新页进入。
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #include "lcd_ui.h"
@@ -23,7 +25,6 @@ static ui_page_id_t current_page = UI_PAGE_HOME;
 static ui_key_get_t key_get_cb = NULL;
 
 /* 主循环周期: 50ms 按键扫描, 150ms 页面刷新 (3 个 tick) */
-#define LOOP_TICK_MS    50
 #define REFRESH_TICKS   3       // 150ms
 static uint8_t tick_counter = 0;
 
@@ -185,12 +186,6 @@ esp_err_t lcd_ui_switch_to(ui_page_id_t id)
     ESP_LOGI(TAG, "切换到页面: %d (%s)", target->id, target->title ? target->title : "?");
     return ESP_OK;
 }
-
-ui_page_id_t lcd_ui_get_current_page(void)
-{
-    return current_page;
-}
-
 esp_err_t lcd_ui_init(ui_key_get_t key_get)
 {
     if (key_get == NULL) return ESP_ERR_INVALID_ARG;
@@ -215,10 +210,8 @@ void lcd_ui_loop(void)
 {
     if (key_get_cb == NULL) return;
 
-    /* 1) 读取按键并派发 (边沿检测: 仅在按键从 NONE 变为某按键时触发一次)
-     * 背景: pcf8574_scan_buttons() 内部含 30ms 消抖, 主循环周期 50ms,
-     *       单次按键按下会被识别为 3-5 次连续触发, 导致快速来回切页 + 舵机抖动.
-     *       引入 last_key 缓存, 实现类似单次脉冲触发 (用户按住按键也只触发一次). */
+    /* 1) 读取按键并派发 (边沿检测: 仅在按键从 NONE 变为某按键时触发一次;
+     *       用 last_key 缓存实现单次脉冲触发, 按住不重复触发) */
     static ui_key_t last_key = UI_KEY_NONE;
     ui_key_t key = key_get_cb();
 

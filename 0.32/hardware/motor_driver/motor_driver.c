@@ -1,8 +1,8 @@
 /**
  * @file motor_driver.c
  * @brief TB6612FNG 双路直流电机驱动实现
+ * @note  方向控制引脚由 74HC595 提供, 此处通过调用 hc595 API 控制
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #include "motor_driver.h"
@@ -74,28 +74,9 @@ static uint32_t motor_speed_to_duty(int8_t speed)
  * @param deadzone  最小启动占空比 (0=不补偿)
  * @return 补偿后的占空比
  *
- * @brief 为什么要这个 (2026-10-05, 参照 WL1)
- *   直流电机 + TB6612 都有**起动死区**: 占空比低于某个值时电机根本不转,
- *   输出 0。但对平衡车来说, PID 在接近平衡点时输出会长时间停在这个
- *   "转不动"的小值区间里, 表现为: 车慢慢往一边倒 / 突然越过死区猛冲一下。
- *
- * @brief ⚠ 补偿方式: **加上**, 不是"抬到" (2026-10-26 修正)
- *   设硬件死区为 D (电机真正能转起来的最小占空比), 固件参数为 dz:
- *
- *   ❌ 旧做法 "抬到" (duty = max(|duty|, dz)):
- *      硬件死区**一点没被补偿掉** —— 电机要转, 输出还是得自己超过 D,
- *      跟 dz 一点关系都没有。只有当 dz ≥ D 时才勉强生效, 但那时输出在 0
- *      附近会突然跳到 dz, 相当于给车一个固定的力矩冲量 → 极限环抖动。
- *      (旧代码的注释说"死区以上区域完全不变", 但代价是**死区以下根本没补偿**)
- *
- *   ✅ 新做法 "加上" (duty = |duty| + dz):
- *      硬件死区被真正抵消掉 —— 有效死区变成 max(0, D − dz),
- *      而且电机出力与控制器输出**成线性关系** (力矩 ∝ duty − D),
- *      小输出也能得到连续、可控的力矩 → 平衡点附近不再有"突跳"。
- *
- *   ⚠ 0 输出和制动**不受影响** (停车必须真的停)。
- *   ⚠ dz 必须≈硬件真实死区 D: dz 偏小 → 补偿不够 (还有残余死区);
- *     dz 偏大 → 每个非零输出都自带一个多余的固定力矩 → 平衡点附近空转抖动。
+ * @note  补偿方式为加上 (duty = |duty| + dz): 硬件死区 D 被抵消成 max(0, D − dz),
+ *        出力与控制器输出成线性关系。0 输出与制动不受影响。
+ *        dz 应≈硬件真实死区 D: 偏小则补偿不够, 偏大则非零输出自带多余固定力矩。
  */
 static uint32_t motor_apply_deadzone(uint32_t duty, int8_t deadzone)
 {
@@ -116,6 +97,9 @@ static int8_t s_motor_deadzone = 0;
 
 /**
  * @brief 应用方向到 74HC595
+ * @note  硬件映射: 电机 A (PWMA=GPIO15) AIN1=Q5, AIN2=Q6;
+ *        电机 B (PWMB=GPIO16) BIN1=Q3, BIN2=Q4。
+ *        TB6612 真值表: (IN1=0, IN2=1)=正转, (IN1=1, IN2=0)=反转, 两者 0=制动
  */
 static esp_err_t motor_apply_direction(motor_id_t motor, motor_dir_t dir)
 {
@@ -194,18 +178,6 @@ esp_err_t motor_driver_init(void)
              MOTOR_PWMA_GPIO, MOTOR_PWMB_GPIO, MOTOR_PWM_FREQ / 1000);
     return ESP_OK;
 }
-
-/**
- * @brief 设置单个电机方向
- */
-esp_err_t motor_set_direction(motor_id_t motor, motor_dir_t dir)
-{
-    if (motor > MOTOR_B) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    return motor_apply_direction(motor, dir);
-}
-
 /**
  * @brief 设置单个电机速度
  */
@@ -241,6 +213,9 @@ esp_err_t motor_set_speed(motor_id_t motor, int8_t speed)
  * @brief 设置电机起动死区补偿值
  * @param deadzone 最小启动占空比 (0~30, 单位 %; 0=不补偿)
  * @return ESP_OK 成功; ESP_ERR_INVALID_ARG 超出合法范围
+ *
+ * @note  只影响**非零**输出, 见 motor_apply_deadzone() 的说明。
+ * @note  超出 MOTOR_DEADBAND_MAX 时自动夹到上限, 不报错 (滑块可能超范围)。
  */
 esp_err_t motor_set_deadband(int8_t deadzone)
 {
@@ -249,15 +224,6 @@ esp_err_t motor_set_deadband(int8_t deadzone)
     s_motor_deadzone = deadzone;
     return ESP_OK;
 }
-
-/**
- * @brief 读取当前死区设置 (%)
- */
-int8_t motor_get_deadband(void)
-{
-    return s_motor_deadzone;
-}
-
 /**
  * @brief 同时控制两个电机
  */
@@ -277,9 +243,8 @@ esp_err_t motor_brake(motor_id_t motor)
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* ⚠ 制动走 ledc_set_duty(0) 直写, **不经过** motor_apply_deadzone(),
-     *   所以死区补偿不会把制动抬成"最低转速"。这正是我们要的行为:
-     *   停车必须真的停。死区只作用在 motor_set_speed() 的非零输出上。 */
+    /* 制动走 ledc_set_duty(0) 直写, 不经过 motor_apply_deadzone(),
+     *   死区补偿不会把制动抬成最低转速 */
     esp_err_t ret = ledc_set_duty(MOTOR_PWM_MODE, motor_map[motor].channel, 0);
     if (ret != ESP_OK) return ret;
     ret = ledc_update_duty(MOTOR_PWM_MODE, motor_map[motor].channel);

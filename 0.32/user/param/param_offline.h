@@ -1,8 +1,10 @@
 /**
  * @file param_offline.h
  * @brief param.c 离线测试用的最小类型定义 (让 GCC 不去找 ESP-IDF)
+ * @note  配合 -DPARAM_OFFLINE_TEST 使用: param.h 里对 esp_err.h 的 include
+ *        与 param.c 里的 NVS 段都被屏蔽, 这里只需给出 esp_err_t。
+ *
  * @author ESP32 平衡轮腿机器人
- * @date 2026-10-26
  */
 
 #ifndef PARAM_OFFLINE_H

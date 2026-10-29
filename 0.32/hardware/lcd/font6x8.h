@@ -1,8 +1,10 @@
 /**
  * @file font6x8.h
  * @brief 6x8 ASCII 字模 (96 个字符: 空格 ~ ~ )
+ * @note  每个字符 6 列 x 8 行, 数据按列存储 (列优先)
+ *        每列 1 字节, 高位在上, 低位在下
+ *        实际显示宽度 5 列 (最后一列通常为空白, 留作字间距)
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #ifndef FONT6X8_H
@@ -12,7 +14,6 @@
 
 /* 字模尺寸 */
 #define FONT6X8_WIDTH   6       // 每字符列数
-#define FONT6X8_HEIGHT  8       // 每字符行数
 
 /* ASCII 范围 */
 #define FONT6X8_FIRST   32      // ' ' (空格)

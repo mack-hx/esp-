@@ -2,7 +2,6 @@
  * @file steer_pid.c
  * @brief 转向环 (差速环) 实现: 左右轮速差 → 两轮输出差 (%)
  * @author ESP32 平衡轮腿机器人
- * @date 2026-10-27
  */
 
 #include "steer_pid.h"

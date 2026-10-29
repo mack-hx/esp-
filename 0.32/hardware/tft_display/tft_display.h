@@ -2,7 +2,6 @@
  * @file tft_display.h
  * @brief 128x160 RGB TFT 显示屏驱动 (ST7735/ST7789)
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #ifndef TFT_DISPLAY_H
@@ -22,8 +21,6 @@
 #define TFT_BLK_GPIO      12      // 背光控制 (PWM)
 
 /* ========== 显示屏参数 ========== */
-#define TFT_WIDTH         128     // 屏幕宽度 (像素)
-#define TFT_HEIGHT        160     // 屏幕高度 (像素)
 #define TFT_SPI_FREQ      20000000 // SPI 时钟频率 (20MHz, 保守值匹配 ST7735S)
 
 /* ========== 屏幕方向 (与参考工程一致) ==========
@@ -82,28 +79,6 @@ esp_err_t tft_backlight_on(bool on);
  * @return ESP_OK 成功, 其他值失败
  */
 esp_err_t tft_clear(uint16_t color);
-
-/**
- * @brief 在指定位置绘制一个像素
- * @param x X 坐标
- * @param y Y 坐标
- * @param color 颜色 (RGB565)
- * @return ESP_OK 成功, 其他值失败
- */
-esp_err_t tft_draw_pixel(uint8_t x, uint8_t y, uint16_t color);
-
-/**
- * @brief 显示字符串
- * @param x X 坐标
- * @param y Y 坐标
- * @param str 要显示的字符串
- * @param color 文字颜色
- * @param bg_color 背景颜色
- * @return ESP_OK 成功, 其他值失败
- */
-esp_err_t tft_draw_string(uint8_t x, uint8_t y, const char *str,
-                          uint16_t color, uint16_t bg_color);
-
 /**
  * @brief 设置显示窗口
  * @param x0 起始 X 坐标

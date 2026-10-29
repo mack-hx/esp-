@@ -1,8 +1,14 @@
 /**
  * @file ui_led_magnet.c
  * @brief LED、电磁铁、微动开关 共用检查/控制页实现
+ * @note  一页里同时管三样东西:
+ *        - 灯: 左上角色块显示当前真实输出颜色 (已按亮度缩放), K2 切颜色预设, K3 切亮度
+ *        - 电磁铁: 两个格子显示 MAGNET_1 / MAGNET_2 通电状态, K4 两个一起开关
+ *        - 微动开关: 两个格子显示 SW1 / SW2 压下状态 (与 App 上报走同一函数)
+ *
+ * 按键: K1 退出回菜单 / K2 灯颜色循环 / K3 灯亮度 +16 循环 / K4 电磁铁开关
+ *
  * @author ESP32 机械狗项目
- * @date 2026-10-25
  */
 
 #include "ui_led_magnet.h"
@@ -144,6 +150,8 @@ static void draw_static(void)
 
 /**
  * @brief 刷新 LED 状态 (色块 / 颜色名 / 亮度值 / 亮度条)
+ * @note  颜色与亮度直接取驱动缓存, 不取页面局部变量,
+ *        这样 App 远程改灯时这一页也能反映真实状态。
  */
 static void draw_led(void)
 {
@@ -228,6 +236,8 @@ static void draw_magnet(void)
 
 /**
  * @brief 刷新两个对接微动开关格子
+ * @note  压下时填黄底黑字, 没压下时黑底蓝字。
+ *        读取走 pcf8574_read_dock_switches(), 跟云端上报的 sw1/sw2 同一个函数。
  */
 static void draw_switch(void)
 {

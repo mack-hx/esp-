@@ -1,8 +1,9 @@
 /**
  * @file lcd_ui.h
  * @brief LCD UI 系统主调度接口 (主页 / 菜单页 / 功能页面)
+ * @note  导航: 上电显示主页; K1 进入菜单页; 菜单页 K2/K3 切换条目, K1 进入;
+ *        功能页 K1 退回菜单页。
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #ifndef LCD_UI_H
@@ -21,10 +22,6 @@
 /* ========== 字体尺寸 (与 font6x8 一致) ========== */
 #define UI_FONT_W         6
 #define UI_FONT_H         8
-/* 每行字符数 (128 / 6 ≈ 21) */
-#define UI_CHARS_PER_ROW  21
-/* 每屏字符行数 (160 / 8 = 20) */
-#define UI_ROWS_PER_SCR   20
 
 /* ========== UI 页面 ID ========== */
 typedef enum {
@@ -155,10 +152,4 @@ void ui_fill_rect(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint16_t color);
  * @brief 画箭头 (向右, 占位 6x8 区域)
  */
 void ui_draw_arrow_right(uint8_t x, uint8_t y, uint16_t color, uint16_t bg);
-
-/**
- * @brief 获取当前页面 ID
- */
-ui_page_id_t lcd_ui_get_current_page(void);
-
 #endif // LCD_UI_H

@@ -1,8 +1,10 @@
 /**
  * @file servo.h
  * @brief 舵机控制驱动 (标准 PWM 舵机, 50Hz, 1-2ms 脉宽)
+ * @note  内部维护两路逻辑角度 s_angle[id]; 物理安装不对称, 由 servo_logic_to_phys()
+ *        补偿, 同一逻辑角度机械上朝同一方向转。UI 显示与 servo_get_angle() 返回逻辑角度。
+ * @note  main.c 启动后台任务周期性把角度写到硬件, 切页/状态变化时舵机不失力不跳变。
  * @author ESP32 机械狗项目
- * @date 2026-10-04
  */
 
 #ifndef SERVO_H
@@ -12,17 +14,14 @@
 #include "esp_err.h"
 
 /* ========== 引脚配置 ==========
- * 编号统一为"物理左=1, 物理右=2"
- * 舵机 1 (物理左) = GPIO14 (实物正向舵机, 走反向映射)
- * 舵机 2 (物理右) = GPIO13 (实物反向舵机, 不映射) */
+ * 编号统一为"物理左=1, 物理右=2": 舵机1 (左) = GPIO14 (正向舵机), 舵机2 (右) = GPIO13 (反向舵机) */
 #define SERVO_1_GPIO        14      // 舵机1 控制信号 (物理左, 接正向舵机)
 #define SERVO_2_GPIO        13      // 舵机2 控制信号 (物理右, 接反向舵机)
 
 /* ========== PWM 配置 ==========
- * 注意: 与 MOTOR 共用 LEDC 通道 (见 motor_driver.h).
- *   SERVO_1 = LEDC_CHANNEL_2, SERVO_2 = LEDC_CHANNEL_3 (TIMER_1, 50Hz)
- *   MOTOR_A = LEDC_CHANNEL_4, MOTOR_B = LEDC_CHANNEL_5 (TIMER_2, 20kHz)
- *   通道不能重叠 (重叠会导致 SERVO GPIO 被重绑到 MOTOR 引脚, 失去 50Hz 输出). */
+ * 与 MOTOR 共用 LEDC 硬件: SERVO 用 CHANNEL_2/3 (TIMER_1, 50Hz),
+ * MOTOR 用 CHANNEL_4/5 (TIMER_2, 20kHz), 通道不能重叠。
+ */
 #define SERVO_PWM_FREQ      50
 #define SERVO_PWM_RES       LEDC_TIMER_14_BIT
 #define SERVO_PWM_TIMER     LEDC_TIMER_1
@@ -32,27 +31,18 @@
 #define SERVO_2_CHANNEL     LEDC_CHANNEL_3
 
 /* ========== 舵机参数 ==========
- * 实物舵机安装方向:
- *   - GPIO13 那个舵机 = 反向安装 (调 80° 实际转 100°)
- *   - GPIO14 那个舵机 = 正向安装
- * 编号 (2026-10-04 修正后): SERVO_1 = GPIO14, SERVO_2 = GPIO13
- * 为保持两路视觉对称, 物理映射:
- *   SERVO_1 (正向舵机) → 180 - 逻辑
- *   SERVO_2 (反向舵机) → 不映射 (反向舵机自己反向, 净结果 = 180 - 逻辑) */
-#define SERVO_PERIOD_MS     20      // 周期 20ms (1/50Hz)
+ * 安装方向: GPIO14 = 正向, GPIO13 = 反向 (调 80° 实际转 100°)。
+ * 物理映射: SERVO_1 → 180 - 逻辑; SERVO_2 不映射 (反向舵机自身反向, 净结果相同)。
+ */
 #define SERVO_MIN_PULSE_US  1000    // 最小脉宽 (0°)   1ms
 #define SERVO_MAX_PULSE_US  2000    // 最大脉宽 (180°) 2ms
 
-#define SERVO_MIN_ANGLE     0
 #define SERVO_MAX_ANGLE     180
 
 /* ========== 限位 / 默认 ==========
- * 限位: 所有角度设置都按这个范围 clamp (UI 显示的也是这个范围)
+ * 限位: 所有角度设置按此范围 clamp (UI 显示同范围)
  * 默认: 上电 / 初始化 / servo_set_both() 都用这个值
- *
- * 行程: 伸腿 = SERVO_LIMIT_MIN(30), 蜷腿 = SERVO_LIMIT_MAX(120)
- *       测于 2026-10-15 新四连杆结构
- * 注意: 120° 对应 2ms 脉宽 (物理极限), 不要超出 */
+ * 行程: 伸腿 = SERVO_LIMIT_MIN(30), 蜷腿 = SERVO_LIMIT_MAX(120, 对应 2ms 脉宽物理极限) */
 #define SERVO_LIMIT_MIN     30
 #define SERVO_LIMIT_MAX     120
 #define SERVO_DEFAULT_ANGLE 100
@@ -70,6 +60,7 @@ typedef enum {
 
 /**
  * @brief 初始化所有舵机 (LEDC 通道 + 两路归位到 SERVO_DEFAULT_ANGLE)
+ * @note  不启动后台任务, 需在 main 中调用 servo_keep_alive_start()
  * @return ESP_OK 成功, 其他值失败
  */
 esp_err_t servo_init(void);
@@ -98,12 +89,14 @@ uint8_t servo_get_angle(servo_id_t id);
 
 /**
  * @brief 把两路舵机当前角度同步到硬件
+ * @note  后台任务周期性调用
  * @return ESP_OK 成功
  */
 esp_err_t servo_apply_both(void);
 
 /**
  * @brief 启动后台"保持运行"任务 (周期性 servo_apply_both)
+ * @note  必须在 servo_init 之后调用
  * @return ESP_OK 成功
  */
 esp_err_t servo_keep_alive_start(void);

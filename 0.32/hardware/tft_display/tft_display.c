@@ -1,8 +1,9 @@
 /**
  * @file tft_display.c
  * @brief 128x160 RGB TFT 显示屏驱动实现 (ST7735/ST7789)
+ * @note  TFT RST 引脚短接 VCC, 不由 ESP32 控制,
+ *        上电复位依赖模块内部 POR (Power-On-Reset) 电路
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #include "tft_display.h"
@@ -151,6 +152,8 @@ static esp_err_t tft_backlight_pwm_init(void)
 
 /**
  * @brief ST7735S 完整初始化序列
+ * @note  来源: 参考工程 LCD.c (江协科技/正点原子模板, 经 TI MSPM0 移植);
+ *        RST 已短接 VCC, 依赖模块内部 POR, 不做软件复位
  */
 static esp_err_t tft_st7735s_init_seq(void)
 {
@@ -326,48 +329,6 @@ esp_err_t tft_clear(uint16_t color)
     gpio_set_level(TFT_CS_GPIO, 1);
     return ESP_OK;
 }
-
-/**
- * @brief 绘制一个像素
- */
-esp_err_t tft_draw_pixel(uint8_t x, uint8_t y, uint16_t color)
-{
-    if (x >= TFT_SCREEN_W || y >= TFT_SCREEN_H) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    tft_write_cmd(0x2A);
-    uint8_t caset[] = {
-        (uint8_t)((x + TFT_X_OFFSET) >> 8), (uint8_t)((x + TFT_X_OFFSET) & 0xFF),
-        (uint8_t)((x + TFT_X_OFFSET) >> 8), (uint8_t)((x + TFT_X_OFFSET) & 0xFF)
-    };
-    tft_write_data_bytes(caset, 4);
-    tft_write_cmd(0x2B);
-    uint8_t raset[] = {
-        (uint8_t)((y + TFT_Y_OFFSET) >> 8), (uint8_t)((y + TFT_Y_OFFSET) & 0xFF),
-        (uint8_t)((y + TFT_Y_OFFSET) >> 8), (uint8_t)((y + TFT_Y_OFFSET) & 0xFF)
-    };
-    tft_write_data_bytes(raset, 4);
-    tft_write_cmd(0x2C);
-    uint8_t color_bytes[] = {color >> 8, color & 0xFF};
-    tft_write_data_bytes(color_bytes, 2);
-    return ESP_OK;
-}
-
-/**
- * @brief 显示字符串 (占位实现, 请使用 ui_draw_string)
- */
-esp_err_t tft_draw_string(uint8_t x, uint8_t y, const char *str,
-                          uint16_t color, uint16_t bg_color)
-{
-    (void)x;
-    (void)y;
-    (void)str;
-    (void)color;
-    (void)bg_color;
-    return ESP_OK;
-}
-
 /**
  * @brief 设置显示窗口
  */

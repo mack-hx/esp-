@@ -8,7 +8,6 @@
  *        - 第 4 行: MPU 俯仰角
  *        - K1 → 切到菜单页
  * @author ESP32 机械狗项目
- * @date 2026-10-20
  */
 
 #include "ui_home.h"
@@ -102,7 +101,7 @@ static void ui_home_draw(void)
 
     /* 最后一行: 版本号
      * 版本来自 esp_app_desc (编译时由 version.txt 注入), 不用手写常量,
-     * 改版本号只需要改 0.31/version.txt */
+     * 改版本号只需要改 version.txt */
     ui_draw_string(HOME_L_LBL_X, HOME_VER_Y, "Ver:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
     ui_draw_string(HOME_L_VAL_X, HOME_VER_Y, esp_app_get_description()->version,
                    TFT_COLOR_BLUE, TFT_COLOR_BLACK);

@@ -1,8 +1,9 @@
 /**
  * @file font6x8.c
  * @brief 6x8 ASCII 字模数据 (空格 ~ ~, 96 字符)
+ * @note  按列存储, 每列 1 字节, 高位在上 (bit7=第1行像素, bit0=第8行像素)
+ *        来源: ASCII 标准 5x7 字体 + 1 像素字距
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #include "font6x8.h"

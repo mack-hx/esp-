@@ -3,7 +3,6 @@
  * @brief OneNet HTTP API 连接状态机 (替代原 mqtt.js)
  * @date 2026-10-10
  *
- * 原因: App 端不再走 MQTT, 改走 OneNet HTTP API.
  *   - 状态机: 'idle' | 'ready' | 'error'
  *   - ready: 一次 token 计算成功的状态; token 失效 (HTTP 401) 时退到 error
  *   - 业务层用 onState(cb) 订阅状态变化

@@ -101,10 +101,6 @@ esp_err_t rmt_new_led_strip_encoder(const led_strip_encoder_config_t *config, rm
     rmt_copy_encoder_config_t copy_encoder_config = {};
     ESP_GOTO_ON_ERROR(rmt_new_copy_encoder(&copy_encoder_config, &led_encoder->copy_encoder), err, TAG, "create copy encoder failed");
 
-    /* 复位码: SK6812 要求复位低电平 > 80µs 才能锁存数据。
-     * 原来这里是 50µs (WS2812 的下限), SK6812 可能根本不认,
-     * 表现就是"命令都收到了, 颜色也对, 但灯一直不亮"。
-     * 改成 300µs (两颗符号各 150µs), 留足余量。 */
     uint32_t reset_ticks = config->resolution / 1000000 * 150; // 每颗符号 150us, 合计 300us
     led_encoder->reset_code = (rmt_symbol_word_t) {
         .level0 = 0,

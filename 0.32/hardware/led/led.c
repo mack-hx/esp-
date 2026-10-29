@@ -1,8 +1,11 @@
 /**
  * @file led.c
  * @brief SK6812 RGB LED 控制驱动实现 (ESP32 RMT 直驱版)
+ * @note  SK6812 DIN 接 ESP32 GPIO9, 用 ESP32-S3 RMT TX 通道 0 驱动,
+ *        RMT 时钟 10MHz (100ns 精度), 用 ESP-IDF 内置 led_strip_encoder
+ *        生成 0码/1码/复位码。
+ *
  * @author ESP32 机械狗项目
- * @date 2026-10-01
  */
 
 #include "led.h"
@@ -114,6 +117,7 @@ static esp_err_t flush_led(led_id_t id)
 
 /**
  * @brief 开机自检: 红 → 绿 → 蓝 → 灭, 每档 300ms
+ * @note  用于肉眼确认 SK6812 是否接到 GPIO9
  */
 void led_selftest(void)
 {
@@ -192,23 +196,6 @@ esp_err_t led_init(void)
     ESP_LOGI(TAG, "SK6812 LED 初始化完成 (RMT通道0, 10MHz时钟)");
     return ESP_OK;
 }
-
-/**
- * @brief 反初始化 LED 模块
- */
-esp_err_t led_deinit(void)
-{
-    if (led_chan) {
-        rmt_disable(led_chan);
-        rmt_del_encoder(led_encoder);
-        rmt_del_channel(led_chan);
-        led_encoder = NULL;
-        led_chan = NULL;
-    }
-    ESP_LOGI(TAG, "SK6812 LED 已反初始化");
-    return ESP_OK;
-}
-
 /**
  * @brief 设置 LED 颜色 (任意 RGB, 真实驱动)
  */
@@ -303,15 +290,4 @@ uint8_t led_get_brightness(led_id_t id)
 {
     if (id >= LED_NUM_MAX) return 0;
     return current_brightness[id];
-}
-
-/**
- * @brief 将 RGB 颜色转换为单字节亮度 (取最大分量)
- */
-uint8_t led_color_to_brightness(led_color_t color)
-{
-    uint8_t max_c = color.r;
-    if (color.g > max_c) max_c = color.g;
-    if (color.b > max_c) max_c = color.b;
-    return max_c;
 }
