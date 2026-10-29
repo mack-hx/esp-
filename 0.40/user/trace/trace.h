@@ -35,8 +35,8 @@ typedef struct {
     float yaw;        /* 差速输出 (%) */
     float pos;        /* 位置 (cm) */
     float pos_err;    /* 位置误差 (cm): 目标位置 - 当前位置 */
-    float pos_out;    /* 位置环要求的倾角 (°, 正 = 车头往前倾) */
-    float pos_vel;    /* 里程计速度 (cm/s): 位置环的阻尼输入, 看它对不对 */
+    float pos_out;    /* 位置保持环要求的倾角 (°, 正 = 车头往前倾) */
+    float pos_vel;    /* 里程计速度 (cm/s): 位置保持环的阻尼输入, 看它对不对 */
     float kd;         /* 采样时刻的平衡环 Kd (参数可热改, 必须逐条记) */
     float dt;         /* 本周期实测间隔 (ms) */
     int8_t st;        /* 状态机状态 (bal_state_t) */

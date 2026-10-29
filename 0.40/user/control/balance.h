@@ -5,7 +5,7 @@
  * @note  控制结构 (串级, 从外到内):
  *
  *   外环 (二选一, 按模式仲裁)  ──> 目标倾角 target_pitch (°)
- *     速度环 (行走时) / 位置环 (站住不动时)
+ *     速度环 (行走时) / 位置保持环 (站住不动时)
  *        │
  *        ▼
  *   平衡环 (内环)  ──> 电机输出 (%)
@@ -15,7 +15,7 @@
  *
  * @note  各控制环的 PID 运算在独立组件 user/pid/ 里:
  *        balance_pid.c (平衡环) / speed_pid.c (速度环) /
- *        steer_pid.c (转向环) / position_pid.c (位置环) / hold_pid.c (锁位速度环)。
+ *        steer_pid.c (转向环) / position_pid.c (位置保持环)。
  *        本头文件只放跨模块共享的内容: 控制周期、方向常量、
  *        行走/起立的机械参数、状态机枚举、对外 API。
  *
@@ -61,13 +61,13 @@
 #define BAL_SPD_RAMP_UP       15.0f
 #define BAL_SPD_RAMP_DOWN     30.0f
 
-/* 位置环锁位判据 (见 balance.c 的 pos_mode_t): 实测轮速 |s_speed_fwd| <= 此值
+/* 位置保持环锁位判据 (见 balance.c 的 pos_mode_t): 实测轮速 |s_speed_fwd| <= 此值
  * 才认为车停稳, 可以锁位。0.5 rpm 相对编码器量化台阶 0.15 rpm 算基本静止。 */
 #define BAL_POS_SETTLE_RPM   0.5f
 /* SETTLE 状态最长持续时间 (秒): 超时未停稳就强行锁位 */
 #define BAL_POS_SETTLE_MAX_S 2.0f
 
-/* 位置环输出整形 (限速 + 低通) 与其它常量同放在 user/pid/position_pid.h
+/* 位置保持环的常量 (死区 / 倾角上限) 放在 user/pid/position_pid.h
  * 速度环死区 / 倾角上限 / 默认增益 → user/pid/speed_pid.h
  * 转向环增益与输出上限              → user/pid/steer_pid.h */
 
@@ -139,7 +139,7 @@ typedef struct {
     float yaw_out;      /* 差速环输出 (%, 正 = 左轮更快) */
     float dt;           /* 本周期实测间隔 (秒), 正常应≈0.01 */
     float position_cm;  /* 里程计位移 (cm, 前进为正), 相对起立时的原点 */
-    float pos_out;      /* 位置环要求的倾角 (°, 正 = 车头往前倾), 直接进平衡环 */
+    float pos_out;      /* 位置保持环要求的倾角 (°, 正 = 车头往前倾), 直接进平衡环 */
 
     /* --- 实际执行输出 --- */
     int8_t motor_a;     /* 电机 A 实际输出 (-100~100) */

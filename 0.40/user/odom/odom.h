@@ -47,7 +47,7 @@ float odom_get_position_cm(void);
  * @brief 取当前速度
  * @return 速度 (cm/s, 前进为正)
  * @note  由最近一个 100ms 里程计窗口的位移增量算出, 每 100ms 更新一次。
- * @note  位置环的速度阻尼用它, 不用编码器的 300ms 轮速 (滞后太大)。
+ * @note  位置保持环的速度阻尼用它, 不用编码器的 300ms 轮速 (滞后太大)。
  */
 float odom_get_velocity_cmps(void);
 

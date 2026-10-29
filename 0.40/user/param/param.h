@@ -57,10 +57,9 @@ typedef enum {
     PARAM_SERVO_CENTER,      // 舵机中心角 (°) —— 配平表的参考角
     PARAM_MOVE_RPM_MAX,     // 走路上限 (rpm): App 方向键 100% 档位对应的目标轮速
     PARAM_WHEEL_DIA,        // 轮子直径 (cm): 里程计用, 距离 = 脉冲数 / (44 × gear) × π × 轮径
-    PARAM_POS_KP,           // 位置环比例增益 ((cm/s)/cm)
-    PARAM_POS_KI,           // 位置环积分增益 ((cm/s)/(cm·s))
-    PARAM_HOLD_KP,          // 锁位速度环比例增益 (°/(cm/s))
-    PARAM_HOLD_KI,          // 锁位速度环积分增益 (°/((cm/s)·s))
+    PARAM_POS_KP,           // 位置保持环比例增益 (°/cm)
+    PARAM_POS_KD,           // 位置保持环速度阻尼增益 (°/(cm/s))
+    PARAM_POS_KI,           // 位置保持环积分增益 (°/(cm·s))
     PARAM_MAX                // 哨兵
 } param_id_t;
 

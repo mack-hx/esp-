@@ -65,17 +65,18 @@ static void test_defaults(void)
     CHECK(near(g_param_items[PARAM_PID_BAL_KD].def, 0.4f, 1e-6f),
           "bal_kd 的 def 应为 0.4 (实际 %.2f)",
           (double)g_param_items[PARAM_PID_BAL_KD].def);
-    /* 位置环默认打开: pos_kp = 2.0 (纯 P), pos_ki = 0。
-     * 方向键改成"调目标位置", 位置环一直接管, 车被推歪后要能自己走回原位
-     * → 位置环不能默认是关的。
-     * ⚠ pos_ki 必须保持 0: 速度环本身带积分, 位置环再带积分就是双重积分,
-     *   两个环互相追 → 站直时前后摆 (0.31 抖动排查的结论)。 */
-    CHECK(near(param_get_float(PARAM_POS_KP), 2.0f, 1e-6f), "pos_kp 默认应 2.0 (位置环默认开)");
-    CHECK(near(param_get_float(PARAM_POS_KI), 0.0f, 1e-6f), "pos_ki 默认应 0 (只用 P, 不用 I)");
-    /* pos_kp 的 step 是 0.05 → 显示小数位必须是 2 (App 侧也是 2)。
+    /* 位置保持环默认打开: pos_kp = 0.7 (弹簧刚度), pos_kd = 0.35 (速度阻尼),
+     * pos_ki = 0。
+     * 车被推歪后要能自己走回原位 → 位置保持环不能默认是关的。
+     * ⚠ pos_ki 必须保持 0: 位置保持环再带积分, 容易攒出常驻倾角
+     *   → 车一直往一个方向走。 */
+    CHECK(near(param_get_float(PARAM_POS_KP), 0.7f, 1e-6f), "pos_kp 默认应 0.7 (位置保持环默认开)");
+    CHECK(near(param_get_float(PARAM_POS_KD), 0.35f, 1e-6f), "pos_kd 默认应 0.35 (阻尼项默认开)");
+    CHECK(near(param_get_float(PARAM_POS_KI), 0.0f, 1e-6f), "pos_ki 默认应 0 (只用 PD, 不用 I)");
+    /* pos_kp 的 step 是 0.01 → 显示小数位必须是 2 (App 侧也是 2)。
      * ⚠ 车端和 App 侧的小数位必须一致 —— scripts/check_param_sync.py 能查出来。 */
     CHECK(g_param_items[PARAM_POS_KP].decimals == 2,
-          "pos_kp 的 decimals 应为 2 (step=0.05), 实际 %u",
+          "pos_kp 的 decimals 应为 2 (step=0.01), 实际 %u",
           (unsigned)g_param_items[PARAM_POS_KP].decimals);
     /* 速度环增益: 具体数值用 g_param_items 里的 def 比对 (不在这里写死),
      * 免得调完默认值忘了改测试。写死的值只用来卡住"别又调回激进值":
