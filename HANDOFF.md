@@ -20,7 +20,14 @@
 ## 验证状态
 - `pio run` 通过：RAM 26.6%，Flash 28.4%。
 - 删掉 `.pio/build` 后全新 configure + 全量编译通过（CMakeLists 修复已确认有效）。
+- 从 GitHub 拉下来的干净副本再全量编译一遍，同样通过。
 - App `.js` 通过 `node --check`；`.vue` 注释块闭合检查通过。
+
+## Git 状态
+- 已推送到 GitHub：`mack-hx/esp-` main 分支，提交 `217843b`
+  「refactor(0.32): 整理代码与注释, 补回 user/pid/CMakeLists.txt」。
+- 注意：**本地工作区本身不是 git 仓库**，历史在远端。本次是把本地 0.32
+  整棵树同步进 `/tmp/esp_git_probe` 克隆再提交的（该克隆是临时目录，重启会没）。
 
 ## 约定
 - 注释用 `@brief` / `@param` / `@return`；**不要引入 `@note`**（已清零）。
