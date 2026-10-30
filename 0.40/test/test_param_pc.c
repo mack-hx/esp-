@@ -54,7 +54,7 @@ static void test_defaults(void)
      * 速度环默认非 0 (App 方向键改走速度环了: 目标轮速 → 目标倾角 → 平衡环,
      *   增益还是 0 的话方向键等于没反应),
      * 输出上限默认 60% (方向修正后实测 30% 接不住车身) */
-    CHECK(near(param_get_float(PARAM_PID_BAL_KP), 12.0f, 1e-6f), "bal_kp 默认应 12");
+    CHECK(near(param_get_float(PARAM_PID_BAL_KP), 13.0f, 1e-6f), "bal_kp 默认应 13");
     CHECK(near(param_get_float(PARAM_PID_BAL_KI),  0.5f, 1e-6f), "bal_ki 默认应 0.5");
     CHECK(near(param_get_float(PARAM_PID_BAL_KD),  0.4f, 1e-6f), "bal_kd 默认应 0.4");
     /* ⚠ bal_kd 是 0.32 的重点: 默认值必须跟 App 侧 paramDef.js 一致。
@@ -65,13 +65,19 @@ static void test_defaults(void)
     CHECK(near(g_param_items[PARAM_PID_BAL_KD].def, 0.4f, 1e-6f),
           "bal_kd 的 def 应为 0.4 (实际 %.2f)",
           (double)g_param_items[PARAM_PID_BAL_KD].def);
-    /* 位置保持环默认打开: pos_kp = 1.5, pos_kd = 0.5, pos_ki = 0。 */
-    CHECK(near(param_get_float(PARAM_POS_KP), 1.5f, 1e-6f), "pos_kp 默认应 1.5 (位置保持环默认开)");
-    CHECK(near(param_get_float(PARAM_POS_KD), 0.5f, 1e-6f), "pos_kd 默认应 0.5 (阻尼项默认开)");
-    CHECK(near(param_get_float(PARAM_POS_KI), 0.0f, 1e-6f), "pos_ki 默认应 0");
-    /* pos_kp 的 step 是 0.1 → 显示小数位 1 (需与 App 一致, 见 check_param_sync.py) */
-    CHECK(g_param_items[PARAM_POS_KP].decimals == 1,
-          "pos_kp 的 decimals 应为 1 (step=0.1), 实际 %u",
+    /* 位置保持环默认打开: pos_kp = 1.0 (弹簧刚度), pos_kd = 0.3 (速度阻尼),
+     * pos_ki = 0.1 (补零点偏差)。 */
+    CHECK(near(param_get_float(PARAM_POS_KP), 1.27f, 1e-6f), "pos_kp 默认应 1.27 (位置保持环默认开)");
+    CHECK(near(param_get_float(PARAM_POS_KD), 0.18f, 1e-6f), "pos_kd 默认应 0.18 (阻尼项默认开)");
+    CHECK(near(param_get_float(PARAM_POS_KI), 0.1f, 1e-6f), "pos_ki 默认应 0.1 (小积分补稳态偏差)");
+    /* LQR 位置项默认值 = lqr.h 里的 -LQR_KX / -LQR_KV / LQR_AMAX */
+    CHECK(near(param_get_float(PARAM_LQR_KX), 5.0f, 1e-6f), "lqr_kx 默认应 5.0");
+    CHECK(near(param_get_float(PARAM_LQR_KV), 2.25f, 1e-6f), "lqr_kv 默认应 2.25");
+    CHECK(near(param_get_float(PARAM_LQR_AMAX), 8.0f, 1e-6f), "lqr_amax 默认应 8");
+    /* pos_kp 的 step 是 0.01 → 显示小数位必须是 2 (App 侧也是 2)。
+     * ⚠ 车端和 App 侧的小数位必须一致 —— scripts/check_param_sync.py 能查出来。 */
+    CHECK(g_param_items[PARAM_POS_KP].decimals == 2,
+          "pos_kp 的 decimals 应为 2 (step=0.01), 实际 %u",
           (unsigned)g_param_items[PARAM_POS_KP].decimals);
     /* 速度环增益: 具体数值用 g_param_items 里的 def 比对 (不在这里写死),
      * 免得调完默认值忘了改测试。写死的值只用来卡住"别又调回激进值":
@@ -195,8 +201,8 @@ static void test_reset_key(void)
           (double)param_get_float(PARAM_PID_SPD_KI));
     CHECK(near(param_get_float(PARAM_MOTOR_OUT_MAX), 60.0f, 1e-6f),
           "reset 后 motor_max 应回到默认 60");
-    CHECK(near(param_get_float(PARAM_PID_BAL_KP), 12.0f, 1e-6f),
-          "reset 后 bal_kp 应回到默认 12");
+    CHECK(near(param_get_float(PARAM_PID_BAL_KP), 13.0f, 1e-6f),
+          "reset 后 bal_kp 应回到默认 13");
 
     /* 数字形式也要认 ({"_reset":1}) */
     param_set_float(PARAM_PID_SPD_KP, 20.0f);

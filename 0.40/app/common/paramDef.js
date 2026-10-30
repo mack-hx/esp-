@@ -2,7 +2,7 @@
  * @file paramDef.js
  * @brief 1:1 镜像 ESP32 端 param.c 的参数定义
  *
- * 数据来源: 0.40/user/param/param.c (PARAM_DATA_VERSION 26)
+ * 数据来源: 0.40/user/param/param.c (PARAM_DATA_VERSION 35)
  * 改了 param.c 就要同步这个文件, 否则 App 显示的滑块范围/默认值会跟车端对不上.
  *
  * 约定:
@@ -15,7 +15,7 @@
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 26
+export const PARAM_VER = 35
 
 export const PARAM_GROUPS = {
   0: { key: 'balance', label: '平衡环' },
@@ -25,7 +25,7 @@ export const PARAM_GROUPS = {
 
 export const PARAM_DEFS = [
   // 平衡环
-  { id: 0,  key: 'bal_kp',      label: 'Balance Kp', unit: '',  def: 12.0,  min: 0,  max: 200,  step: 0.5,  dec: 1, grp: 0,
+  { id: 0,  key: 'bal_kp',      label: 'Balance Kp', unit: '',  def: 13.0,  min: 0,  max: 200,  step: 0.5,  dec: 1, grp: 0,
     hint: '越大越硬。太小扶不倒, 太大高频抖。这是**最需要真机试出来的**参数' },
   { id: 1,  key: 'bal_ki',      label: 'Balance Ki', unit: '',  def: 0.5,   min: 0,  max: 100,  step: 0.5,  dec: 1, grp: 0,
     hint: '消除配平残余偏差。太大容易积分饱和 (车会先猛冲再回不来)' },
@@ -71,12 +71,18 @@ export const PARAM_DEFS = [
   // 里程计 / 位置环
   { id: 17, key: 'wheel_dia',   label: 'Wheel Diameter', unit: 'cm', def: 6.5, min: 1, max: 30, step: 0.1, dec: 1, grp: 2,
     hint: '**轮子直径** (cm)。里程计靠它把编码器脉冲换算成位移: 距离 = 脉冲数 / (44 × gear) × π × 轮径。本机实测 6.5 cm。填错会让位置反馈整体缩放错误 (位置环纠偏力度不对)' },
-  { id: 18, key: 'pos_kp',      label: 'Position Kp',    unit: '(cm/s)/cm', def: 1.5, min: 0, max: 5, step: 0.1, dec: 1, grp: 1,
-    hint: '位置保持环比例增益 ((cm/s)/cm): 偏离锚点 1 cm 时, 给速度环多少 cm/s 的回位速度。位置误差按 (1+Kd)/Kp 的时间常数指数衰减。**默认 1.5**。太小 → 推车后回位慢、抗推力弱; 太大 → 回位猛、来回晃。一次加 0.1' },
-  { id: 19, key: 'pos_kd',      label: 'Position Kd',    unit: '-', def: 0.5, min: 0, max: 3, step: 0.05, dec: 2, grp: 1,
-    hint: '位置保持环阻尼 (无量纲): 作用在 (实测速度 − 指令速度) 上, 抑制回位冲过头。**默认 0.5**。太小 → 冲过头来回摆; 太大 → 回位发死。步进 0.05' },
-  { id: 20, key: 'pos_ki',      label: 'Position Ki',    unit: '(cm/s)/(cm·s)', def: 0,  min: 0, max: 2, step: 0.01, dec: 2, grp: 1,
-    hint: '位置保持环积分增益: 消掉最终停位的稳态偏差。**默认 0**, 真机确认有稳态偏差再从 0 往上加。步进 0.01' }
+  { id: 18, key: 'pos_kp',      label: 'Position Kp',    unit: '°/cm', def: 1.27, min: 0, max: 2, step: 0.01, dec: 2, grp: 1,
+    hint: '位置保持环比例增益 (°/cm): 位置偏差 1 cm 时, 给平衡环多少度的回位倾角。这一环是**弹簧** —— 推得越远回位力越大, 松手后自己回到原位。**默认 1.27** (偏差 2 cm → 约 2.5° 倾角)。⚠ 倾角小于 1° 时电机死区里轮子不转, 车根本不会动, 所以别调得比 0.4 小。太大 → 回位太猛, 冲过头来回晃。一次加 0.1, 推一下车看效果' },
+  { id: 19, key: 'pos_kd',      label: 'Position Kd',    unit: '°/(cm/s)', def: 0.18, min: 0, max: 2, step: 0.01, dec: 2, grp: 1,
+    hint: '位置保持环速度阻尼 (°/(cm/s)): 回位时的速度反馈, 相当于**刹车**。**默认 0.18** (速度 10 cm/s → 约 1.8° 刹车倾角)。⚠ 太大会让这一环自己振起来 (速度测量有约 30 ms 滞后)。冲过头停不下来 → 每次加 0.03; 车身一直来回晃 → 每次减 0.03' },
+  { id: 20, key: 'pos_ki',      label: 'Position Ki',    unit: '°/(cm·s)', def: 0.1,  min: 0, max: 1, step: 0.01, dec: 2, grp: 1,
+    hint: '位置保持环积分增益: 消掉站住之后慢慢偏这种稳态位置偏差。**默认 0.1**: 补平衡环零点偏差 / 地面略斜造成的常驻位置偏差, 倾角小于 1° 时也靠它慢慢补掉。配大了车会来回慢晃, 配 0 则停位会留偏差。步进 0.01' },
+  { id: 21, key: 'lqr_kx',      label: 'LQR Kx',         unit: '%/cm', def: 5, min: 0, max: 20, step: 0.25, dec: 2, grp: 1,
+    hint: 'LQR 位置偏差增益 (%/cm): 站立时位置偏差 1 cm 对应的回位力度, 越大回位越硬。仅 LQR 模式生效 (此时 pos_kp/pos_kd/pos_ki 不生效)。步进 0.25' },
+  { id: 22, key: 'lqr_kv',      label: 'LQR Kv',         unit: '%/(cm/s)', def: 2.25, min: 0, max: 10, step: 0.125, dec: 3, grp: 1,
+    hint: 'LQR 平移速度增益 (%/(cm/s)): 回位时的速度阻尼(刹车)。推完来回摆多次 → 加大; 车身高频抖或自己振起来 → 减小。仅 LQR 模式生效。步进 0.125' },
+  { id: 23, key: 'lqr_amax',    label: 'LQR 回位减速度', unit: 'cm/s²', def: 8, min: 0, max: 150, step: 1, dec: 0, grp: 1,
+    hint: '回位减速度上限 (cm/s²): 偏差大时期望回位速度 = sqrt(2·值·偏差), 车会提前减速, 到位时速度接近 0。回位冲过头 → 减小; 回位太慢 → 加大。0 = 不限制回位速度 (退回纯线性)。步进 1' }
 ]
 
 /** 用 key 找 def */

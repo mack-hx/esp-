@@ -60,6 +60,9 @@
 /* 目标轮速的斜坡 (rpm/s): 目标不跳变, 慢慢加上去, 免得一下子猛冲 */
 #define BAL_SPD_RAMP_UP       15.0f
 #define BAL_SPD_RAMP_DOWN     30.0f
+/* 速度环/位置环混合的权重刻度 (rpm): w = min(1, |斜坡后目标轮速| / 本值)
+ * w=1 全由速度环给倾角, w=0 全由位置环给倾角 */
+#define BAL_POS_BLEND_RPM     5.0f
 
 /* 位置保持环的常量 (死区 / 输出上限) 放在 user/pid/position_pid.h
  * 速度环死区 / 倾角上限 / 默认增益 → user/pid/speed_pid.h
@@ -133,7 +136,7 @@ typedef struct {
     float yaw_out;      /* 差速环输出 (%, 正 = 左轮更快) */
     float dt;           /* 本周期实测间隔 (秒), 正常应≈0.01 */
     float position_cm;  /* 里程计位移 (cm, 前进为正), 相对起立时的原点 */
-    float pos_out;      /* 位置保持环的速度修正量 (cm/s, 前进为正), 叠加到速度环目标 */
+    float pos_out;      /* 位置保持环输出的倾角 (°, 前倾为正), 未乘权重 */
 
     /* --- 实际执行输出 --- */
     int8_t motor_a;     /* 电机 A 实际输出 (-100~100) */

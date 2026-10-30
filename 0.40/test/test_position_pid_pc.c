@@ -5,13 +5,13 @@
  * @note  覆盖:
  *   1) 死区 + 软化过渡带 —— 死区内不要求回位, 过渡带内误差压缩
  *   2) 速度阻尼项 —— 往前动时给的是刹车倾角 (反向)
- *   3) 倾角上限 —— 输出不超过 ±POS_PID_OUT_MAX
+ *   3) 倾角上限 —— 输出不超过 ±POS_PID_LEAN_MAX
  *   4) 输出连续性 —— 误差从小到大扫过去, 输出不能跳变 (硬夹会跳)
  *   5) 积分抗饱和 + 死区内衰减
  *   6) 输出有限性 —— 极端输入不出 NaN/Inf
  *
- * @note  位置保持环输出的是**速度修正量 (cm/s)**: 位置误差 (cm) + 平移速度 (cm/s)
- *        → 速度修正量 (cm/s) → 平衡环 → 电机输出。
+ * @note  位置保持环输出的是**目标倾角 (°)**: 位置误差 (cm) + 平移速度 (cm/s)
+ *        → 目标倾角 (°) → 平衡环 → 电机输出。
  *
  * 编译运行:
  *   cd 0.40
@@ -85,10 +85,10 @@ static float settle(float err, float v, int n)
  */
 static float raw_from_out(float out)
 {
-    float r = out / POS_PID_OUT_MAX;
+    float r = out / POS_PID_LEAN_MAX;
     if (r > 0.999f) r = 0.999f;
     if (r < -0.999f) r = -0.999f;
-    return POS_PID_OUT_MAX * atanhf(r);
+    return POS_PID_LEAN_MAX * atanhf(r);
 }
 
 /**
@@ -163,14 +163,14 @@ static void test_velocity_damping(void)
     position_pid_init();
     float out_fwd = settle(0.0f, 5.0f, 10);
     CHECK(out_fwd < 0.0f,
-          "前进 5 cm/s 时输出=%.4f cm/s (期望 < 0, 后倾刹车)", out_fwd);
+          "前进 5 cm/s 时输出=%.4f° (期望 < 0, 后倾刹车)", out_fwd);
     CHECK(fabsf(raw_from_out(out_fwd) + 5.0f) < 0.01f,
-          "前进 5 cm/s 时原始值=%.4f cm/s (期望 ≈-5)", raw_from_out(out_fwd));
+          "前进 5 cm/s 时原始值=%.4f° (期望 ≈-5)", raw_from_out(out_fwd));
 
     position_pid_init();
     float out_back = settle(0.0f, -5.0f, 10);
     CHECK(out_back > 0.0f,
-          "后退 5 cm/s 时输出=%.4f cm/s (期望 > 0, 前倾刹车)", out_back);
+          "后退 5 cm/s 时输出=%.4f° (期望 > 0, 前倾刹车)", out_back);
 
     /* 位置误差项与阻尼项叠加: 目标在前方 (err>0) 且正在前进 → 前倾更多 */
     g_pos_kp = 1.0f;
@@ -178,7 +178,7 @@ static void test_velocity_damping(void)
     float out_both = settle(2.0f, 2.0f, 10);
     float raw_both = raw_from_out(out_both);
     CHECK(fabsf(raw_both - (2.0f - POS_PID_ERR_DEADBAND - 2.0f)) < 0.01f,
-          "err=2cm v=2cm/s 时原始值=%.4f cm/s (期望 ≈%.2f)",
+          "err=2cm v=2cm/s 时原始值=%.4f° (期望 ≈%.2f)",
           raw_both, 2.0f - POS_PID_ERR_DEADBAND - 2.0f);
 }
 
@@ -187,7 +187,7 @@ static void test_velocity_damping(void)
  */
 static void test_output_clamp(void)
 {
-    printf("[3] 倾角上限: 输出不超过 ±%.1f cm/s\n", POS_PID_OUT_MAX);
+    printf("[3] 倾角上限: 输出不超过 ±%.1f°\n", POS_PID_LEAN_MAX);
 
     g_pos_kp = 1.0f;
     g_pos_kd = 0.0f;
@@ -195,13 +195,13 @@ static void test_output_clamp(void)
 
     position_pid_init();
     float out = settle(1000.0f, 0.0f, 100);
-    CHECK(fabsf(out) <= POS_PID_OUT_MAX + 1e-3f,
-          "巨大误差下输出=%.4f cm/s (期望 |x|<=%.1f)", out, POS_PID_OUT_MAX);
+    CHECK(fabsf(out) <= POS_PID_LEAN_MAX + 1e-3f,
+          "巨大误差下输出=%.4f° (期望 |x|<=%.1f)", out, POS_PID_LEAN_MAX);
 
     position_pid_init();
     float out_neg = settle(-1000.0f, 0.0f, 100);
-    CHECK(out_neg >= -POS_PID_OUT_MAX - 1e-3f,
-          "巨大负误差下输出=%.4f cm/s (期望 |x|<=%.1f)", out_neg, POS_PID_OUT_MAX);
+    CHECK(out_neg >= -POS_PID_LEAN_MAX - 1e-3f,
+          "巨大负误差下输出=%.4f° (期望 |x|<=%.1f)", out_neg, POS_PID_LEAN_MAX);
 
     /* 限幅不改变符号 */
     CHECK(out > 0.0f, "正向误差输出应为正 (实际 %.4f)", out);
@@ -210,8 +210,8 @@ static void test_output_clamp(void)
     /* 速度项也不能把输出顶出上限 */
     position_pid_init();
     float out_v = settle(0.0f, -1000.0f, 100);
-    CHECK(fabsf(out_v) <= POS_PID_OUT_MAX + 1e-3f,
-          "巨大反向速度下输出=%.4f cm/s (期望 |x|<=%.1f)", out_v, POS_PID_OUT_MAX);
+    CHECK(fabsf(out_v) <= POS_PID_LEAN_MAX + 1e-3f,
+          "巨大反向速度下输出=%.4f° (期望 |x|<=%.1f)", out_v, POS_PID_LEAN_MAX);
 }
 
 /**
@@ -240,10 +240,10 @@ static void test_output_continuity(void)
         prev = out;
         prev_raw = raw;
     }
-    /* 扫描步长 0.05 cm → 有效误差每步最多变 0.05 → 倾角每步最多变 0.05 cm/s,
-     * 加上软饱和只会更小。留 0.2 cm/s 的余量。 */
+    /* 扫描步长 0.05 cm → 有效误差每步最多变 0.05 → 倾角每步最多变 0.05°,
+     * 加上软饱和只会更小。留 0.2° 的余量。 */
     CHECK(max_jump < 0.2f,
-          "误差从 0 扫到 20cm, 最大单步跳变=%.4f cm/s (期望 < 0.2 cm/s)", max_jump);
+          "误差从 0 扫到 20cm, 最大单步跳变=%.4f° (期望 < 0.2°)", max_jump);
     (void)prev_raw;
 }
 
@@ -261,22 +261,22 @@ static void test_integral(void)
     position_pid_init();
     /* 巨大误差 → 输出顶在上限, 积分应该被冻结 (不能无限攒) */
     float out_big = settle(50.0f, 0.0f, 500);
-    CHECK(fabsf(out_big) <= POS_PID_OUT_MAX + 1e-3f,
-          "大误差下输出=%.4f cm/s (期望 |x|<=%.1f)", out_big, POS_PID_OUT_MAX);
+    CHECK(fabsf(out_big) <= POS_PID_LEAN_MAX + 1e-3f,
+          "大误差下输出=%.4f° (期望 |x|<=%.1f)", out_big, POS_PID_LEAN_MAX);
 
     /* 误差反号时积分残留会让车冲过头 → 反号后输出必须马上反号 */
     position_pid_init();
     settle(50.0f, 0.0f, 500);
     float out_rev = settle(-0.5f, 0.0f, 1);
     CHECK(out_rev < 0.0f,
-          "误差反号后输出=%.4f cm/s (期望 < 0, 不能被残留积分拖住)", out_rev);
+          "误差反号后输出=%.4f° (期望 < 0, 不能被残留积分拖住)", out_rev);
 
     /* 死区内: 积分衰减, 输出回到 0 附近 */
     position_pid_init();
     float out_before = settle(2.0f, 0.0f, 200);
     float out_at_zero = settle(0.05f, 0.0f, 300);
     CHECK(fabsf(out_at_zero) < fabsf(out_before),
-          "回正后输出应比偏的时候小 (%.4f → %.4f cm/s)", out_before, out_at_zero);
+          "回正后输出应比偏的时候小 (%.4f → %.4f°)", out_before, out_at_zero);
     float out_long = settle(0.05f, 0.0f, 1000);
     CHECK(fabsf(out_long) < 0.05f,
           "回正 10 秒后输出=%.6f° (期望接近 0)", out_long);

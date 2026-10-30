@@ -8,5 +8,5 @@
 idf_component_register(
     SRCS "trace.c"
     INCLUDE_DIRS "."
-    REQUIRES freertos
+    REQUIRES freertos esp_partition heap
 )

@@ -11,8 +11,8 @@
 #define STEER_PID_H
 
 /* 转向环参数 (%/rpm) */
-#define STEER_PID_KP         0.5f    /* 差速输出 (%/rpm) */
-#define STEER_PID_KI         0.05f   /* 差速输出 (%/(rpm·s)) */
+#define STEER_PID_KP         0.1875f  /* 差速输出 (%/rpm) */
+#define STEER_PID_KI         0.01875f /* 差速输出 (%/(rpm·s)) */
 #define STEER_PID_OUT_MAX    20.0f   /* 差速输出上限 (%) */
 
 /**

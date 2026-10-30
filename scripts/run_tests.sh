@@ -42,6 +42,10 @@ run "position_pid" sh -c "gcc -std=c99 -Wall -Wextra -DPARAM_OFFLINE_TEST \
     test/test_position_pid_pc.c user/pid/position_pid.c user/pid/pid.c \
     -o /tmp/position_pid_test -I test -I user/pid -I user/param -lm && /tmp/position_pid_test"
 
+run "lqr" sh -c "gcc -std=c99 -Wall -Wextra -DPARAM_OFFLINE_TEST \
+    test/test_lqr_pc.c user/pid/lqr.c user/pid/pid.c \
+    -o /tmp/lqr_test -I test -I user/pid -I user/param -lm && /tmp/lqr_test"
+
 # --- 参数表一致性: 车端 param.c vs App paramDef.js ---
 printf '\n===== 参数表一致性 (车端 vs App) =====\n'
 if python3 "$ROOT/scripts/check_param_sync.py" "$VER"; then

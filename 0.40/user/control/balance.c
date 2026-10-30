@@ -11,6 +11,7 @@
 #include "speed_pid.h"
 #include "steer_pid.h"
 #include "position_pid.h"
+#include "lqr.h"
 #include "trim.h"
 #include "mpu9250.h"
 #include "encoder.h"
@@ -39,6 +40,10 @@ static const char *TAG = "BALANCE";
 
 /* 跟踪采样周期 (ms): 100Hz */
 #define BAL_TRACE_PERIOD_MS 10
+
+/* 站立控制器选择: 1 = LQR 状态反馈 (user/pid/lqr.c, 增益固定在代码里);
+ * 0 = 原串级 PID (增益读参数表)。LQR 模式下 bal_kp/bal_ki/bal_kd/pos_* 滑块不生效。 */
+#define BAL_USE_LQR 1
 
 /* ================= 模块内部状态 ================= */
 
@@ -77,12 +82,10 @@ static float s_arm_hold_ms = 0.0f;
 static float s_tgt_avg      = 0.0f;   /* 斜坡后的实际目标 */
 static float s_tgt_diff     = 0.0f;   /* 斜坡后的实际目标差 */
 
-/* 位置保持环链路: 锚点位置 → 速度修正量 → 速度环目标
- * s_pos_target_cm = 锚点位置 (cm, 前进为正): 每周期累加指令速度,
- *                   指令结束后冻结, 车被推离锚点时位置环把它拉回
- * s_pos_out       = 位置环输出的速度修正量 (cm/s, 前进为正), 叠加到速度环目标 */
+/* 位置保持环: 锚点位置 → 目标倾角, 与速度环按权重混合
+ * s_pos_target_cm = 锚点位置 (cm, 前进为正): 斜坡后目标轮速非 0 时跟随当前位置,
+ *                   目标退到 0 后冻结, 车被推离锚点时位置环把它拉回 */
 static float s_pos_target_cm = 0.0f;
-static float s_pos_out       = 0.0f;
 
 /* ========== 轮速统计 (300ms 滑动窗口) ==========
  * 换算公式: rpm = 脉冲数 × 60 / (窗口秒数 × 44 × gear)
@@ -191,6 +194,9 @@ static void balance_load_params(void)
     speed_pid_load_params();     /* 速度环 */
     steer_pid_load_params();     /* 转向环 */
     position_pid_load_params();  /* 位置保持环 */
+    lqr_set_pos_gains(param_get_float(PARAM_LQR_KX),
+                      param_get_float(PARAM_LQR_KV),
+                      param_get_float(PARAM_LQR_AMAX));  /* LQR 位置项 */
 }
 
 /**
@@ -529,19 +535,6 @@ static void balance_move_targets(bal_move_t dir, int8_t level,
     *out_diff = diff;
 }
 
-/** @brief 轮速 (rpm) → 车体平移速度 (cm/s); 周长取 param 轮径 */
-static float balance_rpm_to_cmps(float rpm)
-{
-    return rpm * (float)M_PI * param_get_float(PARAM_WHEEL_DIA) / 60.0f;
-}
-
-/** @brief 车体平移速度 (cm/s) → 轮速 (rpm) */
-static float balance_cmps_to_rpm(float cmps)
-{
-    float dia = param_get_float(PARAM_WHEEL_DIA);
-    return (dia > 0.0f) ? cmps * 60.0f / ((float)M_PI * dia) : 0.0f;
-}
-
 /**
  * @brief 由遥控指令算出目标轮速, 并用斜坡逼近
  * @param dt 控制周期 (秒)
@@ -549,7 +542,8 @@ static float balance_cmps_to_rpm(float cmps)
  *        松手时目标慢慢退到 0, 车自然减速站稳。
  *
  * @note  指令 (s_move_dir / s_move_level) 由 MQTT 任务写, 这里只读。
- * @note  锚点位置 s_pos_target_cm 累加斜坡后的目标速度, 目标退到 0 后自然冻结。
+ * @note  锚点位置 s_pos_target_cm: 斜坡后的平均目标轮速非 0 时跟随当前位置,
+ *        目标退到 0 的那一周期起冻结。
  */
 static void balance_update_target(float dt)
 {
@@ -569,18 +563,16 @@ static void balance_update_target(float dt)
     s_tgt_avg  = balance_move_toward(s_tgt_avg,  cmd_avg,  step_up, step_down);
     s_tgt_diff = balance_move_toward(s_tgt_diff, cmd_diff, step_up, step_down);
 
-    /* --- 锚点位置: 平衡中累加指令速度, 否则跟随当前位置 --- */
-    if (s_state != BAL_STATE_BALANCING) {
+    /* --- 锚点位置: 非平衡态或目标轮速非 0 时跟随当前位置, 否则冻结 --- */
+    if (s_state != BAL_STATE_BALANCING || s_tgt_avg != 0.0f) {
         s_pos_target_cm = odom_get_position_cm();
-    } else {
-        s_pos_target_cm += balance_rpm_to_cmps(s_tgt_avg) * dt;
     }
 }
 
 /**
- * @brief 位置保持环链路: 锚点误差 + 相对速度 → 速度修正量 (rpm)
+ * @brief 位置保持环: 锚点误差 + 里程计速度 → 目标倾角
  * @param dt 控制周期 (秒)
- * @return 叠加到速度环目标的修正量 (rpm, 前进为正)
+ * @return 目标倾角 (°, 前倾为正); 非平衡态返回 0
  */
 static float balance_update_position(float dt)
 {
@@ -588,18 +580,24 @@ static float balance_update_position(float dt)
     s_data.position_cm = cur;
 
     if (s_state != BAL_STATE_BALANCING) {
-        s_pos_out = 0.0f;
         s_data.pos_out = 0.0f;
         position_pid_reset();
+        lqr_pos_integral_reset();
         return 0.0f;
     }
 
-    float err   = s_pos_target_cm - cur;
-    float v_rel = odom_get_velocity_cmps() - balance_rpm_to_cmps(s_tgt_avg);
-
-    s_pos_out = position_pid_update(dt, err, v_rel);
-    s_data.pos_out = s_pos_out;
-    return balance_cmps_to_rpm(s_pos_out);
+#if BAL_USE_LQR
+    {
+        float err = s_pos_target_cm - cur;
+        float vel = odom_get_velocity_cmps();
+        float lean = lqr_pos_lean(err, vel) + lqr_pos_integral(dt, err, vel);
+        s_data.pos_out = fminf(fmaxf(lean, -POS_PID_LEAN_MAX), POS_PID_LEAN_MAX);
+    }
+#else
+    s_data.pos_out = position_pid_update(dt, s_pos_target_cm - cur,
+                                         odom_get_velocity_cmps());
+#endif
+    return s_data.pos_out;
 }
 
 /**
@@ -624,16 +622,26 @@ static void balance_control_step(float dt)
     /* --- 目标轮速斜坡 (App 方向键 → 目标轮速) --- */
     balance_update_target(dt);
 
-    /* --- 外环: 位置环输出速度修正量, 叠加到速度环目标; 速度环始终运行 --- */
-    float pos_rpm   = balance_update_position(dt);
-    float tgt_speed = s_tgt_avg + pos_rpm;
+    /* --- 外环: 速度环与位置环按斜坡后目标轮速加权混合 ---
+     * w = min(1, |目标轮速| / BAL_POS_BLEND_RPM); 本工程 pitch 前倾为负,
+     * 速度环输出已按此约定, 位置环输出前倾为正, 故取负号。
+     * w=0 时位置环独占, 速度环清零 (不留积分)。 */
+    float pos_lean = balance_update_position(dt);
+    float w = fabsf(s_tgt_avg) / BAL_POS_BLEND_RPM;
+    if (w > 1.0f) w = 1.0f;
 
-    /* 本工程 pitch 前倾为负, 速度环输出已按此约定 */
-    float target_pitch = speed_pid_update(dt, s_speed_fwd, tgt_speed);
+    float spd_pitch = 0.0f;
+    if (w > 0.0f) {
+        spd_pitch = speed_pid_update(dt, s_speed_fwd, s_tgt_avg);
+    } else {
+        speed_pid_reset();
+    }
+    float target_pitch = w * spd_pitch - (1.0f - w) * pos_lean;
 
-    /* 安全阀: 倾角设定点不能超过走路时的上限 (4°), 防止外环把车放倒 */
-    if (target_pitch >  SPD_PID_WALK_PITCH_MAX) target_pitch =  SPD_PID_WALK_PITCH_MAX;
-    if (target_pitch < -SPD_PID_WALK_PITCH_MAX) target_pitch = -SPD_PID_WALK_PITCH_MAX;
+    /* 安全阀: 倾角设定点上限 = max(走路上限, 位置环上限), 防止外环把车放倒 */
+    const float pitch_cap = fmaxf(SPD_PID_WALK_PITCH_MAX, POS_PID_LEAN_MAX);
+    if (target_pitch >  pitch_cap) target_pitch =  pitch_cap;
+    if (target_pitch < -pitch_cap) target_pitch = -pitch_cap;
 
     s_data.target_pitch = target_pitch;
 
@@ -645,8 +653,12 @@ static void balance_control_step(float dt)
     /* --- 内环: 平衡环 → 电机输出 ---
      * 误差方向、D 项用角速度反馈 (阻尼) 的细节都在
      * user/pid/balance_pid.c 里。 */
+#if BAL_USE_LQR
+    s_data.bal_out = lqr_balance_out(s_data.pitch - s_data.target_pitch, s_data.gyro);
+#else
     s_data.bal_out = balance_pid_update(dt, s_data.pitch,
                                         s_data.target_pitch, s_data.gyro);
+#endif
 
     /* --- 执行: 双轮同向输出 (+ 差速) ---
      * BAL_MOTOR_SIGN 烘焙在代码里 (不在网页上可调):

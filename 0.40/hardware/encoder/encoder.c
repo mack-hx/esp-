@@ -7,6 +7,7 @@
 #include "encoder.h"
 #include "driver/pcnt.h"
 #include "driver/gpio.h"  // gpio_num_t 类型定义
+#include <stdbool.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -33,17 +34,23 @@ static int last_snapshot[ENCODER_2 + 1] = {0, 0};
 static TickType_t last_snapshot_tick[ENCODER_2 + 1] = {0, 0};
 
 /**
- * @brief 配置单个编码器的 PCNT 单元
+ * @brief 配置单个编码器的 PCNT 单元为四倍频正交解码 (A、B 两相的每个边沿都计数)
+ * @note  通道 0: P 相计数, N 相判方向; 通道 1: N 相计数, P 相判方向。
+ *        invert=true 时所有边沿的计数方向取反 (物理左轮装配方向与右轮相反)。
  */
 static esp_err_t encoder_config_unit(encoder_id_t id)
 {
+    const bool invert = (id == ENCODER_1);
+    const pcnt_count_mode_t inc = invert ? PCNT_COUNT_DEC : PCNT_COUNT_INC;
+    const pcnt_count_mode_t dec = invert ? PCNT_COUNT_INC : PCNT_COUNT_DEC;
+
     pcnt_config_t cfg = {
-        .pulse_gpio_num = encoder_map[id].a_pos,    // 脉冲信号
-        .ctrl_gpio_num = encoder_map[id].a_neg,     // 控制信号 (方向)
-        .lctrl_mode = PCNT_MODE_KEEP,               // 反转时计数保持不变 (仅 pulse 计)
-        .hctrl_mode = PCNT_MODE_REVERSE,            // 高电平时反向计数
-        .pos_mode = PCNT_COUNT_INC,                 // 正向沿递增
-        .neg_mode = PCNT_COUNT_DIS,                 // 反向沿不计数
+        .pulse_gpio_num = encoder_map[id].a_pos,
+        .ctrl_gpio_num = encoder_map[id].a_neg,
+        .lctrl_mode = PCNT_MODE_KEEP,
+        .hctrl_mode = PCNT_MODE_REVERSE,
+        .pos_mode = inc,
+        .neg_mode = dec,
         .counter_h_lim = ENCODER_PCNT_HIGH_LIMIT,
         .counter_l_lim = ENCODER_PCNT_LOW_LIMIT,
         .unit = encoder_map[id].unit,
@@ -52,7 +59,21 @@ static esp_err_t encoder_config_unit(encoder_id_t id)
 
     esp_err_t ret = pcnt_unit_config(&cfg);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "编码器 %d PCNT 配置失败", id + 1);
+        ESP_LOGE(TAG, "编码器 %d PCNT 通道0 配置失败", id + 1);
+        return ret;
+    }
+
+    cfg.pulse_gpio_num = encoder_map[id].a_neg;
+    cfg.ctrl_gpio_num = encoder_map[id].a_pos;
+    cfg.lctrl_mode = PCNT_MODE_REVERSE;
+    cfg.hctrl_mode = PCNT_MODE_KEEP;
+    cfg.pos_mode = inc;
+    cfg.neg_mode = dec;
+    cfg.channel = PCNT_CHANNEL_1;
+
+    ret = pcnt_unit_config(&cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "编码器 %d PCNT 通道1 配置失败", id + 1);
         return ret;
     }
 
@@ -80,17 +101,12 @@ esp_err_t encoder_init(void)
         if (ret != ESP_OK) return ret;
     }
 
-    /* 物理左轮 (ENCODER_1) 电机正转时计数方向反, 同时交换 pos_mode/neg_mode 和 hctrl/lctrl 反转 */
-    pcnt_set_mode(PCNT_UNIT_ENC1, PCNT_CHANNEL_0,
-                  PCNT_COUNT_DEC, PCNT_COUNT_INC,
-                  PCNT_MODE_REVERSE, PCNT_MODE_KEEP);
-
     last_snapshot[ENCODER_1] = 0;
     last_snapshot[ENCODER_2] = 0;
     last_snapshot_tick[ENCODER_1] = xTaskGetTickCount();
     last_snapshot_tick[ENCODER_2] = last_snapshot_tick[ENCODER_1];
 
-    ESP_LOGI(TAG, "编码器初始化成功 (左轮=%d/%d, 右轮=%d/%d, 左轮计数方向已反转)",
+    ESP_LOGI(TAG, "编码器初始化成功 (左轮=%d/%d, 右轮=%d/%d, 四倍频, 左轮计数方向已反转)",
              ENC1_A_N_GPIO, ENC1_A_P_GPIO,
              ENC2_B_N_GPIO, ENC2_B_P_GPIO);
     return ESP_OK;

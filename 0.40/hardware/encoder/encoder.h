@@ -19,7 +19,7 @@
 #define ENC2_B_P_GPIO      42      // 编码器2 B 相正 (物理右轮)
 
 /* ========== 编码器参数 ========== */
-#define ENCODER_PULSES_PER_REV   44   // 每转脉冲数 (11 线 * 4 倍频)
+#define ENCODER_PULSES_PER_REV   44   // 电机轴每转计数 (11 线 × 四倍频, 两个轮子相同)
 #define ENCODER_PCNT_HIGH_LIMIT  32767
 #define ENCODER_PCNT_LOW_LIMIT   -32768
 

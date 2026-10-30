@@ -35,7 +35,7 @@ typedef struct {
     float yaw;        /* 差速输出 (%) */
     float pos;        /* 位置 (cm) */
     float pos_err;    /* 位置误差 (cm): 锚点位置 - 当前位置 */
-    float pos_out;    /* 位置保持环的速度修正量 (cm/s, 前进为正) */
+    float pos_out;    /* 位置保持环输出的倾角 (°, 前倾为正), 未乘权重 */
     float pos_vel;    /* 里程计速度 (cm/s): 位置保持环的阻尼输入, 看它对不对 */
     float kd;         /* 采样时刻的平衡环 Kd (参数可热改, 必须逐条记) */
     float dt;         /* 本周期实测间隔 (ms) */

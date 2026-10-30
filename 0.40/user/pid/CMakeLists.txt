@@ -6,6 +6,7 @@
 #   speed_pid.c    速度环 (外环): 轮速误差 → 目标倾角 (°)
 #   steer_pid.c    转向环 (差速环): 左右轮速差 → 两轮输出差 (%)
 #   position_pid.c 位置保持环 (最外环): 位置误差 + 平移速度 → 目标倾角 (°)
+#   lqr.c          LQR 状态反馈: 位置/速度/倾角/角速度 → 电机输出 (%)
 #
 # 依赖 param: 各环的增益从参数表实时读取 (App / 网页改完下一周期生效)
 idf_component_register(
@@ -14,6 +15,7 @@ idf_component_register(
          "speed_pid.c"
          "steer_pid.c"
          "position_pid.c"
+         "lqr.c"
     INCLUDE_DIRS "."
     REQUIRES param
 )
