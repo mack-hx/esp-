@@ -28,9 +28,9 @@
 - 内置 `Task` 子代理不可用（Cursor 侧 bug），外部 CLI 402 欠费；不要往委派方向排障。
 
 ## 待办
-1. 版本迭代后的发布流程（用户已明确：不用每次交代）：提交 → 推 main + tag → `git archive` 打包到 `releases/`（只留最新两版）→ 更新 RELEASE_NOTES 与 GITHUB_PUBLISH_GUIDE → `gh release create`。
-   0.40 / 0.41 的 tag、压缩包、发布说明已推 GitHub；**GitHub Release 页面还没建**：`gh` 未登录，需用户执行一次 `gh auth login`，再跑
-   `gh release create v0.40 ... releases/esp_balance_robot-0.40.tar.gz` 与 v0.41 同理（命令见 GITHUB_PUBLISH_GUIDE）。
+1. 版本迭代后的发布流程（用户已明确：不用每次交代，且已授权使用 git 已存的 GitHub 凭据）：提交 → 推 main + tag → `git archive` 打包到 `releases/`（只留最新两版）→ 更新 RELEASE_NOTES 与 GITHUB_PUBLISH_GUIDE → 建 GitHub Release。
+   `gh` 没登录：用 `GH_TOKEN="$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=//p')"` 仅在当条命令的环境变量里传给 `gh release create --repo mack-hx/esp-`，不打印、不落盘。
+   v0.40 / v0.41 的 tag、压缩包、发布说明、GitHub Release 页面均已完成。
 2. App 需要重新构建打包（`paramDef.js` 已对齐 PARAM_VER 35），否则“恢复默认”会下发旧参数。
 3. 遥控速度环与 `BAL_POS_BLEND_RPM` 因轮速放大 2.7 倍尚未重调。
 4. 静止时若再出现晃动：先查电机死区/静摩擦（静止时 out 仅 ±6%，死区实测约 2.2%，参数 `deadzone` 默认 4%），不要再动位置环。
