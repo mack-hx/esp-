@@ -77,30 +77,12 @@ static float s_arm_hold_ms = 0.0f;
 static float s_tgt_avg      = 0.0f;   /* 斜坡后的实际目标 */
 static float s_tgt_diff     = 0.0f;   /* 斜坡后的实际目标差 */
 
-/* 位置保持环链路: 目标位置 → 目标倾角
- * s_pos_target_cm = 目标位置 (cm, 前进为正)
- *   - 行走时跟随实际位置 (= 里程计当前位置), 位置误差恒为 0, 位置保持环不干预
- *   - 停手后锁死, 被推歪时位置保持环把它拉回来
- *   - 原地转向不产生前后位移, 目标位置不变
- * s_pos_hold = 位置保持环是否接管 (true = 站住不动, 位置保持环纠偏)
- * s_pos_out  = 位置保持环算出的目标倾角 (°, 正 = 车头往前倾) → 加到平衡环目标倾角上 */
+/* 位置保持环链路: 锚点位置 → 速度修正量 → 速度环目标
+ * s_pos_target_cm = 锚点位置 (cm, 前进为正): 每周期累加指令速度,
+ *                   指令结束后冻结, 车被推离锚点时位置环把它拉回
+ * s_pos_out       = 位置环输出的速度修正量 (cm/s, 前进为正), 叠加到速度环目标 */
 static float s_pos_target_cm = 0.0f;
-static float s_pos_out       = 0.0f;   /* 位置保持环的目标倾角 (°, 正 = 前倾) */
-static bool  s_pos_hold      = false;  /* 站住不动 → 位置保持环接管 */
-
-/* 位置保持环的"接管模式" (三态):
- *   WALK   : 有行走指令 (或在斜坡退完之前) → 目标位置跟随实际位置, 位置保持环让位
- *   SETTLE : 指令已撤但车还在滑行 → 目标位置继续跟随实际位置
- *   HOLD   : 车已停稳 → 目标位置锁死在停稳那一刻, 位置保持环接管纠偏 */
-typedef enum {
-    POS_MODE_WALK = 0,
-    POS_MODE_SETTLE,
-    POS_MODE_HOLD
-} pos_mode_t;
-static pos_mode_t s_pos_mode = POS_MODE_WALK;
-
-/* SETTLE 状态已持续的时间 (秒): 防止车一直微幅晃 → 永远锁不了位 */
-static float s_pos_settle_t = 0.0f;
+static float s_pos_out       = 0.0f;
 
 /* ========== 轮速统计 (300ms 滑动窗口) ==========
  * 换算公式: rpm = 脉冲数 × 60 / (窗口秒数 × 44 × gear)
@@ -547,6 +529,19 @@ static void balance_move_targets(bal_move_t dir, int8_t level,
     *out_diff = diff;
 }
 
+/** @brief 轮速 (rpm) → 车体平移速度 (cm/s); 周长取 param 轮径 */
+static float balance_rpm_to_cmps(float rpm)
+{
+    return rpm * (float)M_PI * param_get_float(PARAM_WHEEL_DIA) / 60.0f;
+}
+
+/** @brief 车体平移速度 (cm/s) → 轮速 (rpm) */
+static float balance_cmps_to_rpm(float cmps)
+{
+    float dia = param_get_float(PARAM_WHEEL_DIA);
+    return (dia > 0.0f) ? cmps * 60.0f / ((float)M_PI * dia) : 0.0f;
+}
+
 /**
  * @brief 由遥控指令算出目标轮速, 并用斜坡逼近
  * @param dt 控制周期 (秒)
@@ -554,8 +549,7 @@ static void balance_move_targets(bal_move_t dir, int8_t level,
  *        松手时目标慢慢退到 0, 车自然减速站稳。
  *
  * @note  指令 (s_move_dir / s_move_level) 由 MQTT 任务写, 这里只读。
- * @note  目标位置跟随实际位置: 行走时目标位置取当前里程计位置 (位置误差恒为 0,
- *        位置保持环不干预); 松手后 s_tgt_avg 斜坡退回 0, 目标位置锁死在最后的位置。
+ * @note  锚点位置 s_pos_target_cm 累加斜坡后的目标速度, 目标退到 0 后自然冻结。
  */
 static void balance_update_target(float dt)
 {
@@ -575,61 +569,18 @@ static void balance_update_target(float dt)
     s_tgt_avg  = balance_move_toward(s_tgt_avg,  cmd_avg,  step_up, step_down);
     s_tgt_diff = balance_move_toward(s_tgt_diff, cmd_diff, step_up, step_down);
 
-    /* --- 目标位置: 三态 (WALK / SETTLE / HOLD), 见 pos_mode_t 的注释 ---
-     * WALK   : 有行走指令, 或松手后目标轮速斜坡还没退完
-     *          → 目标位置**跟随实际位置** (误差恒为 0, 位置保持环让位)
-     * SETTLE : 指令已撤, 但车还在滑行 (轮速还没降下来)
-     *          → 目标位置**继续跟随实际位置**, 位置保持环仍然让位
-     * HOLD   : 车已停稳 → 目标位置锁死, 位置保持环接管纠偏 */
+    /* --- 锚点位置: 平衡中累加指令速度, 否则跟随当前位置 --- */
     if (s_state != BAL_STATE_BALANCING) {
-        s_pos_mode = POS_MODE_WALK;   /* 复位: 下次起立从行走态重新开始 */
-        s_pos_hold = false;
-        s_pos_settle_t = 0.0f;
-    } else if (cmd_avg != 0.0f || s_tgt_avg != 0.0f) {
-        /* 行走中: 目标位置跟着实际位置走 */
-        s_pos_mode      = POS_MODE_WALK;
         s_pos_target_cm = odom_get_position_cm();
-        s_pos_hold      = false;
-        s_pos_settle_t  = 0.0f;
-    } else if (s_pos_mode == POS_MODE_WALK) {
-        /* 刚撤指令: 进入收尾态 (车还在滑行, 目标继续跟随)
-         * ⚠ 同时清掉速度环的积分: 斜坡减速期间速度环攒下的"刹车积分"
-         *   (正的目标倾角, 最多能到 2°) 会残留下来 → 停稳后车还被推着往后走。 */
-        s_pos_mode      = POS_MODE_SETTLE;
-        s_pos_target_cm = odom_get_position_cm();
-        s_pos_hold      = false;
-        s_pos_settle_t  = 0.0f;
-        speed_pid_reset();
-    } else if (s_pos_mode == POS_MODE_SETTLE) {
-        /* 收尾态: 目标继续跟随实际位置, 直到车真的停稳 */
-        s_pos_target_cm = odom_get_position_cm();
-        s_pos_hold      = false;
-        s_pos_settle_t += dt;
-        if (fabsf(s_speed_fwd) <= BAL_POS_SETTLE_RPM ||
-            s_pos_settle_t >= BAL_POS_SETTLE_MAX_S) {
-            /* 停稳了 (或等太久了): 把"车停下的这个位置"锁成目标, 位置保持环接管
-             * ⚠ 同时清掉速度环的积分: 滑行/减速期间速度环攒下的积分
-             *   会残留, 进 HOLD 后速度环虽然被停掉, 但下次开始行走时
-             *   这段残留会立刻变成一个倾角 → 车猛地一窜。
-             *   (HOLD 期间速度环整个不参与运算, 见 balance_control_step) */            s_pos_target_cm = odom_get_position_cm();
-            s_pos_mode      = POS_MODE_HOLD;
-            s_pos_hold      = true;
-            s_pos_settle_t  = 0.0f;
-            speed_pid_reset();
-        }
     } else {
-        /* HOLD: 目标位置锁死, 位置保持环接管纠偏 (推车也在这里纠) */
-        s_pos_hold = true;
+        s_pos_target_cm += balance_rpm_to_cmps(s_tgt_avg) * dt;
     }
 }
 
 /**
- * @brief 位置保持环链路: 位置误差 + 平移速度 → 要求的倾角 (°)
+ * @brief 位置保持环链路: 锚点误差 + 相对速度 → 速度修正量 (rpm)
  * @param dt 控制周期 (秒)
- * @return 要求的倾角 (°, **正 = 车头往前倾**)
- *
- * @note  位置误差 → [位置保持环] → 目标倾角 (°) → [平衡环] → 电机输出 (%)
- * @note  符号: 目标在前方 → err > 0 → 要求前倾 → 车往前走
+ * @return 叠加到速度环目标的修正量 (rpm, 前进为正)
  */
 static float balance_update_position(float dt)
 {
@@ -637,31 +588,18 @@ static float balance_update_position(float dt)
     s_data.position_cm = cur;
 
     if (s_state != BAL_STATE_BALANCING) {
-        /* 没在平衡状态: 位置没有意义, 目标跟着当前走, 顺便清积分 */
-        s_pos_target_cm = cur;
         s_pos_out = 0.0f;
         s_data.pos_out = 0.0f;
         position_pid_reset();
         return 0.0f;
     }
 
-    if (!s_pos_hold) {
-        /* 行走中: 位置保持让位 (输出恒为 0), 顺便清积分 */
-        s_pos_out = 0.0f;
-        s_data.pos_out = 0.0f;
-        position_pid_reset();
-        return 0.0f;
-    }
+    float err   = s_pos_target_cm - cur;
+    float v_rel = odom_get_velocity_cmps() - balance_rpm_to_cmps(s_tgt_avg);
 
-    float err = s_pos_target_cm - cur;
-
-    /* --- 位置保持环: 位置误差 + 平移速度 → 目标倾角 (°) ---
-     * 内部已经做了死区软化 + 积分抗饱和 + 输出软饱和 (±POS_PID_LEAN_MAX)。
-     * 速度反馈用**里程计速度** (odom, 60ms 窗口), 不用 s_speed_fwd
-     * (编码器轮速, 300ms 窗口): 300ms 滞后太多, 阻尼相位落后。 */
-    s_pos_out = position_pid_update(dt, err, odom_get_velocity_cmps());
+    s_pos_out = position_pid_update(dt, err, v_rel);
     s_data.pos_out = s_pos_out;
-    return s_pos_out;
+    return balance_cmps_to_rpm(s_pos_out);
 }
 
 /**
@@ -686,27 +624,12 @@ static void balance_control_step(float dt)
     /* --- 目标轮速斜坡 (App 方向键 → 目标轮速) --- */
     balance_update_target(dt);
 
-    /* --- 外环仲裁: 这一周期谁给倾角? ---
-     * 行走 (WALK): 速度环给 (走多快), 位置保持环让位
-     * 站住 (HOLD): 位置保持环给 (回原位), 速度环**完全不算**
-     *
-     * ⚠ HOLD 期间必须把速度环整个停掉 (输出 0):
-     *   速度环的目标轮速此时是 0, 它的误差 = 实测轮速 - 0 = "车正在回位
-     *   时的速度" → 速度环把这段速度当成"要刹住的误差"攒进积分 →
-     *   回位结束后积分还残留 → 车又被推着走 → 位置保持环再纠 → 前后大晃。
-     *   (进入 HOLD 时会 speed_pid_reset() 清掉残留, 见 balance_update_target) */
-    float pos_lean = balance_update_position(dt);   /* 位置保持环要求的倾角 (°, 正 = 前倾) */
-    /* 目标轮速只剩行走指令 (方向键): 位置保持环不再往目标轮速里塞修正量 */
-    float tgt_speed = s_tgt_avg;
+    /* --- 外环: 位置环输出速度修正量, 叠加到速度环目标; 速度环始终运行 --- */
+    float pos_rpm   = balance_update_position(dt);
+    float tgt_speed = s_tgt_avg + pos_rpm;
 
-    float pitch_from_speed = 0.0f;
-    if (!s_pos_hold) {
-        pitch_from_speed = speed_pid_update(dt, s_speed_fwd, tgt_speed);
-    }
-
-    /* --- 倾角设定点 (°): 本工程 pitch **前倾为负**,
-     *     而位置保持环的输出是"前倾为正" → 这里取负号换算。 --- */
-    float target_pitch = pitch_from_speed - pos_lean;
+    /* 本工程 pitch 前倾为负, 速度环输出已按此约定 */
+    float target_pitch = speed_pid_update(dt, s_speed_fwd, tgt_speed);
 
     /* 安全阀: 倾角设定点不能超过走路时的上限 (4°), 防止外环把车放倒 */
     if (target_pitch >  SPD_PID_WALK_PITCH_MAX) target_pitch =  SPD_PID_WALK_PITCH_MAX;
@@ -1081,8 +1004,6 @@ esp_err_t balance_set_enable(bool on)
         balance_reset_pid();
         odom_reset();                 /* 位置基准重设: 当前位置 = 原点 */
         s_pos_target_cm = 0.0f;
-        s_pos_mode      = POS_MODE_WALK;   /* 起立后从行走态开始, 让位置保持环慢慢接管 */
-        s_pos_settle_t  = 0.0f;
         balance_arm_reset();          /* 门控从零开始计时 */
         s_state   = BAL_STATE_STANDBY;
         s_enabled = true;

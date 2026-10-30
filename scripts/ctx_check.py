@@ -27,7 +27,9 @@ import glob
 import time
 
 # 本工程的工作区绝对路径 (用于推导 Cursor 会话记录目录)
-WS = "/Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot"
+# 从本脚本位置推出, 工程改名后不会失效 (2026-10-29 改名后这里写死旧路径,
+# 导致本脚本一直统计的是旧工程的会话, 监控的是错的数据)。
+WS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Cursor 会话记录目录, 在 ~/.cursor/projects/ 下按工作区路径生成一个 slug 目录。
 # 规则: 绝对路径去掉开头的 '/', 其中的 '/' 换成 '-', 并且 '_' 也会被换成 '-'。
@@ -202,6 +204,34 @@ def report_all(files):
     )
 
 
+def report_turn_budget(files):
+    """按天统计: 助手输出量随时间的变化。这是上下文失控的最早信号。"""
+    import collections
+    import datetime
+    agg = collections.OrderedDict()
+    for f in files:
+        s = measure(f)
+        day = datetime.datetime.fromtimestamp(s["mtime"]).strftime("%m-%d")
+        a = agg.setdefault(day, {"sessions": 0, "text": 0, "blocks": 0, "longest": 0})
+        a["sessions"] += 1
+        a["text"] += s["assistant_text"]
+        a["blocks"] += s["assistant_turns"]
+        a["longest"] = max(a["longest"], s["longest_assistant_block"])
+    print("=" * 78)
+    print("按天统计 (助手输出量)")
+    print("=" * 78)
+    print(f"{'日期':<8}{'会话':>6}{'助手文字':>12}{'发言段数':>10}{'最长单段':>12}{'每段均长':>10}")
+    print("-" * 78)
+    for day, a in agg.items():
+        avg = a["text"] // max(a["blocks"], 1)
+        print(
+            f"{day:<8}{a['sessions']:>6}{fmt(a['text']):>12}"
+            f"{fmt(a['blocks']):>10}{fmt(a['longest']):>12}{fmt(avg):>10}"
+        )
+    print("-" * 78)
+    print("参考: 2026-10-21 之前每段均长约 1~4K; 10-24 起涨到 20K+, 10-27~10-30 出现 100K+ 的单段。")
+
+
 def main():
     args = sys.argv[1:]
 
@@ -222,9 +252,14 @@ def main():
 
     if "--all" in args:
         report_all(files[:10])
+        report_turn_budget(files)
         return
 
     current = measure(files[0])
+
+    if "--daily" in args:
+        report_turn_budget(files)
+        return
 
     if "--json" in args:
         current["est_tokens"] = int(to_tokens(current["total_chars"]))

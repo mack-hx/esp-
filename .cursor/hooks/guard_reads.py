@@ -19,12 +19,14 @@ import os
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import kill_switch_on  # noqa: E402
+
 STATE_FILE = "/tmp/esp_balance_robot_ctx_guard.json"
 STATE_TTL = 1800  # 30 分钟
 
-# 紧急开关: 存在这个文件就完全放行 (hook 自锁或子代理不可用时用)
+# 紧急开关: 存在且未超过 30 分钟就完全放行 (自动过期见 _common.py)
 # 用法: touch /tmp/esp_balance_robot_ctx_guard_off
-KILL_SWITCH = "/tmp/esp_balance_robot_ctx_guard_off"
 
 # 大文件阈值 (行数)。超过就必须带 offset/limit 分段读。
 BIG_FILE_LINES = 800
@@ -88,8 +90,8 @@ def main():
     #   { "tool_name": "Read", "tool_input": { "path": "..." }, ... }
     # tool_name 与 tool_input 是顶层并列字段 (不是嵌在 tool_input 里)。
     # 两种结构都兼容, 防止 Cursor 版本差异。
-    # 紧急开关: 直接放行一切
-    if os.path.exists(KILL_SWITCH):
+    # 紧急开关: 直接放行一切 (30 分钟自动过期)
+    if kill_switch_on():
         respond({"permission": "allow"})
 
     tool_input = payload.get("tool_input") or {}
@@ -120,6 +122,22 @@ def main():
     offset = tool_input.get("offset")
     # 精确读取位置。同一文件读不同片段是合法的, 只有完全重复才拦。
     spot = f"{path}@{offset}/{limit}"
+
+    # 情况 0: 读自己旧会话的 transcript
+    # 实测: 10-29 21:09 那个会话为了找回"上一轮定好的方案",
+    # 读自己的旧 transcript 129 次 (Shell 109 + Read 20), 之后又写了 344 段
+    # 重复陈述同一结论, 全程 0 次编辑。结论应该落盘在 HANDOFF.md, 不该回头翻 transcript。
+    if "/agent-transcripts/" in path or path.endswith(".jsonl"):
+        sess["reads"] += 1
+        save_state(sessions)
+        deny(
+            f"不要读自己旧会话的 transcript: {path}。\n"
+            "跨对话的结论只有一个存放处: 根目录 HANDOFF.md。"
+            "如果 HANDOFF.md 里没有你要的结论, 说明上一轮没写进去 —— "
+            "那就自己重新查一遍代码, 或者直接问用户, 不要翻 transcript。"
+            "翻 transcript 是上下文爆炸的头号原因 (单次会话实测 129 次)。",
+            f"拦截: 读取自己旧会话的 transcript ({os.path.basename(path)})",
+        )
 
     # 情况 1: 完全相同的读取已经做过 (同文件 + 同 offset + 同 limit)
     if spot in sess["seen"]:

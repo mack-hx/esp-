@@ -108,7 +108,7 @@ gh release create v0.3 \
 ## 打包命令
 
 ```bash
-cd /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot
+cd /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_rob
 for v in 0.22 0.30; do
   tar czf releases/esp_balance_robot-$v.tar.gz \
     --exclude='node_modules' --exclude='unpackage' --exclude='.pio' \
@@ -132,5 +132,5 @@ git checkout v1.3.0                            # 切到那个版本看
 ## 查看压缩包位置
 
 ```bash
-ls -lh /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot/releases/
+ls -lh /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_rob/releases/
 ```

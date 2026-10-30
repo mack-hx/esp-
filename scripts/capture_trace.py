@@ -40,10 +40,11 @@ BASE = sys.argv[2] if len(sys.argv) > 2 else "/tmp/trace"
 BAUD = 230400
 
 # CSV 表头 (跟固件 trace.c 的 trace_print_one() 一一对应)
-HEAD = "t_ms,pitch,gyro,out,tgt,spd,yaw,pos,pos_out,kd,dt,st\n"
+HEAD = "t_ms,pitch,gyro,out,tgt,spd,yaw,pos,pos_err,pos_out,pos_vel,kd,dt,st\n"
 
 # 字段顺序必须跟 HEAD (除 t_ms) 一致
-FIELDS = ["pitch", "gyro", "out", "tgt", "spd", "yaw", "pos", "pos_out", "kd", "dt", "st"]
+FIELDS = ["pitch", "gyro", "out", "tgt", "spd", "yaw", "pos", "pos_err",
+          "pos_out", "pos_vel", "kd", "dt", "st"]
 # 用 "key=value" 通用解析, 固件加字段时脚本不用改 (只认 HEAD 里有的)
 pat = re.compile(r"(\w+)=(-?[\d.]+)")
 

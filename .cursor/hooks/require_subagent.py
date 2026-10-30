@@ -18,12 +18,44 @@ import os
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import kill_switch_on  # noqa: E402
+
 STATE_FILE = "/tmp/esp_balance_robot_ctx_guard.json"
 STATE_TTL = 1800
 
-# 紧急开关: 存在这个文件就完全放行 (hook 自锁或子代理不可用时用)
+# 紧急开关: 存在且未超过 30 分钟就完全放行 (自动过期见 _common.py)
 # 用法: touch /tmp/esp_balance_robot_ctx_guard_off
-KILL_SWITCH = "/tmp/esp_balance_robot_ctx_guard_off"
+
+# 工程根目录 (从本 hook 文件位置推出, 工程改名后不会失效)
+PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+
+# 子代理可用性状态文件 (由 scripts/subagent.sh 写入): "ok" / "402"
+SUBAGENT_STATUS = "/tmp/esp_balance_robot_subagent_status"
+# 子代理状态文件的有效期。过期视为"未知" (不硬拦, 避免死锁)。
+SUBAGENT_STATUS_TTL = 1800
+
+
+def subagent_available():
+    """外部子代理现在能不能用。
+
+    返回 True = 可用, False = 明确不可用 (402)。
+    明确不可用时必须降级为"软提醒 + 放行", 否则会锁死会话:
+    要求派子代理 -> 派了失败 -> 还是被要求派子代理 -> 死循环。
+    状态缺失或过期时按可用处理 (下次派子代理会刷新状态)。
+    """
+    try:
+        with open(SUBAGENT_STATUS) as fh:
+            status = fh.read().strip()
+        age = time.time() - os.path.getmtime(SUBAGENT_STATUS)
+    except Exception:
+        return True
+    if age > SUBAGENT_STATUS_TTL:
+        return True
+    return status != "402"
+
 
 # 读满这么多文件后, 强制先派子代理
 READS_BEFORE_DELEGATE = 6
@@ -52,23 +84,39 @@ MAINTENANCE_PATTERNS = (
 )
 
 # 查代码类命令特征: 命中就计数 (优先级高于维护类)
+# ⚠ 只匹配命令的第一个词, 不用 "in" 全文包含 —— 否则
+# "cd x && grep -o foo bar" 这种带 cd 的混合命令会被误判成"在查代码",
+# 把维护操作也计进自查次数, 最后连维护动作都被拦 (2026-10-30 踩过)。
 QUERY_PATTERNS = (
-    "grep", "cat ", "ls ", "find ", "wc ", "head ", "tail ",
-    "sed ", "awk ",
+    "grep", "cat", "ls", "find", "wc", "head", "tail",
+    "sed", "awk", "rg",
 )
+
+
+def _is_query_segment(segment):
+    """单个命令片段是不是"查代码"类 (只看第一个词)。"""
+    seg = segment.strip()
+    if not seg:
+        return False
+    head = seg.split()[0]
+    if head in ("cd", "env", "sudo", "nohup", "time"):
+        return False
+    return head in QUERY_PATTERNS
 
 
 def is_maintenance(command):
     """判断 Shell 命令是不是维护类操作 (不该计入自查次数)。
 
-    规则: 命中查代码特征 -> 算自查; 否则命中维护特征 -> 维护类, 放行。
+    规则: 复合命令 (含 && 或 ;) 时, 只要有任意一段是查询类就算自查;
+    单条命令按第一个词判定。命中维护特征 -> 维护类, 放行。
     """
     if not command:
         return False
     cmd = command.strip()
-    if any(p in cmd for p in QUERY_PATTERNS):
-        return False
-    return any(p in cmd for p in MAINTENANCE_PATTERNS)
+    segments = [x for x in cmd.replace(";", "\n").split("&&") if x.strip()]
+    if len(segments) > 1:
+        return not any(_is_query_segment(x) for x in segments)
+    return not _is_query_segment(cmd)
 
 
 def is_external_subagent(command):
@@ -116,7 +164,7 @@ def main():
     # tool_name 与 tool_input 是顶层并列字段 (不是嵌在 tool_input 里)。
     # 两种结构都兼容, 防止 Cursor 版本差异。
     # 紧急开关: 直接放行一切
-    if os.path.exists(KILL_SWITCH):
+    if kill_switch_on():
         respond({"permission": "allow"})
 
     tool_input = payload.get("tool_input") or {}
@@ -183,6 +231,27 @@ def main():
         respond({"permission": "allow"})
 
     # 到这里: 读太多了, 还没派子代理
+    # 子代理不可用 (Claude CLI 402 欠费) 时降级为软提醒:
+    # 继续硬拦会形成死循环 —— 要求派子代理 -> 派了失败 -> 还是被要求派。
+    if subagent_available() is not True:
+        save_state(sessions)
+        respond(
+            {
+                "permission": "allow",
+                "additional_context": (
+                    f"【提醒】本会话已自己查了 {sess['reads']} 次文件, "
+                    "而外部子代理当前不可用 (Claude CLI 返回 402 额度用完), "
+                    "所以不再强制派子代理。现在请**直接动手改代码**: "
+                    "不要再继续读文件找资料, 你已经读到的信息足够动手了。"
+                    "确实还需要查的, 只用一次 Grep 精确定位, 不要整读文件。"
+                ),
+                "agent_message": (
+                    f"【提醒】已自查 {sess['reads']} 次, 子代理不可用 (402), "
+                    "不要再读文件, 直接动手改代码。"
+                ),
+            }
+        )
+
     if sess["delegated"] == 0:
         agent_msg = (
             f"本会话已自己查了 {sess['reads']} 次文件, 但一次子代理都没派过。"
@@ -193,7 +262,7 @@ def main():
             "```bash\n"
             "# 1) 把自包含的提问写进 prompt 文件 (子代理看不到本对话历史)\n"
             "cat > /tmp/q.txt <<'EOF'\n"
-            "工程根: /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_robot\n"
+            f"工程根: {PROJECT_ROOT}\n"
             "目标文件: 0.31/<具体路径>\n"
             "要找什么: [明确的问题]\n"
             "返回格式: 只回结论 + 文件:行号, 40 行以内, 不贴大段源码\n"

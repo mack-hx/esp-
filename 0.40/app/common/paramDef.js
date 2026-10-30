@@ -2,7 +2,7 @@
  * @file paramDef.js
  * @brief 1:1 镜像 ESP32 端 param.c 的参数定义
  *
- * 数据来源: 0.40/user/param/param.c (PARAM_DATA_VERSION 24)
+ * 数据来源: 0.40/user/param/param.c (PARAM_DATA_VERSION 26)
  * 改了 param.c 就要同步这个文件, 否则 App 显示的滑块范围/默认值会跟车端对不上.
  *
  * 约定:
@@ -15,7 +15,7 @@
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 25
+export const PARAM_VER = 26
 
 export const PARAM_GROUPS = {
   0: { key: 'balance', label: '平衡环' },
@@ -71,12 +71,12 @@ export const PARAM_DEFS = [
   // 里程计 / 位置环
   { id: 17, key: 'wheel_dia',   label: 'Wheel Diameter', unit: 'cm', def: 6.5, min: 1, max: 30, step: 0.1, dec: 1, grp: 2,
     hint: '**轮子直径** (cm)。里程计靠它把编码器脉冲换算成位移: 距离 = 脉冲数 / (44 × gear) × π × 轮径。本机实测 6.5 cm。填错会让位置反馈整体缩放错误 (位置环纠偏力度不对)' },
-  { id: 18, key: 'pos_kp',      label: 'Position Kp',    unit: '°/cm', def: 0.7, min: 0, max: 2, step: 0.01, dec: 2, grp: 1,
-    hint: '位置保持环比例增益 (°/cm): 位置偏差 1 cm 时, 给平衡环多少度的回位倾角。这一环是**弹簧** —— 推得越远回位力越大, 松手后自己回到原位。**默认 0.7** (偏差 2 cm → 约 1.3° 倾角)。⚠ 倾角小于 1° 时电机还在死区里, 轮子不转, 车根本不会动 —— 偏差 2 cm 就要换出 1° 以上, 所以别调得比 0.5 小。太大 → 回位太猛, 冲过头来回晃。一次加 0.05, 推一下车看效果' },
-  { id: 19, key: 'pos_kd',      label: 'Position Kd',    unit: '°/(cm/s)', def: 0.35, min: 0, max: 2, step: 0.01, dec: 2, grp: 1,
-    hint: '位置保持环速度阻尼 (°/(cm/s)): 回位时的速度反馈, 相当于**刹车**, 决定会不会冲过头。**默认 0.35** (回位速度 5 cm/s → 约 1.75° 刹车倾角)。太小 → 冲过头来回摆停不下来; 太大 → 回位发死, 到位后还在原地蹭。步进 0.05' },
-  { id: 20, key: 'pos_ki',      label: 'Position Ki',    unit: '°/(cm·s)', def: 0,  min: 0, max: 1, step: 0.01, dec: 2, grp: 1,
-    hint: '位置保持环积分增益: 消掉站住之后慢慢偏这种稳态位置偏差。**默认 0, 而且建议一直保持 0**: 积分会攒出一个常驻倾角, 配大了车会一直往一个方向走。真机上确认有稳态偏差, 再从 0 往上加。步进 0.01' }
+  { id: 18, key: 'pos_kp',      label: 'Position Kp',    unit: '(cm/s)/cm', def: 1.5, min: 0, max: 5, step: 0.1, dec: 1, grp: 1,
+    hint: '位置保持环比例增益 ((cm/s)/cm): 偏离锚点 1 cm 时, 给速度环多少 cm/s 的回位速度。位置误差按 (1+Kd)/Kp 的时间常数指数衰减。**默认 1.5**。太小 → 推车后回位慢、抗推力弱; 太大 → 回位猛、来回晃。一次加 0.1' },
+  { id: 19, key: 'pos_kd',      label: 'Position Kd',    unit: '-', def: 0.5, min: 0, max: 3, step: 0.05, dec: 2, grp: 1,
+    hint: '位置保持环阻尼 (无量纲): 作用在 (实测速度 − 指令速度) 上, 抑制回位冲过头。**默认 0.5**。太小 → 冲过头来回摆; 太大 → 回位发死。步进 0.05' },
+  { id: 20, key: 'pos_ki',      label: 'Position Ki',    unit: '(cm/s)/(cm·s)', def: 0,  min: 0, max: 2, step: 0.01, dec: 2, grp: 1,
+    hint: '位置保持环积分增益: 消掉最终停位的稳态偏差。**默认 0**, 真机确认有稳态偏差再从 0 往上加。步进 0.01' }
 ]
 
 /** 用 key 找 def */

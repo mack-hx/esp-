@@ -27,13 +27,15 @@ import json
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import kill_switch_on  # noqa: E402
+
 # 单轮助手文字超过这个字符数就提醒 (约 3~4k token)
 WARN_CHARS = 12000
 # 单轮超过这个数, 措辞更强硬 (约 8k token)
 HARD_CHARS = 30000
 
-# 紧急开关: 存在就完全放行
-KILL_SWITCH = "/tmp/esp_balance_robot_ctx_guard_off"
+# 紧急开关: 存在且未超过 30 分钟就完全放行 (自动过期见 _common.py)
 
 
 def respond(payload):
@@ -80,7 +82,7 @@ def current_turn_text_len(transcript_path):
 
 def main():
     payload = read_payload()
-    if os.path.exists(KILL_SWITCH):
+    if kill_switch_on():
         respond({"permission": "allow"})
 
     transcript_path = payload.get("transcript_path") or ""
