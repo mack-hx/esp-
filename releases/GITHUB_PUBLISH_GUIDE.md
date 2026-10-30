@@ -13,7 +13,7 @@
 
 - ✅ 代码已提交到本地 git 并推送到 GitHub
 - ✅ GitHub 上共 13 个 release（v0.1.0 ~ v1.5、v0.17、v0.2、v0.21、v0.22、v0.30；v1.6 只有 tag 没有 release）
-- ✅ 本地只保留 `0.22/` 和 `0.30/` 两个版本目录
+- ✅ 本地只保留 `0.40/` 和 `0.41/` 两个版本目录
 - ✅ `releases/` 里只放最新两版的源码包
 
 ## 推送到 GitHub
@@ -73,6 +73,8 @@ gh release create v0.3 \
 
 | Tag | 说明 | 附件 |
 |-----|------|------|
+| v0.41 | 新迭代基线 (0.40 的干净副本, 不含 pos_sim.py) | esp_balance_robot-0.41.tar.gz |
+| v0.40 | LQR 位置保持 + 编码器修正 + 脱机 flash 记录 | esp_balance_robot-0.40.tar.gz |
 | v0.32 | 位置环默认打开 + bal_kd 0.4 生效 + trace 组件化 | esp_balance_robot-0.32.tar.gz |
 | v0.31 | 位置环接入 (默认关闭) + bal_kd 1.5→0.4 | esp_balance_robot-0.31.tar.gz |
 | v0.30 | 新迭代基线 (收编平衡控制三处致命修复 + App 状态页修复) | esp_balance_robot-0.30.tar.gz |
@@ -109,12 +111,8 @@ gh release create v0.3 \
 
 ```bash
 cd /Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_rob
-for v in 0.22 0.30; do
-  tar czf releases/esp_balance_robot-$v.tar.gz \
-    --exclude='node_modules' --exclude='unpackage' --exclude='.pio' \
-    --exclude='.cache' --exclude='.DS_Store' --exclude='.hbuilderx' \
-    --exclude='compile_commands.json' $v
-done
+# 用 git archive 只打包已提交的源码 (天然不含 .pio / node_modules / unpackage)
+git archive --format=tar.gz --prefix=0.41/ -o releases/esp_balance_robot-0.41.tar.gz v0.41:0.41
 ```
 
 > 压缩包里只含源码, 不含 `node_modules` / `.pio` 等构建产物。
