@@ -111,13 +111,10 @@ Cursor 把每一轮 assistant 正文原样重发一遍, 所以**累计输出 = �
 | Hook | 作用 | 触发后 |
 |---|---|---|
 | `context_budget.py` | 本轮正文 > 20K 或累计 > 150K 字符 | 拦下查询类动作, 要求停止分析、把结论落盘 |
-| `require_subagent.py` | 自己查文件满 6 次 | 拦截 Read/Grep/Shell/Glob, 强制先派子代理 |
-| `guard_reads.py` | 重复读同一处 / 大文件整读 / 读旧 transcript | 拦截并要求改用 Grep 或分段读 |
 | `limit_verbose_output.py` | 单轮正文超阈值 | postToolUse 塞提醒 |
 
 - 紧急开关 `touch /tmp/esp_balance_robot_ctx_guard_off`, **30 分钟自动过期**
 - 改 hook 后跑 `python3 scripts/test_hooks.py` 回归
-- 子代理 402 时 `require_subagent.py` 自动降级为"软提醒 + 放行", 不会锁死会话
 
 ### 14.3 子代理怎么派 (外部 CLI)
 ```bash
@@ -129,7 +126,6 @@ EOF
 scripts/subagent.sh /tmp/q.txt <任务名>
 ```
 - 报告落到 `logs/subagents/`, 主对话只回 20 行摘要
-- 额度用完时脚本写 `402` 到 `/tmp/esp_balance_robot_subagent_status`, hook 据此降级
 
 ### 14.4 硬性要求
 - **正文只写结论，不写推演**

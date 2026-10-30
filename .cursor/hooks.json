@@ -6,16 +6,6 @@
         "command": ".cursor/hooks/context_budget.py",
         "matcher": "Read|Grep|Shell|Glob|Task",
         "failClosed": false
-      },
-      {
-        "command": ".cursor/hooks/require_subagent.py",
-        "matcher": "Read|Grep|Shell|Glob",
-        "failClosed": false
-      },
-      {
-        "command": ".cursor/hooks/guard_reads.py",
-        "matcher": "Read",
-        "failClosed": false
       }
     ],
     "postToolUse": [
