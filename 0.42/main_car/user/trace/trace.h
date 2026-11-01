@@ -39,6 +39,9 @@ typedef struct {
     float pos_vel;    /* 里程计速度 (cm/s): 位置保持环的阻尼输入, 看它对不对 */
     float kd;         /* 采样时刻的平衡环 Kd (参数可热改, 必须逐条记) */
     float dt;         /* 本周期实测间隔 (ms) */
+    float tavg;       /* 斜坡后的平均目标轮速 (rpm, 前进为正) */
+    float tdiff;      /* 斜坡后的目标轮速差 左−右 (rpm) */
+    float diff;       /* 实测轮速差 左−右 (rpm) */
     int8_t st;        /* 状态机状态 (bal_state_t) */
 } trace_sample_t;
 

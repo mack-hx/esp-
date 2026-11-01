@@ -899,6 +899,9 @@ static void balance_task(void *arg)
             /* kd 可以热改, 必须逐条记采样时刻的值 */
             ts.kd      = param_get_float(PARAM_PID_BAL_KD);
             ts.dt      = dt * 1000.0f;
+            ts.tavg    = s_tgt_avg;
+            ts.tdiff   = s_tgt_diff;
+            ts.diff    = s_diff_fwd;
             ts.st      = (int8_t)s_state;
             trace_push(&ts);
         }
