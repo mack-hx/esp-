@@ -75,7 +75,7 @@ gh release create v0.3 \
 
 | Tag | 说明 | 附件 |
 |-----|------|------|
-| v0.41 | 新迭代基线 (0.40 的干净副本, 不含 pos_sim.py) | esp_balance_robot-0.41.tar.gz |
+| v0.41 | 双车工程 (main_car/sub_car) + 蓝牙直控 + App 双车状态页 | esp_balance_robot-0.41.tar.gz |
 | v0.40 | LQR 位置保持 + 编码器修正 + 脱机 flash 记录 | esp_balance_robot-0.40.tar.gz |
 | v0.32 | 位置环默认打开 + bal_kd 0.4 生效 + trace 组件化 | esp_balance_robot-0.32.tar.gz |
 | v0.31 | 位置环接入 (默认关闭) + bal_kd 1.5→0.4 | esp_balance_robot-0.31.tar.gz |
