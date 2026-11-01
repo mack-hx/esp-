@@ -149,7 +149,6 @@ static void on_sync(void)
 
 static void host_task(void *arg)
 {
-    ESP_LOGI(TAG, "BLE 主机任务启动 (prio=%d)", uxTaskPriorityGet(NULL));
     nimble_port_run();
     nimble_port_freertos_deinit();
 }
