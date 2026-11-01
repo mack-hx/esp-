@@ -16,7 +16,7 @@
 #define SPD_PID_ERR_DEADBAND  1.0f
 
 /* 走路时允许的最大倾角目标 (°): 速度环输出的目标倾角夹在此范围内 */
-#define SPD_PID_WALK_PITCH_MAX 4.0f
+#define SPD_PID_WALK_PITCH_MAX 7.0f
 
 /* 死区软化的过渡带宽度 (rpm): 死区边缘用二次曲线平滑起步,
  * 带末端的有效误差 = 过渡带宽度, 与带外公式取值相同 → 输出处处连续 */

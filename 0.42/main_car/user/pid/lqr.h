@@ -11,9 +11,9 @@
 #define LQR_KX  (-5.0f)    /* %/cm        位置偏差 */
 #define LQR_KV  (-2.25f)   /* %/(cm/s)    平移速度 */
 #define LQR_AMAX 8.0f      /* cm/s²       回位减速度上限: 期望回位速度 = sqrt(2·AMAX·偏差) */
-#define LQR_VMAX 20.0f     /* cm/s        期望回位速度上限 */
-#define LQR_KP  15.0f      /* %/°         倾角 */
-#define LQR_KD  0.4f       /* %/(°/s)     角速度 */
+#define LQR_VMAX 30.0f     /* cm/s        期望回位速度上限 */
+#define LQR_KP  18.0f      /* %/°         倾角 */
+#define LQR_KD  0.5f       /* %/(°/s)     角速度 */
 #define LQR_VEL_LO 2.0f    /* cm/s        |速度| 小于此值时速度项不参与 */
 #define LQR_VEL_HI 5.0f    /* cm/s        |速度| 大于此值时速度项完全参与, 两者之间平滑过渡 */
 #define LQR_ERR_DEADBAND  0.267f  /* cm   位置偏差死区 */
@@ -39,7 +39,7 @@ void lqr_set_pos_gains(float kx, float kv, float amax);
 float lqr_pos_lean(float err_cm, float v_cmps);
 
 #define LQR_POS_KI        0.5625f  /* °/(cm·s)  静止时位置偏差的积分速率 */
-#define LQR_POS_I_MAX     3.0f   /* °         积分项上限 */
+#define LQR_POS_I_MAX     5.0f   /* °         积分项上限 */
 #define LQR_POS_I_VEL     4.0f   /* cm/s      |速度| 小于此值才累积 */
 #define LQR_POS_I_BAND    6.0f   /* cm        |偏差| 小于此值才累积 */
 #define LQR_POS_I_DECAY   0.3f   /* s         远离锚点或车在动时的衰减时间常数 */

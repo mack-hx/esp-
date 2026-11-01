@@ -132,8 +132,12 @@ static void ble_advertise(void)
     struct ble_gap_adv_params p = {0};
     p.conn_mode = BLE_GAP_CONN_MODE_UND;
     p.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    p.itvl_min = 160;  /* 100ms (单位 0.625ms) */
+    p.itvl_max = 320;  /* 200ms */
     rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &p, gap_event, NULL);
-    if (rc != 0 && rc != BLE_HS_EALREADY) ESP_LOGE(TAG, "广播启动失败 %d", rc);
+    if (rc != 0 && rc != BLE_HS_EALREADY) {
+        ESP_LOGE(TAG, "广播启动失败 %d, 将自动重试", rc);
+    }
 }
 
 static void on_sync(void)
@@ -145,6 +149,7 @@ static void on_sync(void)
 
 static void host_task(void *arg)
 {
+    ESP_LOGI(TAG, "BLE 主机任务启动 (prio=%d)", uxTaskPriorityGet(NULL));
     nimble_port_run();
     nimble_port_freertos_deinit();
 }
@@ -190,7 +195,7 @@ esp_err_t ble_ctrl_start(void)
     ble_svc_gap_device_name_set(BLE_DEVICE_NAME);
 
     nimble_port_freertos_init(host_task);
-    /* 绑 core 0, 不和 core 1 上的平衡控制任务抢 */
+    /* 通知任务绑 core 0, 优先级 3 */
     xTaskCreatePinnedToCore(notify_task, "ble_notify", 3072, NULL, 3, NULL, 0);
     return ESP_OK;
 }

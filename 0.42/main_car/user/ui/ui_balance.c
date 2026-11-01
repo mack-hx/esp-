@@ -10,6 +10,7 @@
 #include "balance.h"
 #include "tft_display.h"
 #include <stdio.h>
+#include <string.h>
 
 /* ========== 绘制坐标 (Y) ========== */
 #define Y_TITLE      1       /* 标题栏 */
@@ -32,13 +33,24 @@ static const char *STATE_NAMES[] = {
     "IDLE", "STANDBY", "BALANCING", "FALLEN"
 };
 
+/* 上一次显示的字符串缓存 (用来比对是否需要重画) */
+static char s_prev_state[24] = "";
+static char s_prev_pitch[24] = "";
+static char s_prev_target[24] = "";
+static char s_prev_balout[24] = "";
+static char s_prev_motor[24] = "";
+static char s_prev_speed[24] = "";
+
 /**
- * @brief 擦除并重画一行数值
+ * @brief 擦除并重画一行数值 (仅当内容变化时)
  */
-static void draw_val(uint8_t y, const char *str, uint16_t color)
+static void draw_val_if_changed(uint8_t y, const char *str, uint16_t color, char *prev)
 {
+    if (strcmp(str, prev) == 0) return;  /* 内容未变, 跳过 */
     ui_fill_rect(VAL_X, y, VAL_W, UI_FONT_H, TFT_COLOR_BLACK);
     ui_draw_string(VAL_X, y, str, color, TFT_COLOR_BLACK);
+    strncpy(prev, str, 23);
+    prev[23] = '\0';
 }
 
 /**
@@ -67,7 +79,7 @@ static void ui_balance_draw_static(void)
 }
 
 /**
- * @brief 刷新所有实时数值
+ * @brief 刷新所有实时数值 (只重画变化的行)
  */
 static void ui_balance_refresh_vals(void)
 {
@@ -89,30 +101,38 @@ static void ui_balance_refresh_vals(void)
     } else {
         snprintf(buf, sizeof(buf), "%s OFF", STATE_NAMES[st]);
     }
-    draw_val(Y_STATE, buf, scolor);
+    draw_val_if_changed(Y_STATE, buf, scolor, s_prev_state);
 
     /* 修正后姿态角 + 角速度 */
     snprintf(buf, sizeof(buf), "%6.2f g%6.1f", (double)d.pitch, (double)d.gyro);
-    draw_val(Y_PITCH, buf, TFT_COLOR_WHITE);
+    draw_val_if_changed(Y_PITCH, buf, TFT_COLOR_WHITE, s_prev_pitch);
 
     snprintf(buf, sizeof(buf), "%6.2f deg", (double)d.target_pitch);
-    draw_val(Y_TARGET, buf, TFT_COLOR_YELLOW);
+    draw_val_if_changed(Y_TARGET, buf, TFT_COLOR_YELLOW, s_prev_target);
 
     snprintf(buf, sizeof(buf), "%6.1f %%", (double)d.bal_out);
-    draw_val(Y_BALOUT, buf, TFT_COLOR_MAGENTA);
+    draw_val_if_changed(Y_BALOUT, buf, TFT_COLOR_MAGENTA, s_prev_balout);
 
     snprintf(buf, sizeof(buf), "A%+4d B%+4d", d.motor_a, d.motor_b);
-    draw_val(Y_MOTOR, buf, TFT_COLOR_YELLOW);
+    draw_val_if_changed(Y_MOTOR, buf, TFT_COLOR_YELLOW, s_prev_motor);
 
     /* 轮速 + 配平补偿 (一眼看出补偿有没有在动) */
     snprintf(buf, sizeof(buf), "%5.1f T%5.2f", (double)d.speed, (double)d.trim_comp);
-    draw_val(Y_SPEED, buf, TFT_COLOR_GREEN);
+    draw_val_if_changed(Y_SPEED, buf, TFT_COLOR_GREEN, s_prev_speed);
 }
 
 /* ========== 页面回调 ========== */
 
 static void page_enter(void)
 {
+    /* 清空缓存, 强制全刷 */
+    s_prev_state[0] = '\0';
+    s_prev_pitch[0] = '\0';
+    s_prev_target[0] = '\0';
+    s_prev_balout[0] = '\0';
+    s_prev_motor[0] = '\0';
+    s_prev_speed[0] = '\0';
+
     /* 不在这里停机: App 起立后 LCD 会自动切进本页, 此时平衡已在运行 */
     ui_balance_draw_static();
     ui_balance_refresh_vals();

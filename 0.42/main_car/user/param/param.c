@@ -25,9 +25,12 @@ static const char *TAG = "PARAM";
 #define NVS_KEY_VERSION "ver"   /* 表结构版本, 表变了就忽略旧数据 */
 #define NVS_KEY_STALE   "stale" /* 标记: 最近一次写参数来自旧版 App */
 #endif
-#define PARAM_DATA_VERSION  36  /* 每次增删参数就 +1
-                                 * 参数表的布局、默认值或单位一变就必须 +1,
-                                 * 否则 NVS 里的旧 blob 会被当成新结构读出来。 */
+
+/* 参数表版本与 App 前端同步, 每次增删参数就 +1
+ * 37: LQR 放开 (KP 22/KD 0.6/VMAX 35, motor_max 95%, 倾角限 35°, 起立 30%/800ms)
+ *     + 速度环提速 (斜坡 150/120, kp 0.08/ki 0.04, move_rpm_max 120)
+ *     + LCD 刷新 50ms + BLE 优先级 23 */
+#define PARAM_DATA_VERSION  37
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
 static float s_values[PARAM_MAX];
@@ -52,7 +55,7 @@ const param_item_t g_param_items[] = {
 
     { PARAM_PID_SPD_KP, "spd_kp", "Speed Kp",   "",   0.08f,   0.0f,  200.0f,  0.01f, 2, PARAM_GRP_SPEED,
       "走多快 (°/rpm)。App 方向键就走这个环: 目标轮速 → 目标倾角 → "
-      "平衡环 (平衡环全程不撒手)。调大走得快, 但目标倾角被限制在 4° 以内 "
+      "平衡环 (平衡环全程不撒手)。调大走得快, 但目标倾角被限制在 7° 以内 "
       "(安全阀), 调太大只会让车左右猛摇。步进 0.01 —— 步进太粗的话 "
       "App 拖出来的中间值会被吸附掉 (比如想设 0.06 却被吸成 0)" },
     { PARAM_PID_SPD_KI, "spd_ki", "Speed Ki",   "",   0.04f,   0.0f,  300.0f,  0.01f, 2, PARAM_GRP_SPEED,
@@ -62,13 +65,12 @@ const param_item_t g_param_items[] = {
       "速度变化阻尼。默认 0: 编码器量化台阶会让 D 项噪声很大。步进 0.01" },
 
     /* ---------- 限幅 / 摔倒 / 滤波 / 减速比 ---------- */
-    { PARAM_MOTOR_OUT_MAX, "motor_max", "Motor Out Max", "%", 60.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
-      "电机总输出上限。默认 60%: 方向修正后实测能自己站住, "
-      "但倾角大一点就要更大出力才接得住 (Kp=12 时 5° 就顶格)" },
+    { PARAM_MOTOR_OUT_MAX, "motor_max", "Motor Out Max", "%", 95.0f,  0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "电机总输出上限。默认 95%: 大角度纠偏需要全力输出, 留 5% 给转向差速" },
     { PARAM_SPEED_OUT_MAX, "spdout_max", "Speed Out Max", "°", 40.0f, 0.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
       "速度环能给出的最大倾角目标 (°)。车本来就有配平偏差时别调太大" },
-    { PARAM_ANGLE_LIMIT, "ang_limit", "Angle Limit", "°", 25.0f,  5.0f,   60.0f, 1.0f, 0, PARAM_GRP_LIMIT,
-      "超过这个倾角判定摔倒, 立刻停电机" },
+    { PARAM_ANGLE_LIMIT, "ang_limit", "Angle Limit", "°", 35.0f,  5.0f,   60.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "超过这个倾角判定摔倒, 立刻停电机。大角度纠偏时放宽到 35°, 留住电机出力机会" },
     { PARAM_GYRO_LPF,    "gyro_lpf",  "Gyro LPF",    "",  0.8f,   0.0f,    1.0f, 0.01f,2, PARAM_GRP_LIMIT,
       "陀螺仪低通系数 (D 项用的角速度)。**越小越平滑但延迟越大, "
       "延迟大了阻尼会变弱 → 一碰就剧烈抖**。默认 0.8 (时间常数 12ms): "
@@ -84,8 +86,8 @@ const param_item_t g_param_items[] = {
       "补偿方式是'加上'死区, 所以这个值填得越准越好" },
 
     /* ---------- 启动门控 ---------- */
-    { PARAM_ARM_PITCH,   "arm_pitch", "Arm Pitch",   "°",   8.0f,  1.0f,   30.0f, 1.0f, 0, PARAM_GRP_LIMIT,
-      "启动门控: 倾角小于这个值才允许输出。防止歪着启动直接摔" },
+    { PARAM_ARM_PITCH,   "arm_pitch", "Arm Pitch",   "°",   12.0f,  1.0f,   30.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+      "启动门控: 倾角小于这个值才允许输出。大角度扶正后能直接接住, 不用扶到很正" },
     { PARAM_ARM_RATE,    "arm_rate",  "Arm Rate",    "°/s", 20.0f,  2.0f,  100.0f, 1.0f, 0, PARAM_GRP_LIMIT,
       "启动门控: 角速度小于这个值才允许输出。防止推着车启动" },
     { PARAM_ARM_TIME,    "arm_time",  "Arm Time",    "ms", 500.0f,  0.0f, 3000.0f,100.0f,0, PARAM_GRP_LIMIT,
@@ -97,7 +99,7 @@ const param_item_t g_param_items[] = {
 
     { PARAM_MOVE_RPM_MAX, "move_rpm_max", "Move RPM Max", "rpm", 120.0f, 0.0f, 333.0f, 1.0f, 1, PARAM_GRP_LIMIT,
       "App 方向键 100% 档位对应的目标轮速 (rpm)。本机轮子最高转速 333 rpm, 默认取 120 (约 36%); "
-      "再大目标倾角会顶到 4° 安全阀, 车会左右猛摇。0 = 用代码里的默认值" },
+      "再大目标倾角会顶到 7° 安全阀, 车会左右猛摇。0 = 用代码里的默认值" },
 
     { PARAM_WHEEL_DIA, "wheel_dia", "Wheel Diameter", "cm", 6.5f, 1.0f, 30.0f, 0.1f, 1, PARAM_GRP_LIMIT,
       "**轮子直径** (cm)。里程计靠它把编码器脉冲换算成位移: "

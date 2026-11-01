@@ -93,7 +93,7 @@ static void test_defaults(void)
           "spd_ki 默认不该超过 0.04 (太大容易积分饱和), 实际 %.3f",
           (double)param_get_float(PARAM_PID_SPD_KI));
     CHECK(near(param_get_float(PARAM_PID_SPD_KD),  0.0f, 1e-6f), "spd_kd 默认应 0");
-    CHECK(near(param_get_float(PARAM_MOTOR_OUT_MAX), 60.0f, 1e-6f), "motor_max 默认应 60");
+    CHECK(near(param_get_float(PARAM_MOTOR_OUT_MAX), 95.0f, 1e-6f), "motor_max 默认应 95");
     CHECK(near(param_get_float(PARAM_MOTOR_DEADBAND), 4.0f, 1e-6f), "deadzone 默认应 4");
 
     /* gyro_lpf 默认必须 0.8 (2026-10-26 "一碰就剧烈抖" 的修复):
@@ -199,8 +199,8 @@ static void test_reset_key(void)
                g_param_items[PARAM_PID_SPD_KI].def, 1e-6f),
           "reset 后 spd_ki 应回到默认 (实际 %.3f)",
           (double)param_get_float(PARAM_PID_SPD_KI));
-    CHECK(near(param_get_float(PARAM_MOTOR_OUT_MAX), 60.0f, 1e-6f),
-          "reset 后 motor_max 应回到默认 60");
+    CHECK(near(param_get_float(PARAM_MOTOR_OUT_MAX), 95.0f, 1e-6f),
+          "reset 后 motor_max 应回到默认 95");
     CHECK(near(param_get_float(PARAM_PID_BAL_KP), 13.0f, 1e-6f),
           "reset 后 bal_kp 应回到默认 13");
 

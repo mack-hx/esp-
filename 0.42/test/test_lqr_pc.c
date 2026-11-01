@@ -97,8 +97,8 @@ static bool simulate(const model_t *m, float b_scale, int delay_ms, const float 
                 /* 锚点 = 0, 站立不走: 目标倾角 = -位置环等效倾角 (前倾为正的位置环, 倾角前倾为负) */
                 float lean = lqr_pos_lean(-(float)x[0] * POS_SCALE, (float)x[1] * POS_SCALE);
                 u_cmd = lqr_balance_out((float)x[2] + lean, (float)x[3]);
-                if (u_cmd >  60.0f) u_cmd =  60.0f;
-                if (u_cmd < -60.0f) u_cmd = -60.0f;
+                if (u_cmd >  95.0f) u_cmd =  95.0f;
+                if (u_cmd < -95.0f) u_cmd = -95.0f;
             }
             if (fabsf(u_cmd) > peak) peak = fabsf(u_cmd);
         }
@@ -318,7 +318,7 @@ static void test_closed_loop(void)
         CHECK(ok && fabsf(xf[2]) < 0.3f && fabsf(xf[0]) < 0.6f,
               "%s 3° 倾斜 → 6 s 后倾角 %.2f° 位置 %.2f cm, 峰值输出 %.0f%%",
               m->name, (double)xf[2], (double)xf[0], (double)pk);
-        CHECK(pk <= 60.0f + 1e-3f, "%s 输出不超过 60%%", m->name);
+        CHECK(pk <= 95.0f + 1e-3f, "%s 输出不超过 95%%", m->name);
 
         ok = simulate(m, 1.0f, m->delay_ms, offset, 1, 6.0f, &pk, xf);
         CHECK(ok && fabsf(xf[2]) < 0.3f && fabsf(xf[0]) < 0.6f,

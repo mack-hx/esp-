@@ -498,7 +498,7 @@ static float balance_move_toward(float cur, float tgt, float up, float down)
  * @note 优先用参数表里的 move_rpm_max (App 参数页可实时调),
  *       为 0 时退回代码里的兜底值 BAL_MOVE_RPM_MAX。
  *       目标轮速越大, 速度环要求的车身倾角越大,
- *       而倾角被 SPD_PID_WALK_PITCH_MAX (4°) 卡着。
+ *       而倾角被 SPD_PID_WALK_PITCH_MAX (7°) 卡着。
  */
 static float balance_move_rpm_max(void)
 {

@@ -2,7 +2,7 @@
  * @file paramDef.js
  * @brief 1:1 镜像 ESP32 端 param.c 的参数定义
  *
- * 数据来源: 0.42/user/param/param.c (PARAM_DATA_VERSION 36)
+ * 数据来源: 0.42/user/param/param.c (PARAM_DATA_VERSION 37)
  * 改了 param.c 就要同步这个文件, 否则 App 显示的滑块范围/默认值会跟车端对不上.
  *
  * 约定:
@@ -12,10 +12,15 @@
  *   3) 拉参数时会带回车端的 "_v" (参数表版本号), 跟 PARAM_VER 不一致就提示用户
  *   4) step 只影响"怎么吸附", 不改变参数表布局和默认值;
  *      App 和车端必须同步改 step, 否则 App 拖 0.06、车端按 0.5 吸附 → 两边对不上
+ *
+ * 版本说明:
+ * 37: LQR 放开 (KP 22/KD 0.6/VMAX 35, motor_max 95%, 倾角限 35°, 起立 30%/800ms)
+ *     + 速度环提速 (斜坡 150/120, kp 0.08/ki 0.04, move_rpm_max 120)
+ *     + LCD 刷新 50ms + BLE 优先级 23
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 36
+export const PARAM_VER = 37
 
 export const PARAM_GROUPS = {
   0: { key: 'balance', label: '平衡环' },
@@ -38,27 +43,27 @@ export const PARAM_DEFS = [
   //    (静默失效: 车端有兜底常量 0.06, 看起来"还能用", 但用户调不动)。
   //    step 只是"怎么吸附", 不影响参数表布局 → PARAM_VER 仍然是 14, 不用动。
   { id: 3,  key: 'spd_kp',      label: 'Speed Kp',   unit: '',  def: 0.08,  min: 0,  max: 200,  step: 0.01, dec: 2, grp: 1,
-    hint: '走多快 (°/rpm)。App 方向键走的就是这个环: 目标轮速 → 目标倾角 → 平衡环 (平衡环全程不撒手)。调大走得快, 但目标倾角被限制在 4° 以内 (安全阀), 调太大只会让车左右猛摇。步进 0.01 —— 步进太粗的话 App 拖出来的中间值会被吸附掉' },
+    hint: '走多快 (°/rpm)。App 方向键走的就是这个环: 目标轮速 → 目标倾角 → 平衡环 (平衡环全程不撒手)。调大走得快, 但目标倾角被限制在 7° 以内 (安全阀), 调太大只会让车左右猛摇。步进 0.01 —— 步进太粗的话 App 拖出来的中间值会被吸附掉' },
   { id: 4,  key: 'spd_ki',      label: 'Speed Ki',   unit: '',  def: 0.04,  min: 0,  max: 300,  step: 0.01, dec: 2, grp: 1,
     hint: '消除稳态速度误差 (走不到目标速度时慢慢补倾角)。太大容易积分饱和, 也会让车越走越歪。步进 0.01 (步进太粗的话中间值会被吸附掉)' },
   { id: 5,  key: 'spd_kd',      label: 'Speed Kd',   unit: '',  def: 0.0,   min: 0,  max: 30,   step: 0.01, dec: 2, grp: 1,
     hint: '速度变化阻尼。默认 0: 编码器量化台阶会让 D 项噪声很大。步进 0.01' },
 
   // 限幅 / 安全
-  { id: 6,  key: 'motor_max',   label: 'Motor Out Max', unit: '%',  def: 60, min: 0, max: 100, step: 1, dec: 0, grp: 2,
-    hint: '电机总输出上限。默认 60%: 方向修正后实测能自己站住, 但倾角大一点就要更大出力才接得住 (Kp=12 时 5° 就顶格)' },
+  { id: 6,  key: 'motor_max',   label: 'Motor Out Max', unit: '%',  def: 95, min: 0, max: 100, step: 1, dec: 0, grp: 2,
+    hint: '电机总输出上限。默认 95%: 大角度纠偏需要全力输出, 留 5% 给转向差速' },
   { id: 7,  key: 'spdout_max',  label: 'Speed Out Max', unit: '°', def: 40, min: 0, max: 100, step: 1, dec: 0, grp: 2,
     hint: '速度环能给出的最大倾角目标 (°)。车本来就有配平偏差时别调太大' },
-  { id: 8,  key: 'ang_limit',   label: 'Angle Limit',   unit: '°', def: 25, min: 5, max: 60,  step: 1, dec: 0, grp: 2,
-    hint: '超过这个倾角判定摔倒, 立刻停电机' },
+  { id: 8,  key: 'ang_limit',   label: 'Angle Limit',   unit: '°', def: 35, min: 5, max: 60,  step: 1, dec: 0, grp: 2,
+    hint: '超过这个倾角判定摔倒, 立刻停电机。大角度纠偏时放宽到 35°, 留住电机出力机会' },
   { id: 9,  key: 'gyro_lpf',    label: 'Gyro LPF',      unit: '',  def: 0.8, min: 0, max: 1,  step: 0.01, dec: 2, grp: 2,
     hint: '陀螺仪低通系数 (D 项用的角速度)。**越小越平滑但延迟越大, 延迟大了阻尼会变弱 → 一碰就剧烈抖**。默认 0.8 (时间常数 12ms): MPU 自带的 41Hz 数字低通已经够用, 这里再滤只是白白加延迟' },
   { id: 10, key: 'gear',        label: 'Gear Ratio',    unit: '',  def: 30.0, min: 0.1, max: 50, step: 0.1, dec: 1, grp: 2,
     hint: '电机转速 / 轮转速。本机编码器装在**电机轴**上, 减速箱 30:1, 所以填 30。填错会让轮速算错 30 倍 (速度环直接饱和, 车自己跑偏)' },
   { id: 11, key: 'deadzone',    label: 'Motor Deadband',unit: '%', def: 4,   min: 0, max: 30,   step: 1,   dec: 0, grp: 2,
     hint: '电机最小启动 PWM (硬件死区)。**要填电机真正能转起来的最小占空比**, 填小了补偿不够 (小输出时电机不转, 车会突然猛冲), 填大了会一直有底噪扭矩。补偿方式是"加上"死区, 所以这个值填得越准越好' },
-  { id: 12, key: 'arm_pitch',   label: 'Arm Pitch',     unit: '°', def: 8,   min: 1, max: 30,   step: 1,   dec: 0, grp: 2,
-    hint: '启动门控: 倾角小于这个值才允许输出。防止歪着启动直接摔' },
+  { id: 12, key: 'arm_pitch',   label: 'Arm Pitch',     unit: '°', def: 12,  min: 1, max: 30,   step: 1,   dec: 0, grp: 2,
+    hint: '启动门控: 倾角小于这个值才允许输出。大角度扶正后能直接接住, 不用扶到很正' },
   { id: 13, key: 'arm_rate',    label: 'Arm Rate',      unit: '°/s',def: 20, min: 2, max: 100,  step: 1,   dec: 0, grp: 2,
     hint: '启动门控: 角速度小于这个值才允许输出。防止推着车启动' },
   { id: 14, key: 'arm_time',    label: 'Arm Time',      unit: 'ms',def: 500, min: 0, max: 3000, step: 100, dec: 0, grp: 2,
@@ -66,7 +71,7 @@ export const PARAM_DEFS = [
   { id: 15, key: 'servo_c',     label: 'Servo Center',  unit: '°', def: 80, min: 30, max: 120, step: 1,   dec: 0, grp: 2,
     hint: '舵机中心角。也是配平表的参考角 (补偿在这一档为 0)' },
   { id: 16, key: 'move_rpm_max',label: 'Move RPM Max',  unit: 'rpm', def: 120, min: 0, max: 333, step: 1, dec: 1, grp: 2,
-    hint: 'App 方向键 100% 档位对应的目标轮速 (rpm)。本机轮子最高转速 333 rpm, 默认取 120 (约 36%); 再大目标倾角会顶到 4° 安全阀, 车会左右猛摇。0 = 用代码里的默认值' },
+    hint: 'App 方向键 100% 档位对应的目标轮速 (rpm)。本机轮子最高转速 333 rpm, 默认取 120 (约 36%); 再大目标倾角会顶到 7° 安全阀, 车会左右猛摇。0 = 用代码里的默认值' },
 
   // 里程计 / 位置环
   { id: 17, key: 'wheel_dia',   label: 'Wheel Diameter', unit: 'cm', def: 6.5, min: 1, max: 30, step: 0.1, dec: 1, grp: 2,

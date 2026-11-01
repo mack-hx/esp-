@@ -24,8 +24,8 @@ static uint8_t page_count = 0;
 static ui_page_id_t current_page = UI_PAGE_HOME;
 static ui_key_get_t key_get_cb = NULL;
 
-/* 主循环周期: 50ms 按键扫描, 150ms 页面刷新 (3 个 tick) */
-#define REFRESH_TICKS   3       // 150ms
+/* 主循环周期: 50ms 按键扫描 + 页面刷新 */
+#define REFRESH_TICKS   1       // 50ms (每个 tick 刷新一次)
 static uint8_t tick_counter = 0;
 
 /* ========== UI 工具 API: 绘图 (供所有页面调用) ========== */
