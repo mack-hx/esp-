@@ -6,6 +6,26 @@
       <text class="status-text">{{ statusText }}</text>
     </view>
 
+    <!-- 蓝牙直控: 连上后移动/急停/起立和 pitch 曲线走蓝牙 -->
+    <view class="card">
+      <view class="card-title">蓝牙直控</view>
+      <view v-for="w in ['main', 'sub']" :key="w" class="row">
+        <text class="label">{{ w === 'main' ? '主车' : '副车' }}</text>
+        <text class="value" :class="ble[w] ? 'ble-on' : ''">{{ ble[w] ? '已连接' : '未连接' }}</text>
+        <button v-if="ble[w]" class="btn-mini" @click="onBleDisconnect(w)">断开</button>
+      </view>
+      <button class="btn btn-primary" :loading="scanning" :disabled="scanning" @click="onBleScan">
+        {{ scanning ? '扫描中...' : '扫描小车' }}
+      </button>
+      <view v-for="d in found" :key="d.deviceId" class="row">
+        <text class="label">{{ d.which === 'main' ? '主车' : '副车' }} {{ d.name }} ({{ d.RSSI }}dBm)</text>
+        <button class="btn-mini" :disabled="linking === d.deviceId" @click="onBleConnect(d)">
+          {{ linking === d.deviceId ? '连接中' : '连接' }}
+        </button>
+      </view>
+      <text class="form-hint">手机需打开蓝牙和定位权限。连上后移动、急停、起立和 Pitch 曲线走蓝牙, 其它功能仍走 OneNet。</text>
+    </view>
+
     <!-- OneNet 产品 / 设备 -->
     <view class="card">
       <view class="card-title">OneNet 产品 / 设备</view>
@@ -43,14 +63,24 @@
       </view>
 
       <view class="form-item">
-        <text class="form-label">项目 ID (project_id)</text>
+        <text class="form-label">副车设备名</text>
         <input
-          v-model="form.projectId"
+          v-model="form.subDeviceName"
           class="form-input"
-          placeholder="选填: OneNet 项目概览可见"
+          placeholder="同一产品下副车的设备名"
           placeholder-class="form-placeholder"
         />
-        <text class="form-hint">选填: 期望值下发和服务调用不填也能用</text>
+      </view>
+
+      <view class="form-item">
+        <text class="form-label">副车 AccessKey</text>
+        <input
+          v-model="form.subDeviceAccessKey"
+          class="form-input"
+          password
+          placeholder="副车设备详情页的设备级 AccessKey"
+          placeholder-class="form-placeholder"
+        />
       </view>
     </view>
 
@@ -79,8 +109,12 @@
     <view class="card">
       <view class="card-title">调试</view>
       <view class="row">
-        <text class="label">设备路径</text>
+        <text class="label">主车路径</text>
         <text class="value mono">{{ devicePath }}</text>
+      </view>
+      <view class="row">
+        <text class="label">副车路径</text>
+        <text class="value mono">$sys/{{ form.productId }}/{{ form.subDeviceName }}</text>
       </view>
       <view class="row">
         <text class="label">API 状态</text>
@@ -98,6 +132,7 @@
 <script>
 import { getConfig, saveConfig, resetConfig } from '../../common/config.js'
 import { oneApi } from '../../common/oneapi.js'
+import * as bleApi from '../../common/ble.js'
 
 export default {
   data() {
@@ -105,7 +140,11 @@ export default {
       form: {},
       state: 'idle',
       errorMsg: '',
-      connecting: false
+      connecting: false,
+      ble: { main: false, sub: false },   // 两车蓝牙是否已连接
+      scanning: false,                    // 是否在扫描
+      found: [],                          // 扫到的车 [{ deviceId, name, which, RSSI }]
+      linking: ''                         // 正在连接的 deviceId
     }
   },
   computed: {
@@ -127,38 +166,53 @@ export default {
   },
   onLoad() {
     this.form = Object.assign({}, getConfig())
-    try {
-      this.form.projectId = uni.getStorageSync('ebr_project_id_v1') || ''
-    } catch (e) {
-      try {
-        if (typeof localStorage !== 'undefined') {
-          this.form.projectId = localStorage.getItem('ebr_project_id_v1') || ''
-        }
-      } catch (e2) {}
-    }
 
     this._unsubState = oneApi.onState((s, e) => {
       this.state = s
       this.errorMsg = e || ''
     })
+    this.ble = { main: bleApi.isConnected('main'), sub: bleApi.isConnected('sub') }
+    this._unsubBle = bleApi.onBleState((w, v) => { this.ble[w] = v })
   },
   onUnload() {
     if (this._unsubState) this._unsubState()
+    if (this._unsubBle) this._unsubBle()
   },
   methods: {
+    async onBleScan() {
+      this.found = []
+      this.scanning = true
+      try {
+        await bleApi.scan(d => this.found.push(d))
+        if (!this.found.length) uni.showToast({ title: '没扫到小车', icon: 'none' })
+      } catch (e) {
+        uni.showToast({ title: '蓝牙不可用: ' + (e.errMsg || e.message || e), icon: 'none' })
+      }
+      this.scanning = false
+    },
+    async onBleConnect(d) {
+      this.linking = d.deviceId
+      try {
+        await bleApi.connect(d.which, d.deviceId)
+        this.found = this.found.filter(x => x.deviceId !== d.deviceId)
+        uni.showToast({ title: '蓝牙已连接', icon: 'success' })
+      } catch (e) {
+        uni.showToast({ title: '连接失败: ' + (e.errMsg || e.message || e), icon: 'none' })
+      }
+      this.linking = ''
+    },
+    onBleDisconnect(w) {
+      bleApi.disconnect(w)
+    },
     async onConnect() {
       // 1. 保存配置
       saveConfig({
         productId: this.form.productId,
         deviceName: this.form.deviceName,
-        deviceAccessKey: this.form.deviceAccessKey
+        deviceAccessKey: this.form.deviceAccessKey,
+        subDeviceName: this.form.subDeviceName,
+        subDeviceAccessKey: this.form.subDeviceAccessKey
       })
-      try {
-        uni.setStorageSync('ebr_project_id_v1', this.form.projectId || '')
-        if (typeof localStorage !== 'undefined') {
-          localStorage.setItem('ebr_project_id_v1', this.form.projectId || '')
-        }
-      } catch (e) {}
 
       // 2. 真的去平台拉一次设备属性, 能拉到才算配置正确
       this.connecting = true
@@ -181,13 +235,6 @@ export default {
           if (res.confirm) {
             resetConfig()
             this.form = Object.assign({}, getConfig())
-            try {
-              uni.removeStorageSync('ebr_project_id_v1')
-              if (typeof localStorage !== 'undefined') {
-                localStorage.removeItem('ebr_project_id_v1')
-              }
-            } catch (e) {}
-            this.form.projectId = ''
             oneApi._setState('idle', null)
             uni.showToast({ title: '已恢复', icon: 'success' })
           }
@@ -315,5 +362,17 @@ export default {
 
 .label { font-size: 26rpx; color: #888; }
 .value { font-size: 26rpx; color: #333; }
+.ble-on { color: #1677ff; }
+
+.btn-mini {
+  margin: 0 0 0 16rpx;
+  padding: 0 24rpx;
+  height: 56rpx;
+  line-height: 56rpx;
+  font-size: 24rpx;
+  background: #fff;
+  border: 1rpx solid #ddd;
+}
+
 .mono { font-family: monospace; font-size: 24rpx; word-break: break-all; }
 </style>

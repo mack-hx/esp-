@@ -21,17 +21,28 @@
  *        档位跟车上的 UI 编码器调试页同源 (motor_spd_levels[]),
  *        所以 App 上的档位和屏上调出来的档位是一回事。
  *        档位代表"目标轮速的百分比", 车端把它换算成目标轮速后走速度环。
+ *
+ * @note  控制对象 (target):
+ *        'main' 主车 / 'sub' 副车 / 'both' 两车 (对接合体后, 同一指令同时发给两个设备)。
+ *        参数 / 配平这类单设备操作在 'both' 时落到主车。
+ *
+ * @note  蓝牙直控: 某辆车的蓝牙已连上时, 它的移动 / 急停 / 起立走蓝牙 (common/ble.js),
+ *        其余指令仍走 OneNet。蓝牙移动指令每 BLE_KEEPALIVE_MS 补发一次 (车端 600ms 超时归零)。
  */
 
 import { oneApi } from '../common/oneapi.js'
 import { setDesiredProperty, invokeService } from '../common/onenet.js'
 import { PARAM_VER } from '../common/paramDef.js'
+import * as ble from '../common/ble.js'
 
 /** 移动指令的属性名 (物模型里必须存在这个标识符) */
 const MOVE_PROP = 'speed'
 
 /** 保活补发周期 (毫秒) */
 const KEEPALIVE_MS = 1000
+
+/** 蓝牙移动指令补发周期 (毫秒), 必须小于车端 BLE_MOVE_TIMEOUT_MS (600) */
+const BLE_KEEPALIVE_MS = 200
 
 /** 速度档位 (PWM 百分比), 必须与车上的 motor_spd_levels[] 一致 */
 export const SPEED_LEVELS = [20, 40, 60, 80]
@@ -51,10 +62,60 @@ class Controller {
   constructor() {
     this.active = { speed: 0 }
     this.timer = null
+    /** 当前控制对象: 'main' | 'sub' | 'both' */
+    this.target = 'main'
+    /** 上次通过 OneNet 发移动指令的时刻 (毫秒) */
+    this._netMoveAt = 0
   }
 
-  /** 检查 OneNet API 是否就绪 */
-  _check() {
+  /**
+   * @brief 切换控制对象 (切换前先停掉正在下发的移动指令)
+   * @param {string} t 'main' | 'sub' | 'both'
+   */
+  setTarget(t) {
+    if (t === this.target) return
+    if (this.timer) this.stopMove()
+    this.target = t
+  }
+
+  /** 当前控制对象展开成设备列表 */
+  _devices() {
+    return this.target === 'both' ? ['main', 'sub'] : [this.target]
+  }
+
+  /** 单设备操作 (参数 / 配平) 用的设备 */
+  _single() {
+    return this.target === 'sub' ? 'sub' : 'main'
+  }
+
+  /** 把同一个期望值同时下发给当前控制对象的所有设备 */
+  _setAll(values) {
+    return Promise.all(this._devices().map(d => setDesiredProperty(values, d)))
+  }
+
+  /** 把同一个服务调用同时发给当前控制对象的所有设备 */
+  _invokeAll(name, input) {
+    return Promise.all(this._devices().map(d => invokeService(name, input, d)))
+  }
+
+  /**
+   * @brief 实时指令: 蓝牙已连的车走蓝牙, 其余走 OneNet 服务调用
+   * @param bleText 蓝牙指令文本 ("STOP" / "STAND")
+   * @param service OneNet 服务名
+   */
+  _realtimeAll(bleText, service) {
+    return Promise.all(this._devices().map(d =>
+      ble.isConnected(d) ? ble.send(d, bleText) : invokeService(service, {}, d)))
+  }
+
+  /** 当前控制对象是否全部连着蓝牙 */
+  _allBle() {
+    return this._devices().every(d => ble.isConnected(d))
+  }
+
+  /** 检查 OneNet API 是否就绪 (实时指令在所有目标车都连着蓝牙时不需要 OneNet) */
+  _check(realtime = false) {
+    if (realtime && this._allBle()) return true
     if (oneApi.getState().state !== 'ready') {
       uni.showToast({ title: '请先在连接页配置 OneNet', icon: 'none' })
       return false
@@ -70,12 +131,12 @@ class Controller {
    * @note  平台的 speed 属性范围是 -10~10, 指令值由 _dirToCmd() 编码。
    */
   startMove(dir, level = 60) {
-    if (!this._check()) return
+    if (!this._check(true)) return
     if (!(dir in DIR_SIGN)) return
     this.active = { [MOVE_PROP]: this._dirToCmd(dir, level) }
-    this._publishMove()
+    this._publishMove(true)
     if (this.timer) clearInterval(this.timer)
-    this.timer = setInterval(() => this._publishMove(), KEEPALIVE_MS)
+    this.timer = setInterval(() => this._publishMove(false), BLE_KEEPALIVE_MS)
   }
 
   /** 停止移动 (目标速度归零) */
@@ -85,7 +146,7 @@ class Controller {
       clearInterval(this.timer)
       this.timer = null
     }
-    this._publishMove()
+    this._publishMove(true)
   }
 
   /**
@@ -105,10 +166,20 @@ class Controller {
     return +(sign * (isTurn ? (TURN_BASE + lv) : lv)).toFixed(2)
   }
 
-  /** 推一帧移动指令 */
-  async _publishMove() {
+  /**
+   * @brief 推一帧移动指令
+   * @param force true = OneNet 也立即发; false = OneNet 按 KEEPALIVE_MS 节流 (蓝牙每次都发)
+   */
+  async _publishMove(force) {
+    const now = Date.now()
+    const netDue = force || now - this._netMoveAt >= KEEPALIVE_MS
+    if (netDue) this._netMoveAt = now
+    const v = this.active[MOVE_PROP]
     try {
-      await setDesiredProperty(this.active)
+      await Promise.all(this._devices().map(d => {
+        if (ble.isConnected(d)) return ble.send(d, 'M:' + v)
+        return netDue ? setDesiredProperty(this.active, d) : null
+      }))
     } catch (e) {
       this.reportError(e)
     }
@@ -127,18 +198,18 @@ class Controller {
     if (e && e.code === 10412) {
       uni.showToast({ title: '物模型缺这个属性, 请在 OneNet 后台补上', icon: 'none' })
     } else {
-      const msg = (e && e.message) ? e.message : String(e)
+      const msg = (e && (e.message || e.errMsg)) || String(e)
       uni.showToast({ title: msg.slice(0, 30), icon: 'none' })
     }
   }
 
   /** 急停 (单次服务调用) */
   async emergencyStop() {
-    if (!this._check()) return
+    if (!this._check(true)) return
     if (this.timer) { clearInterval(this.timer); this.timer = null }
     this.active = { [MOVE_PROP]: 0 }
     try {
-      await invokeService('stop', {})
+      await this._realtimeAll('STOP', 'stop')
     } catch (e) {
       this.reportError(e)
     }
@@ -146,9 +217,9 @@ class Controller {
 
   /** 起立 */
   async stand() {
-    if (!this._check()) return
+    if (!this._check(true)) return
     try {
-      await invokeService('stand', {})
+      await this._realtimeAll('STAND', 'stand')
     } catch (e) {
       this.reportError(e)
     }
@@ -162,7 +233,7 @@ class Controller {
       content: '请把车摆正, 然后点确定. 标定过程约 3 秒, 期间不要动车.',
       success: (res) => {
         if (res.confirm) {
-          invokeService('calibrate', {}).catch(e => this.reportError(e))
+          this._invokeAll('calibrate', {}).catch(e => this.reportError(e))
           uni.showLoading({ title: '配平中...' })
           setTimeout(() => uni.hideLoading(), 3500)
         }
@@ -179,7 +250,7 @@ class Controller {
   async getParams() {
     if (!this._check()) return null
     try {
-      const res = await invokeService('param_get', {})
+      const res = await invokeService('param_get', {}, this._single())
       /* 物模型 output: values (string), 内容是设备给的扁平 JSON 字符串 */
       if (res && res.data && res.data.values) {
         return JSON.parse(res.data.values)
@@ -204,9 +275,9 @@ class Controller {
        * 带上 "_v" = App 内置的参数表版本号, 车端比对不一致就告警
        * (见 onenet_client.c 的 param_set 分支)。 */
       const payload = Object.assign({}, values, { _v: PARAM_VER })
-      const r1 = await invokeService('param_set', { values: JSON.stringify(payload) })
+      const r1 = await invokeService('param_set', { values: JSON.stringify(payload) }, this._single())
       if (!r1) return false
-      const r2 = await invokeService('param_save', {})
+      const r2 = await invokeService('param_save', {}, this._single())
       return !!r2
     } catch (e) {
       this.reportError(e)
@@ -228,9 +299,9 @@ class Controller {
        *   会给用户弹提示条说参数可能被旧版 App 改坏。 */
       const r1 = await invokeService('param_set', {
         values: JSON.stringify({ _reset: true, _v: PARAM_VER })
-      })
+      }, this._single())
       if (!r1) return false
-      const r2 = await invokeService('param_save', {})
+      const r2 = await invokeService('param_save', {}, this._single())
       return !!r2
     } catch (e) {
       this.reportError(e)
@@ -246,7 +317,7 @@ class Controller {
   async sendLed(payload) {
     if (!this._check()) return
     try {
-      await setDesiredProperty(payload)
+      await this._setAll(payload)
     } catch (e) {
       this.reportError(e)
       throw e
@@ -254,13 +325,13 @@ class Controller {
   }
 
   /**
-   * @brief 发送电磁铁控制
+   * @brief 发送电磁铁控制 (只有主车有对接模块)
    * @param {Object} payload { magnet_on }
    */
   async sendMagnet(payload) {
     if (!this._check()) return
     try {
-      await setDesiredProperty(payload)
+      await setDesiredProperty(payload, 'main')
     } catch (e) {
       this.reportError(e)
       throw e
@@ -274,7 +345,7 @@ class Controller {
   async sendServo(payload) {
     if (!this._check()) return
     try {
-      await setDesiredProperty(payload)
+      await this._setAll(payload)
     } catch (e) {
       this.reportError(e)
       throw e
@@ -292,7 +363,7 @@ class Controller {
   async trimRecord() {
     if (!this._check()) return null
     try {
-      const res = await invokeService('trim_record', {})
+      const res = await invokeService('trim_record', {}, this._single())
       if (res && res.data && res.data.values) return String(res.data.values)
       return null
     } catch (e) {
@@ -308,7 +379,7 @@ class Controller {
   async trimSave() {
     if (!this._check()) return null
     try {
-      const res = await invokeService('trim_save', {})
+      const res = await invokeService('trim_save', {}, this._single())
       if (res && res.data && res.data.values) return String(res.data.values)
       return null
     } catch (e) {
@@ -324,7 +395,7 @@ class Controller {
   async trimClear() {
     if (!this._check()) return null
     try {
-      const res = await invokeService('trim_clear', {})
+      const res = await invokeService('trim_clear', {}, this._single())
       if (res && res.data && res.data.values) return String(res.data.values)
       return null
     } catch (e) {
@@ -343,7 +414,7 @@ class Controller {
   async trimGet() {
     if (!this._check()) return null
     try {
-      const res = await invokeService('trim_get', {})
+      const res = await invokeService('trim_get', {}, this._single())
       if (res && res.data && res.data.values) {
         return JSON.parse(res.data.values)
       }

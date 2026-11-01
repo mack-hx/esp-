@@ -46,7 +46,6 @@ ESP32-S3R8N8 平衡轮腿机械狗 **配套 App**（uni-app 项目，H5 为主�
 | 写参数 | 服务调用 `param_set` + `param_save` | 写完要再调 `param_save` 才落盘 |
 
 **鉴权**: 用**设备级** AccessKey 算 token (HMAC-SHA1, 跟 ESP32 端同一把)。
-`project_id` 选填。
 
 详见 `onet_物模型.md` 和 `../docs/物模型待补清单.md`。
 

@@ -17,7 +17,7 @@ VER = sys.argv[1] if len(sys.argv) > 1 else "0.41"
 BASE = os.path.join(ROOT, VER)
 
 # ---------- 车端: user/param/param.c ----------
-pc = io.open(os.path.join(BASE, "user/param/param.c"), encoding="utf-8").read()
+pc = io.open(os.path.join(BASE, "main_car/user/param/param.c"), encoding="utf-8").read()
 
 # 版本号
 m = re.search(r"#define\s+PARAM_DATA_VERSION\s+(\d+)", pc)

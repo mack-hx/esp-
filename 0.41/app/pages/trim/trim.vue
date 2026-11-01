@@ -226,7 +226,7 @@ export default {
     async _poll() {
       if (oneApi.getState().state !== 'ready') return
       try {
-        const res = await queryDeviceProperty()
+        const res = await queryDeviceProperty(controller._single())
         if (res && res.code === 0 && Array.isArray(res.data)) {
           const obj = {}
           res.data.forEach(p => { obj[p.identifier] = p.value })

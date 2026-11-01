@@ -10,6 +10,7 @@
  *   - productId:  产品 ID (OneNet 后台产品详情页可见)
  *   - deviceName: 设备名 (OneNet 后台设备详情页可见)
  *   - deviceAccessKey: 设备级 AccessKey (Base64 字符串, 用于生成 token)
+ *   - subDeviceName / subDeviceAccessKey: 副车设备名 / 副车设备级 AccessKey (同一产品下)
  *   - tokenExpireSec: token 有效期 (秒), 默认 86400 = 1 天
  */
 
@@ -20,13 +21,16 @@ const STORAGE_KEY = 'ebr_config_v3'
  * @note  accessKey 用**设备级** AccessKey (跟 ESP32 端同一把) 即可:
  *        开放接口 (query-device-property / set-device-desired-property /
  *        call-service) 都通。另一把产品级的 key 反而会返回 10403 无效鉴权。
- * @note  project_id 选填: 期望值下发和服务调用, 带不带平台都收。
  */
 const DEFAULT_CONFIG = {
   // === OneNet 设备三元组 ===
   productId: '6YlUqr9lue',
   deviceName: 'balancing_dog',
   deviceAccessKey: 'YlpFVXlONlMzTUNnMHRocTRXSG04SkZMbmVrdEdmQTI=',
+
+  // === 副车 (同一产品下的第二个设备) ===
+  subDeviceName: 'balancing_dog_sub',
+  subDeviceAccessKey: 'ZkhDYklSU0NHY1MyWVk3cGEwMm1XN0FydXVpb2w2SDA=',
 
   // === HTTP API 调优 ===
   tokenExpireSec: 86400,   // 24h
@@ -63,6 +67,19 @@ export function getConfig() {
  * @return {boolean} 配全了返回 true
  * @note  用来决定 App 启动后要不要自动做一次连通性检查
  */
+/**
+ * @brief 取某辆车的设备三元组
+ * @param {string} which 'main' 主车 / 'sub' 副车
+ * @return {{productId:string, deviceName:string, deviceAccessKey:string}}
+ */
+export function getDevice(which = 'main') {
+  const c = getConfig()
+  if (which === 'sub') {
+    return { productId: c.productId, deviceName: c.subDeviceName, deviceAccessKey: c.subDeviceAccessKey }
+  }
+  return { productId: c.productId, deviceName: c.deviceName, deviceAccessKey: c.deviceAccessKey }
+}
+
 export function hasConfig() {
   const c = getConfig()
   return !!(c.productId && c.deviceName && c.deviceAccessKey)

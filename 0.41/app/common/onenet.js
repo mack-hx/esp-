@@ -21,16 +21,16 @@
  *   GET  /thingmodel/query-device-property-history?...&identifier=&start_time=&end_time=
  *        → 读属性历史采样点 (俯仰角高频曲线用, 一次最多返回 10 个点)
  *   POST /thingmodel/set-device-desired-property
- *        → 设置属性期望值 (App 摇杆/灯/舵机/电磁铁用), body: {product_id, device_name, project_id, params}
+ *        → 设置属性期望值 (App 摇杆/灯/舵机/电磁铁用), body: {product_id, device_name, params}
  *   POST /thingmodel/call-service
  *        → 调用物模型服务 (急停/起立/配平/读参数/写参数/保存参数)
- *        body: {product_id, device_name, project_id, identifier, params}
+ *        body: {product_id, device_name, identifier, params}
  *
  * @note  AccessKey 必须是**产品级** key: 设备级 key 调上面这些接口一律
  *        authPermissionDeny (设备级 key 只能给设备自己用)。
  */
 
-import { getConfig } from './config.js'
+import { getDevice } from './config.js'
 
 /** OneNet Studio 开放接口根地址 */
 const API_BASE = 'https://iot-api.heclouds.com'
@@ -88,10 +88,14 @@ export function getServerSkewMs() {
 
 /**
  * @brief 计算 OneNet 设备访问 token
+ * @param {string} [which] 'main' 主车 / 'sub' 副车
  * @return {string} token 字符串
  */
-export function computeToken() {
-  const cfg = getConfig()
+export function computeToken(which = 'main') {
+  const cfg = getDevice(which)
+  if (!cfg.deviceName || !cfg.deviceAccessKey) {
+    throw new Error(which === 'sub' ? '副车设备名/AccessKey 未配置' : '主车设备名/AccessKey 未配置')
+  }
   const version = '2018-10-31'
   const method = 'sha1'
   const res = `products/${cfg.productId}/devices/${cfg.deviceName}`
@@ -322,10 +326,16 @@ function checkResult(res, what) {
  * @param {string} method 'GET' / 'POST'
  * @param {string} path  路径, 例如 '/thingmodel/query-device-property?product_id=xx'
  * @param {Object} [body] POST body (会被 JSON.stringify)
+ * @param {string} [which] 鉴权用哪辆车的设备 key: 'main' / 'sub'
  * @returns {Promise<Object>} 解析后的 JSON
  */
-export function httpRequest(method, path, body) {
-  const token = computeToken()
+export function httpRequest(method, path, body, which = 'main') {
+  let token
+  try {
+    token = computeToken(which)
+  } catch (e) {
+    return Promise.reject(e)
+  }
   const url = getApiBase() + path
   const headers = {
     'Authorization': token,
@@ -386,12 +396,13 @@ export function httpRequest(method, path, body) {
 
 /**
  * @brief 读设备最新属性值
+ * @param {string} [which] 'main' 主车 / 'sub' 副车
  * @returns {Promise<Object>} { code:0, data:[{identifier, value, time, ...}, ...] }
  */
-export function queryDeviceProperty() {
-  const cfg = getConfig()
+export function queryDeviceProperty(which = 'main') {
+  const cfg = getDevice(which)
   const q = `product_id=${encodeURIComponent(cfg.productId)}&device_name=${encodeURIComponent(cfg.deviceName)}`
-  return httpRequest('GET', `/thingmodel/query-device-property?${q}`)
+  return httpRequest('GET', `/thingmodel/query-device-property?${q}`, undefined, which)
 }
 
 /**
@@ -399,38 +410,37 @@ export function queryDeviceProperty() {
  * @param {string} identifier 属性标识符 (例如 'pitch')
  * @param {number} startTime 起始时间戳 (Unix 毫秒, 含)
  * @param {number} endTime   结束时间戳 (Unix 毫秒, 含)
+ * @param {string} [which]   'main' 主车 / 'sub' 副车
  * @returns {Promise<Object>} { code:0, data:{ list:[{time, value}, ...] } }
  * @note  平台每次最多返回 10 个点, 且是**倒序** (最新在前)。
  * @note  设备端把 pitch 的上报频率提到 20Hz, 这个接口一次就能拿回一批采样点,
  *        比轮询"最新值"快得多 —— 曲线的点密度取决于这个接口, 不是轮询间隔。
  */
-export function queryDevicePropertyHistory(identifier, startTime, endTime) {
-  const cfg = getConfig()
+export function queryDevicePropertyHistory(identifier, startTime, endTime, which = 'main') {
+  const cfg = getDevice(which)
   const q = `product_id=${encodeURIComponent(cfg.productId)}` +
             `&device_name=${encodeURIComponent(cfg.deviceName)}` +
             `&identifier=${encodeURIComponent(identifier)}` +
             `&start_time=${Math.floor(startTime)}` +
             `&end_time=${Math.floor(endTime)}`
-  return httpRequest('GET', `/thingmodel/query-device-property-history?${q}`)
+  return httpRequest('GET', `/thingmodel/query-device-property-history?${q}`, undefined, which)
 }
 
 /**
  * @brief 设置属性期望值 (云→设备)
  * @param {Object} values 形如 { speed: 0.3 }
+ * @param {string} [which] 'main' 主车 / 'sub' 副车
  * @note  设备会收到 $sys/.../thing/property/set 消息, 参数是**裸值**
  * @returns {Promise<Object>} { code:0, msg:'succ' }
  */
-export function setDesiredProperty(values) {
-  const cfg = getConfig()
+export function setDesiredProperty(values, which = 'main') {
+  const cfg = getDevice(which)
   const body = {
     product_id: cfg.productId,
     device_name: cfg.deviceName,
     params: values || {}
   }
-  /* project_id 不填也能用, 填了才带上 */
-  const pid = getProjectId()
-  if (pid) body.project_id = pid
-  return httpRequest('POST', '/thingmodel/set-device-desired-property', body)
+  return httpRequest('POST', '/thingmodel/set-device-desired-property', body, which)
     .then(res => checkResult(res, '设置期望值'))
 }
 
@@ -438,33 +448,20 @@ export function setDesiredProperty(values) {
  * @brief 调用物模型服务 (急停 / 起立 / 配平 / 读参数 / 写参数 / 保存参数)
  * @param {string} name     服务标识符
  * @param {Object} inputObj 服务入参 (物模型里没声明入参时传 {})
+ * @param {string} [which]  'main' 主车 / 'sub' 副车
  * @returns {Promise<Object>} { code:0, data:{...}, msg:'succ' }
  */
-export function invokeService(name, inputObj) {
-  const cfg = getConfig()
+export function invokeService(name, inputObj, which = 'main') {
+  const cfg = getDevice(which)
   const body = {
     product_id: cfg.productId,
     device_name: cfg.deviceName,
     identifier: name,
     params: inputObj || {}
   }
-  const pid = getProjectId()
-  if (pid) body.project_id = pid
-  return httpRequest('POST', '/thingmodel/call-service', body)
+  return httpRequest('POST', '/thingmodel/call-service', body, which)
     .then(res => checkResult(res, `调用服务 ${name}`))
 }
 
 /* ===================== 工具函数 ===================== */
 
-/**
- * @brief 从 storage 读 project_id (用户在 connect 页填的)
- * @return {string} project_id
- */
-export function getProjectId() {
-  try {
-    if (typeof uni === 'undefined' || !uni.getStorageSync) {
-      return localStorage.getItem('ebr_project_id_v1') || ''
-    }
-    return uni.getStorageSync('ebr_project_id_v1') || ''
-  } catch (e) { return '' }
-}

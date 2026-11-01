@@ -6,12 +6,19 @@
         <text class="dot"></text>
         <text>{{ connText }}</text>
       </view>
-      <text class="last-seen">心跳: {{ heartbeatText }}</text>
+      <!-- 连接设置入口 (OneNet + 蓝牙), 任一辆车蓝牙连上时变蓝 -->
+      <view class="avatar" :class="{ 'avatar-ble': anyBle }" @click="goConnect">
+        <text class="avatar-text">{{ anyBle ? 'BT' : '⚙' }}</text>
+      </view>
     </view>
 
-    <!-- Pitch 折线图 -->
+    <!-- Pitch 折线图: 两辆车叠在同一张图里 -->
     <view class="card">
       <view class="card-title">Pitch 实时曲线</view>
+      <view class="legend">
+        <view class="legend-item"><text class="legend-dot lg-main"></text><text>主车 {{ fmt(cars.main.pose.pitch, 1) }}°</text></view>
+        <view class="legend-item"><text class="legend-dot lg-sub"></text><text>副车 {{ fmt(cars.sub.pose.pitch, 1) }}°</text></view>
+      </view>
       <canvas canvas-id="pitchCanvas" class="chart-canvas" @touchstart="onTouchStart" @touchend="onTouchEnd"></canvas>
       <view class="chart-labels">
         <text class="chart-label">{{ pitchMin }}°</text>
@@ -19,12 +26,68 @@
         <text class="chart-label">{{ pitchMax }}°</text>
       </view>
       <view class="chart-info">
-        <text class="chart-info-item">采样点: {{ pitchSeries.length }}</text>
-        <text class="chart-info-item">数据延迟: {{ latencyText }}</text>
+        <text class="chart-info-item">主车延迟: {{ latencyText('main') }}</text>
+        <text class="chart-info-item">副车延迟: {{ latencyText('sub') }}</text>
       </view>
       <view class="chart-info">
         <text class="chart-info-item">请求耗时: {{ rttMs }}ms</text>
         <text class="chart-info-item">时钟偏差: {{ skewText }}</text>
+      </view>
+    </view>
+
+    <!-- 两车实时状态对照表 -->
+    <view class="card">
+      <view class="card-title">实时状态</view>
+      <view class="t-row t-head">
+        <text class="t-name"></text>
+        <text class="t-val t-main">主车</text>
+        <text class="t-val t-sub">副车</text>
+      </view>
+      <view class="t-row">
+        <text class="t-name">链路</text>
+        <text v-for="w in WHICH" :key="w" class="t-val" :class="linkClass(w)">{{ linkText(w) }}</text>
+      </view>
+      <view class="t-row">
+        <text class="t-name">数据间隔</text>
+        <text v-for="w in WHICH" :key="w" class="t-val">{{ beatText(w) }}</text>
+      </view>
+      <view class="t-row">
+        <text class="t-name">Pitch</text>
+        <text v-for="w in WHICH" :key="w" class="t-val t-big" :class="poseClass(w)">{{ fmt(cars[w].pose.pitch, 1) }}°</text>
+      </view>
+      <view class="t-row">
+        <text class="t-name">Roll</text>
+        <text v-for="w in WHICH" :key="w" class="t-val">{{ fmt(cars[w].pose.roll, 1) }}°</text>
+      </view>
+      <view class="t-row">
+        <text class="t-name">Yaw</text>
+        <text v-for="w in WHICH" :key="w" class="t-val">{{ fmt(cars[w].pose.yaw, 1) }}°</text>
+      </view>
+      <view class="t-row">
+        <text class="t-name">Gz</text>
+        <text v-for="w in WHICH" :key="w" class="t-val">{{ fmt(cars[w].pose.gz, 1) }}°/s</text>
+      </view>
+      <view class="t-row">
+        <text class="t-name">左轮</text>
+        <view v-for="w in WHICH" :key="w" class="t-val t-bar-cell">
+          <text>{{ fmt(cars[w].motor.left, 0) }}%</text>
+          <view class="motor-bar"><view class="motor-fill" :style="motorBarStyle(w, 'left')"></view></view>
+        </view>
+      </view>
+      <view class="t-row">
+        <text class="t-name">右轮</text>
+        <view v-for="w in WHICH" :key="w" class="t-val t-bar-cell">
+          <text>{{ fmt(cars[w].motor.right, 0) }}%</text>
+          <view class="motor-bar"><view class="motor-fill" :style="motorBarStyle(w, 'right')"></view></view>
+        </view>
+      </view>
+      <view class="t-row">
+        <text class="t-name">遥控指令</text>
+        <text v-for="w in WHICH" :key="w" class="t-val">{{ moveText(w) }}</text>
+      </view>
+      <view class="t-row">
+        <text class="t-name">编码器</text>
+        <text v-for="w in WHICH" :key="w" class="t-val t-small">{{ cars[w].motor.enc_l || 0 }} / {{ cars[w].motor.enc_r || 0 }}</text>
       </view>
     </view>
 
@@ -48,78 +111,13 @@
         <button class="btn btn-ghost" @click="goTrim">去标定</button>
       </view>
     </view>
-
-    <!-- 姿态 -->
-    <view class="card">
-      <view class="card-title">姿态</view>
-      <view class="pose-grid">
-        <view class="pose-item">
-          <text class="pose-label">Pitch</text>
-          <text class="pose-value" :class="poseClass('pitch')">{{ fmt(pose.pitch, 1) }}°</text>
-        </view>
-        <view class="pose-item">
-          <text class="pose-label">Roll</text>
-          <text class="pose-value">{{ fmt(pose.roll, 1) }}°</text>
-        </view>
-        <view class="pose-item">
-          <text class="pose-label">Yaw</text>
-          <text class="pose-value">{{ fmt(pose.yaw, 1) }}°</text>
-        </view>
-        <view class="pose-item">
-          <text class="pose-label">Gz</text>
-          <text class="pose-value">{{ fmt(pose.gz, 1) }}°/s</text>
-        </view>
-      </view>
-    </view>
-
-    <!-- 电机 -->
-    <view class="card">
-      <view class="card-title">电机</view>
-      <view class="motor-row">
-        <view class="motor-cell">
-          <text class="motor-label">左轮</text>
-          <text class="motor-value">{{ fmt(motor.left, 0) }}%</text>
-          <view class="motor-bar">
-            <view class="motor-fill" :style="motorBarStyle('left')"></view>
-          </view>
-        </view>
-        <view class="motor-cell">
-          <text class="motor-label">右轮</text>
-          <text class="motor-value">{{ fmt(motor.right, 0) }}%</text>
-          <view class="motor-bar">
-            <view class="motor-fill" :style="motorBarStyle('right')"></view>
-          </view>
-        </view>
-      </view>
-      <view class="row">
-        <text class="label">遥控指令</text>
-        <text class="value">{{ moveText }}</text>
-      </view>
-      <view class="row">
-        <text class="label">编码器</text>
-        <text class="value">L: {{ motor.enc_l || 0 }} / R: {{ motor.enc_r || 0 }}</text>
-      </view>
-    </view>
-
-    <!-- 设备信息 -->
-    <view class="card">
-      <view class="card-title">设备</view>
-      <view class="row">
-        <text class="label">设备 ID</text>
-        <text class="value">{{ deviceId }}</text>
-      </view>
-      <view class="row">
-        <text class="label">消息数</text>
-        <text class="value">{{ msgCount }}</text>
-      </view>
-    </view>
   </view>
 </template>
 
 <script>
 import { oneApi } from '../../common/oneapi.js'
 import { queryDeviceProperty, queryDevicePropertyHistory, getServerNowMs, getServerSkewMs } from '../../common/onenet.js'
-import { getConfig } from '../../common/config.js'
+import { onPitch, onBleState, isConnected as bleConnected } from '../../common/ble.js'
 
 const MAX_POINTS = 120  // 最多显示120个点
 const PITCH_RANGE = 60  // 显示范围 ±60° (车倾倒时角度能到 60 度以上)
@@ -192,169 +190,197 @@ function createPainter(ctx, isH5) {
   }
 }
 
+/** 车列表: 主车 / 副车 */
+const WHICH = ['main', 'sub']
+/** 曲线颜色 */
+const COLORS = { main: '#1aad19', sub: '#1677ff' }
+
+/** 一辆车的空状态 */
+function emptyCar() {
+  return {
+    pose: { pitch: null, roll: null, yaw: null, gz: null },
+    motor: { left: 0, right: 0, speed: 0, enc_l: 0, enc_r: 0 },
+    series: [],        // pitch 曲线点 [{ t, v }]
+    src: '',           // series 的时间基准: 'ble' = 手机时钟, 'net' = 平台时钟
+    lastPointT: 0,     // 最新网络采样点的平台时间戳 (ms), 对齐查询窗口用
+    latency: null,     // 网络 pitch 数据延迟 (ms)
+    ble: false,        // 蓝牙是否连着
+    lastAt: 0,         // 最后一次收到数据的本地时刻 (ms)
+    maxGap: 0,         // 最近 3 秒内两次数据的最大间隔 (ms)
+    maxGapAt: 0        // maxGap 统计时刻
+  }
+}
+
 export default {
   data() {
     return {
+      WHICH,
       state: 'idle',
-      deviceId: '',
-      pose: { pitch: 0, roll: 0, yaw: 0, gz: 0 },
-      motor: { left: 0, right: 0, speed: 0, enc_l: 0, enc_r: 0 },
-      deviceState: '--',
-      _lastDataAt: 0,      // 最后一次收到平台数据的时间 (本地时钟, ms)
-      _maxGap: 0,          // 最近 3 秒内两次数据到达的最大间隔 (ms)
-      _maxGapAt: 0,        // 上面这个最大值统计到的时刻 (用于 3 秒窗口滑动)
-      _tick: 0,            // 每秒自增, 用来让"心跳"读数定时刷新
-      msgCount: 0,
-      // 折线图数据 (高速通道: 每点带毫秒时间戳)
-      pitchHistory: [],
-      pitchSeries: [],
-      pitchLatency: null,
-      _lastPointT: 0,   // 最新采样点的平台时间戳 (ms), 用来对齐查询窗口
-      rttMs: 0,         // 最近一次历史接口请求耗时 (ms), 排查网络慢用
-      skewMs: 0,        // 平台时间 − 手机时间 (ms), 正数 = 手机时钟慢了
+      cars: { main: emptyCar(), sub: emptyCar() },
+      rttMs: 0,         // 最近一次历史接口请求耗时 (ms)
+      skewMs: 0,        // 平台时间 − 手机时间 (ms)
+      tick: 0,          // 每秒自增, 让"数据间隔"读数定时刷新
       painter: null,    // 绘图适配器 (见 createPainter), null = 还没初始化好
-      _cssW: 0,        // canvas 的 CSS 像素宽 (绘图坐标用)
-      _cssH: 0,        // canvas 的 CSS 像素高 (绘图坐标用)
-      isDrawing: false,
-      _pollTick: null,
-      _pitchTick: null,
-      _redrawTick: null,
-      _beatTick: null,     // 每秒心跳计时器 (让"心跳"读数定时刷新)
-      _canvasPending: false, // App 端取画布尺寸的查询是否在进行中
-      _lastDrawKey: ''       // 上次绘制时的数据指纹, 没变就不重复画
+      isDrawing: false
     }
   },
   computed: {
     connText() {
-      switch (this.state) {
-        case 'ready':    return '已就绪'
-        case 'error':    return '错误'
-        default:         return '未连接'
-      }
+      if (this.state === 'ready') return 'OneNet 已连接'
+      if (this.state === 'error') return 'OneNet 配置错误'
+      return 'OneNet 未连接'
+    },
+    anyBle() {
+      return this.cars.main.ble || this.cars.sub.ble
     },
     pitchMin() { return '-' + PITCH_RANGE },
     pitchMax() { return '+' + PITCH_RANGE },
-    poseClass() {
-      return (k) => {
-        if (k === 'pitch') {
-          const p = Math.abs(this.pose.pitch)
-          if (p > 20) return 'pose-warn'
-          if (p > 10) return 'pose-mid'
-          return ''
-        }
-        return ''
-      }
-    },
-    motorBarStyle() {
-      return (k) => {
-        const v = this.motor[k] || 0
-        const w = Math.max(0, Math.min(100, Math.abs(v)))
-        return `width: ${w}%; background: ${v < 0 ? '#d9534f' : '#1aad19'};`
-      }
-    },
-    /**
-     * @brief 遥控指令文字
-     * @note  `speed` 属性是打包指令 (见 app/utils/control.js 的编码说明):
-     *        0=停止, ±0.2~0.8=前进/后退, ±1.2~1.8=左转/右转
-     */
-    moveText() {
-      const v = Number(this.motor.speed) || 0
-      const a = Math.abs(v)
-      if (a < 0.05) return '停止'
-      const level = Math.round((a > 1.0 ? a - 1.0 : a) * 100)
-      let name = ''
-      if (a <= 1.0) name = v > 0 ? '前进' : '后退'
-      else name = v > 0 ? '左转' : '右转'
-      return `${name} ${level}%`
-    },
-    /**
-     * @brief 心跳文字: 链路有多稳
-     * @note  依赖 _tick (每秒自增) 和 _lastDataAt 才能定时刷新
-     */
-    heartbeatText() {
-      if (!this._lastDataAt) return '无数据'
-      const age = Date.now() - this._lastDataAt
-      if (age > 1000) return (age / 1000).toFixed(1) + 's'
-      return this._maxGap + 'ms'
-    },
-    /**
-     * @brief 数据延迟文字
-     * @note  最新采样点的平台时间戳与平台当前时间的差值, 用来判断"曲线跟不跟手"
-     */
-    latencyText() {
-      if (this.pitchLatency === null || this.pitchLatency === undefined) return '--'
-      return this.pitchLatency + 'ms'
-    },
-    /**
-     * @brief 平台时钟与手机本地时钟的偏差文字
-     * @note  正数 = 平台比手机快 (手机本地时钟慢了), 这正是"车动了要好几秒
-     *        才看到变化"的元凶 —— 查询窗口必须以平台时间为准。
-     *        ⚠ 偏差值必须放在 data 里 (skewMs), 直接在 computed 里调
-     *        getServerSkewMs() 的话没有响应式依赖, 计算结果会被缓存住不更新
-     */
     skewText() {
       if (!this.skewMs) return '--'
       return (this.skewMs > 0 ? '+' : '') + (this.skewMs / 1000).toFixed(1) + 's'
     }
   },
   onShow() {
-    this.deviceId = (getConfig().productId || '') + '/' + (getConfig().deviceName || '')
     this._unsubState = oneApi.onState((s) => { this.state = s })
-    
-    // 常规属性轮询: 200ms 拉一次最新值
-    this._pollTick = setInterval(() => this._poll(), 200)
-    this._poll()
+    WHICH.forEach(w => { this.cars[w].ble = bleConnected(w) })
+    this._unsubBle = onBleState((w, v) => { this.cars[w].ble = v })
+    this._unsubPitch = onPitch((w, v) => this._onBlePitch(w, v))
 
-    // 俯仰角高速通道: 120ms 拉一次属性历史 (一次拿回一批采样点)
-    this._pitchTick = setInterval(() => this._pollPitch(), PITCH_POLL_MS)
-    this._pollPitch()
-    
-    // 启动绘制循环
-    this._startDrawLoop()
-
-    // 每秒心跳计时器: 让"心跳"读数每秒刷新一次 (数据断了能看到秒数往上跳)
-    this._beatTick = setInterval(() => { this._tick++ }, 1000)
-
-    // 初始化 Canvas
+    /* 常规属性: 两车轮流, 每车约 400ms 一次 */
+    this._pollIdx = 0
+    this._busy = {}   // 每车 pitch 历史请求是否在途
+    this._pollTick = setInterval(() => this._poll(WHICH[this._pollIdx++ % 2]), 200)
+    /* pitch 高速通道: 两车各 PITCH_POLL_MS 一次 (蓝牙连着的车跳过) */
+    this._pitchTick = setInterval(() => WHICH.forEach(w => this._pollPitch(w)), PITCH_POLL_MS)
+    this._redrawTick = setInterval(() => this._redraw(), REDRAW_MS)
+    this._beatTick = setInterval(() => { this.tick++ }, 1000)
     this.$nextTick(() => this._initCanvas())
   },
-  onUnload() {
-    if (this._unsubState) this._unsubState()
-    if (this._pollTick) clearInterval(this._pollTick)
-    if (this._pitchTick) clearInterval(this._pitchTick)
-    if (this._redrawTick) clearInterval(this._redrawTick)
-    if (this._beatTick) clearInterval(this._beatTick)
-    /* 画布上下文在页面隐藏后可能失效, 下次 onShow 重新建 */
-    this.painter = null
-    this._canvasPending = false
-  },
-  onHide() {
-    if (this._pollTick) clearInterval(this._pollTick)
-    if (this._pitchTick) clearInterval(this._pitchTick)
-    if (this._redrawTick) clearInterval(this._redrawTick)
-    if (this._beatTick) clearInterval(this._beatTick)
-    this.painter = null
-    this._canvasPending = false
-  },
+  onHide() { this._stop() },
+  onUnload() { this._stop() },
   methods: {
+    /** 停掉所有定时器和订阅 (画布上下文页面隐藏后可能失效, 下次 onShow 重建) */
+    _stop() {
+      if (this._unsubState) { this._unsubState(); this._unsubState = null }
+      if (this._unsubBle) { this._unsubBle(); this._unsubBle = null }
+      if (this._unsubPitch) { this._unsubPitch(); this._unsubPitch = null }
+      ;['_pollTick', '_pitchTick', '_redrawTick', '_beatTick'].forEach(k => {
+        if (this[k]) { clearInterval(this[k]); this[k] = null }
+      })
+      this.painter = null
+      this._canvasPending = false
+    },
+
+    goConnect() { uni.navigateTo({ url: '/pages/connect/connect' }) },
+    goParams()  { uni.navigateTo({ url: '/pages/params/params' }) },
+    goTrim()    { uni.navigateTo({ url: '/pages/trim/trim' }) },
+    onTouchStart() { this.isDrawing = true },
+    onTouchEnd()   { this.isDrawing = false },
+
+    fmt(v, dec) {
+      if (v === null || v === undefined || Number.isNaN(v)) return '--'
+      return Number(v).toFixed(dec)
+    },
+
+    /** 链路文字: 蓝牙 / OneNet / 离线 (3 秒没数据算离线) */
+    linkText(w) {
+      void this.tick
+      const c = this.cars[w]
+      if (c.ble) return '蓝牙'
+      if (c.lastAt && Date.now() - c.lastAt < 3000) return 'OneNet'
+      return '离线'
+    },
+    linkClass(w) {
+      const t = this.linkText(w)
+      return t === '蓝牙' ? 'lk-ble' : (t === 'OneNet' ? 'lk-net' : 'lk-off')
+    },
+    /** 数据间隔: 正常时显示最近 3 秒最大间隔, 断流超过 1 秒显示已断开的秒数 */
+    beatText(w) {
+      void this.tick
+      const c = this.cars[w]
+      if (!c.lastAt) return '无数据'
+      const age = Date.now() - c.lastAt
+      if (age > 1000) return (age / 1000).toFixed(1) + 's'
+      return c.maxGap + 'ms'
+    },
+    latencyText(w) {
+      const c = this.cars[w]
+      if (c.ble) return '蓝牙直连'
+      return c.latency === null ? '--' : c.latency + 'ms'
+    },
+    poseClass(w) {
+      const p = Math.abs(this.cars[w].pose.pitch || 0)
+      if (p > 20) return 'pose-warn'
+      if (p > 10) return 'pose-mid'
+      return ''
+    },
+    motorBarStyle(w, k) {
+      const v = this.cars[w].motor[k] || 0
+      const pct = Math.max(0, Math.min(100, Math.abs(v)))
+      return `width: ${pct}%; background: ${v < 0 ? '#d9534f' : COLORS[w]};`
+    },
+    /**
+     * @brief 遥控指令文字 (speed 编码: 0 停, ±0.2~0.8 前进/后退, ±1.2~1.8 左转/右转)
+     */
+    moveText(w) {
+      const v = Number(this.cars[w].motor.speed) || 0
+      const a = Math.abs(v)
+      if (a < 0.05) return '停止'
+      const level = Math.round((a > 1.0 ? a - 1.0 : a) * 100)
+      const name = a <= 1.0 ? (v > 0 ? '前进' : '后退') : (v > 0 ? '左转' : '右转')
+      return `${name} ${level}%`
+    },
+
+    /** 记录一次数据到达 (统计最近 3 秒最大间隔, 断流超过 1 秒不计入) */
+    _bumpSeen(w) {
+      const c = this.cars[w]
+      const now = Date.now()
+      if (c.lastAt) {
+        const gap = Math.min(now - c.lastAt, 1000)
+        if (!c.maxGap || now - c.maxGapAt > 3000 || gap > c.maxGap) {
+          c.maxGap = gap
+          c.maxGapAt = now
+        }
+      }
+      c.lastAt = now
+    },
+
+    /**
+     * @brief 往一辆车的曲线里并入新点
+     * @param w   'main' | 'sub'
+     * @param pts 新点 [{ t, v }] (升序)
+     * @param src 时间基准 'ble' | 'net'; 与已有序列不同时清空重来
+     */
+    _mergeSeries(w, pts, src) {
+      const c = this.cars[w]
+      const merged = c.src === src ? c.series.slice() : []
+      c.src = src
+      const seen = new Set(merged.map(p => p.t))
+      pts.forEach(p => { if (!seen.has(p.t)) { seen.add(p.t); merged.push(p) } })
+      merged.sort((a, b) => a.t - b.t)
+      const newest = merged[merged.length - 1].t
+      const keep = merged.filter(p => p.t >= newest - PITCH_WINDOW_MS)
+      c.series = keep.slice(Math.max(0, keep.length - MAX_POINTS))
+      c.pose.pitch = c.series[c.series.length - 1].v
+    },
+
+    /** 蓝牙 pitch 通知 → 曲线 (时间戳用手机本地时钟) */
+    _onBlePitch(w, v) {
+      this._mergeSeries(w, [{ t: Date.now(), v }], 'ble')
+      this._bumpSeen(w)
+    },
     /**
      * @brief 初始化绘图上下文
-     * @note  H5 端: 直接用 DOM 里的 <canvas> 取 2d 上下文
-     *        App/小程序端: 逻辑层没有 DOM, 只能用 uni.createCanvasContext 命令式 API
+     * @note  H5: uni-app 把 <canvas canvas-id> 渲染成 canvas.uni-canvas-canvas (不保留 canvas-id), 按 class 取 2d 上下文;
+     *        App/小程序: 逻辑层没有 DOM, 用 uni.createCanvasContext, 尺寸靠节点查询 (CSS 像素)
      */
     _initCanvas() {
       if (this.painter) return
       // #ifdef H5
-      /* ⚠ uni-app 的 H5 端会把 <canvas canvas-id="xxx"> 渲染成
-       *   <canvas class="uni-canvas-canvas">, **不会保留 canvas-id 属性**,
-       *   所以 document.querySelector('canvas[canvas-id="..."]') 永远取不到,
-       *   表现就是曲线框空白。这里按 class 找, 兜底再取第一个 canvas。 */
       const canvas = document.querySelector('canvas.uni-canvas-canvas') ||
                      document.querySelector('canvas')
       if (canvas) {
         const ctx = canvas.getContext('2d')
-        /* canvas.width 是设备像素 (2x), ctx.scale(2,2) 后绘图用 CSS 像素,
-         * 所以 _cssW/_cssH 存的是 CSS 尺寸 (绘制坐标不用除以 2) */
         const w = canvas.offsetWidth || 300
         const h = canvas.offsetHeight || 150
         canvas.width = w * 2
@@ -366,7 +392,6 @@ export default {
       }
       // #endif
       // #ifndef H5
-      /* App / 小程序端: 用 uni 的画布命令 API, 尺寸靠节点查询拿到 (CSS 像素) */
       if (this._canvasPending) return
       this._canvasPending = true
       uni.createSelectorQuery()
@@ -374,7 +399,6 @@ export default {
         .boundingClientRect((rect) => {
           this._canvasPending = false
           if (!rect || !rect.width || !rect.height) {
-            /* 查不到节点尺寸时兜底: 用窗口宽度和 rpx 换算估算 */
             const info = uni.getSystemInfoSync()
             this._cssW = info.windowWidth - uni.upx2px(80)
             this._cssH = uni.upx2px(300)
@@ -387,70 +411,45 @@ export default {
         .exec()
       // #endif
     },
-    
-    /**
-     * @brief 启动重绘循环
-     * @note  用 setInterval 而不是 requestAnimationFrame:
-     *        App 端逻辑层没有 DOM, rAF / document 都是 undefined, 调用会抛
-     *        "ReferenceError: requestAnimationFrame is not defined"。
-     */
-    _startDrawLoop() {
-      if (this._redrawTick) clearInterval(this._redrawTick)
-      this._redrawTick = setInterval(() => this._redraw(), REDRAW_MS)
-    },
-    
-    /**
-     * @brief 重绘一次曲线 (数据没变就不画, 减少跨层通信)
-     */
+
+    /** 重绘一次曲线 (两车数据都没变就不画, App 端每次 draw 都要跨层通信) */
     _redraw() {
-      /* canvas 可能在页面切换后才渲染出来, 这里兜底再取一次
-       * (App 端取尺寸是异步的, 没拿到之前不重复发起查询) */
       if (!this.painter) {
         if (!this._canvasPending) this._initCanvas()
         return
       }
-      /* ⚠ 判断条件要同时看两个数组:
-       *   pitchSeries  = 高速通道 (属性历史接口) 的点, 带时间戳, 是主力
-       *   pitchHistory = 高速通道不通时的兜底 (最新值轮询), 元素少
-       * 早期只判 pitchHistory.length > 1, 而高速通道一直正常 →
-       * pitchHistory 永远只有 1 个元素 → 曲线永远不画 (空白框)。 */
-      if (this.pitchSeries.length <= 1 && this.pitchHistory.length <= 1) return
-      /* 数据指纹: 数据没变就不重复画 (App 端每次 draw 都要跨层通信, 很贵) */
-      const series = this.pitchSeries
-      let key
-      if (series.length > 1) {
-        key = 's' + series.length + ':' + series[series.length - 1].t
-      } else if (this.pitchHistory.length > 1) {
-        key = 'h' + this.pitchHistory.length + ':' + this.pitchHistory[this.pitchHistory.length - 1]
-      } else {
-        return
-      }
+      const key = WHICH.map(w => {
+        const s = this.cars[w].series
+        return s.length + ':' + (s.length ? s[s.length - 1].t : 0)
+      }).join('|')
       if (key === this._lastDrawKey) return
       this._lastDrawKey = key
       this._drawChart()
     },
-    
+
+    /**
+     * @brief 画两车 pitch 曲线 (主车绿, 副车蓝)
+     * @note  每条曲线以自己的最新点为右端、往左铺 PITCH_WINDOW_MS:
+     *        蓝牙点用手机时钟, 网络点用平台时钟, 两者不对齐
+     */
     _drawChart() {
       const p = this.painter
       if (!p) return
-      
-      /* 绘图坐标统一用 CSS 像素 */
       const w = this._cssW || 300
       const h = this._cssH || 150
       const padding = 10
       const chartW = w - padding * 2
       const chartH = h - padding * 2
-      
-      // 清空画布
+      const zeroY = padding + chartH / 2
+      const scaleY = chartH / (PITCH_RANGE * 2)
+
       p.fill('#fafafa')
       p.fillRect(0, 0, w, h)
-      
-      // 画网格线
+
+      /* 水平网格 */
       p.stroke('#e0e0e0')
       p.width(0.5)
       p.dash([4, 4])
-      
-      // 水平网格
       for (let i = 0; i <= 4; i++) {
         const y = padding + (chartH / 4) * i
         p.beginPath()
@@ -458,213 +457,100 @@ export default {
         p.lineTo(w - padding, y)
         p.strokePath()
       }
-      
-      // 零线
+
+      /* 零线 */
       p.stroke('#888')
       p.width(1)
       p.dash([])
       p.beginPath()
-      const zeroY = padding + chartH / 2
       p.moveTo(padding, zeroY)
       p.lineTo(w - padding, zeroY)
       p.strokePath()
-      
-      // 画折线
-      /* 高速通道的点带时间戳 (ms), 按**时间轴**摆位置:
-       * 这样即使两次拉取之间漏了几个点, 曲线的疏密也能反映真实采样密度。 */
-      const series = this.pitchSeries
-      const points = series.length > 1 ? series.map(p2 => p2.v) : this.pitchHistory
-      if (points.length < 2) return
-      
-      p.stroke('#1aad19')
-      p.width(2)
-      p.dash([])
-      p.beginPath()
-      
-      const scaleY = chartH / (PITCH_RANGE * 2)
-      /* 时间轴: 以最新点为右端, 往左铺 PITCH_WINDOW_MS 毫秒 */
-      let tMin = 0, tMax = 1
-      if (series.length > 1) {
-        tMax = series[series.length - 1].t
-        tMin = tMax - PITCH_WINDOW_MS
-      }
-      
-      const xOf = (i) => {
-        if (series.length > 1) {
-          const t = series[i].t
-          const ratio = (t - tMin) / (tMax - tMin)
-          return padding + ratio * chartW
-        }
-        /* 没有时间戳的老数据 (兜底): 按序号均分 */
-        return padding + i * (chartW / (points.length - 1))
-      }
-      
-      points.forEach((v, i) => {
-        const x = xOf(i)
-        const y = zeroY - v * scaleY
-        if (i === 0) {
-          p.moveTo(x, y)
-        } else {
-          p.lineTo(x, y)
-        }
+
+      WHICH.forEach(car => {
+        const s = this.cars[car].series
+        if (s.length < 2) return
+        const tMax = s[s.length - 1].t
+        const tMin = tMax - PITCH_WINDOW_MS
+        const xOf = t => padding + (t - tMin) / PITCH_WINDOW_MS * chartW
+        p.stroke(COLORS[car])
+        p.width(2)
+        p.beginPath()
+        s.forEach((pt, i) => {
+          const y = zeroY - pt.v * scaleY
+          if (i === 0) p.moveTo(xOf(pt.t), y)
+          else p.lineTo(xOf(pt.t), y)
+        })
+        p.strokePath()
+        p.fill(COLORS[car])
+        p.dot(xOf(tMax), zeroY - s[s.length - 1].v * scaleY, 3)
       })
-      p.strokePath()
-      
-      // 画数据点
-      p.fill('#1aad19')
-      points.forEach((v, i) => {
-        p.dot(xOf(i), zeroY - v * scaleY, 3)
-      })
-      
-      // 显示当前值
-      const currentPitch = points[points.length - 1]
-      p.fill('#333')
-      p.text(currentPitch.toFixed(1) + '°', w - padding - 5, padding + 25, 24, 'right')
-      
-      // App/小程序端: 命令要 draw() 才真正上屏
+
       p.flush()
     },
 
     /**
-     * @brief 拉一次俯仰角历史 (高速通道)
-     * @note  平台的属性历史接口一次最多返回 10 个点 (倒序),
-     *        设备端 20Hz 上报 → 每 120ms 拉一次就能攒出很密的曲线。
-     * @note  返回的点带毫秒时间戳, 用来 (1) 排序去重 (2) 算数据延迟
+     * @brief 拉一辆车的 pitch 属性历史 (高速通道, 一次最多 10 个点, 倒序)
+     * @param w 'main' | 'sub'; 该车蓝牙连着时跳过 (曲线走蓝牙通知)
+     * @note  查询窗口以平台时间为基准, 两端各留 PITCH_MARGIN_MS, 手机时钟偏差不影响
      */
-    async _pollPitch() {
-      if (oneApi.getState().state !== 'ready') return
+    async _pollPitch(w) {
+      const c = this.cars[w]
+      if (c.ble || oneApi.getState().state !== 'ready') return
+      if (this._busy[w]) return
+      this._busy[w] = true
       const t0 = Date.now()
-      /* 时间窗口基准:
-       *   优先用**平台服务器时间** (HTTP 响应头里的 Date), 没有就用上一次
-       *   拿到的最新采样点的时间戳 (那也是平台时间), 再没有才用本地时间。
-       *   这样手机本地时钟偏几秒甚至几十秒, 都不会查成"过去的数据"。 */
-      const anchor = Math.max(this._lastPointT || 0, getServerNowMs())
-      const endTime   = anchor + PITCH_MARGIN_MS
-      const startTime = anchor - PITCH_WINDOW_MS - PITCH_MARGIN_MS
+      const anchor = Math.max(c.lastPointT || 0, getServerNowMs())
       try {
-        const res = await queryDevicePropertyHistory('pitch', startTime, endTime)
+        const res = await queryDevicePropertyHistory('pitch',
+          anchor - PITCH_WINDOW_MS - PITCH_MARGIN_MS, anchor + PITCH_MARGIN_MS, w)
         this.rttMs = Date.now() - t0
-        /* 时钟偏差放到 data 里 (而不是在 computed 里直接调),
-         * 这样它才是响应式的, 读数才会随每次请求更新 */
         this.skewMs = getServerSkewMs()
-        if (!res || res.code !== 0 || !res.data || !Array.isArray(res.data.list)) return
-        const list = res.data.list
-        if (!list.length) return
-
-        /* 平台返回的是倒序 (最新在前), 这里转成升序再合并 */
+        const list = res && res.code === 0 && res.data && Array.isArray(res.data.list) ? res.data.list : []
         const pts = list
-          .map(p => ({ t: Number(p.time), v: Number(p.value) }))
-          .filter(p => !isNaN(p.t) && !isNaN(p.v))
+          .map(x => ({ t: Number(x.time), v: Number(x.value) }))
+          .filter(x => !isNaN(x.t) && !isNaN(x.v))
           .sort((a, b) => a.t - b.t)
-
-        /* 跟已有序列合并 (按时间戳去重) */
-        const merged = this.pitchSeries.slice()
-        const seen = new Set(merged.map(p => p.t))
-        for (const p of pts) {
-          if (!seen.has(p.t)) {
-            seen.add(p.t)
-            merged.push(p)
-          }
+        /* 蓝牙可能在请求期间连上, 此时丢弃网络点 */
+        if (pts.length && !c.ble) {
+          this._mergeSeries(w, pts, 'net')
+          c.lastPointT = c.series[c.series.length - 1].t
+          c.latency = Math.max(0, getServerNowMs() - c.lastPointT)
+          this._bumpSeen(w)
         }
-        merged.sort((a, b) => a.t - b.t)
-        /* 只保留最近 PITCH_WINDOW_MS 毫秒的点, 最多 MAX_POINTS 个 */
-        const newest = merged[merged.length - 1].t
-        const keep = merged.filter(p => p.t >= newest - PITCH_WINDOW_MS)
-        this.pitchSeries = keep.slice(Math.max(0, keep.length - MAX_POINTS))
-
-        /* 最新点 → 姿态显示 + 延迟 */
-        const last = this.pitchSeries[this.pitchSeries.length - 1]
-        this._lastPointT = last.t
-        this.pose.pitch = last.v
-        /* 延迟 = 平台当前时间 − 最新采样点的时间戳 (用平台时间算, 不受手机时钟影响) */
-        this.pitchLatency = Math.max(0, getServerNowMs() - last.t)
-        this._bumpSeen()
-        this.msgCount++
       } catch (e) {
-        /* 静默失败: 历史接口不通时, 页面还有常规轮询兜底 */
+        /* 静默失败: 常规轮询仍会更新其它读数 */
       }
+      this._busy[w] = false
     },
-    
-    async _poll() {
+
+    /**
+     * @brief 拉一辆车的最新属性 (姿态 / 电机 / 遥控指令 / 编码器)
+     * @param w 'main' | 'sub'
+     * @note  pitch 只在该车曲线为空时才用这里的值 (曲线有数据时以曲线最新点为准)
+     */
+    async _poll(w) {
       if (oneApi.getState().state !== 'ready') return
+      const c = this.cars[w]
       try {
-        const res = await queryDeviceProperty()
-        /* 顺带更新时钟偏差 (这个接口也会拿到平台的 Date 响应头) */
+        const res = await queryDeviceProperty(w)
         this.skewMs = getServerSkewMs()
-        /* 平台返回: { code:0, data:[{identifier, value, time, ...}], msg:'succ' } */
-        if (res && res.code === 0 && Array.isArray(res.data)) {
-          const obj = {}
-          res.data.forEach(p => { obj[p.identifier] = p.value })
-          this._bumpSeen()
-          this.msgCount++
-          if (obj.pitch   !== undefined) {
-            const newPitch = Number(obj.pitch)
-            /* 高速通道有数据时用它 (更新更快), 没有才退回这里的最新值 */
-            if (this.pitchSeries.length === 0) {
-              this.pose.pitch = newPitch
-              this.pitchHistory.push(newPitch)
-              if (this.pitchHistory.length > MAX_POINTS) {
-                this.pitchHistory.shift()
-              }
-            }
-          }
-          if (obj.roll    !== undefined) this.pose.roll   = Number(obj.roll)
-          if (obj.yaw     !== undefined) this.pose.yaw    = Number(obj.yaw)
-          if (obj.gz      !== undefined) this.pose.gz     = Number(obj.gz)
-          if (obj.motor_l !== undefined) this.motor.left  = Number(obj.motor_l)
-          if (obj.motor_r !== undefined) this.motor.right = Number(obj.motor_r)
-          if (obj.speed   !== undefined) this.motor.speed = Number(obj.speed)
-          if (obj.enc_l   !== undefined) this.motor.enc_l = Number(obj.enc_l)
-          if (obj.enc_r   !== undefined) this.motor.enc_r = Number(obj.enc_r)
-          if (obj.state)                 this.deviceState = String(obj.state)
-        }
+        if (!res || res.code !== 0 || !Array.isArray(res.data)) return
+        const o = {}
+        res.data.forEach(x => { o[x.identifier] = x.value })
+        if (!c.ble) this._bumpSeen(w)
+        if (o.pitch !== undefined && !c.series.length) c.pose.pitch = Number(o.pitch)
+        if (o.roll    !== undefined) c.pose.roll   = Number(o.roll)
+        if (o.yaw     !== undefined) c.pose.yaw    = Number(o.yaw)
+        if (o.gz      !== undefined) c.pose.gz     = Number(o.gz)
+        if (o.motor_l !== undefined) c.motor.left  = Number(o.motor_l)
+        if (o.motor_r !== undefined) c.motor.right = Number(o.motor_r)
+        if (o.speed   !== undefined) c.motor.speed = Number(o.speed)
+        if (o.enc_l   !== undefined) c.motor.enc_l = Number(o.enc_l)
+        if (o.enc_r   !== undefined) c.motor.enc_r = Number(o.enc_r)
       } catch (e) {
-        // 静默失败
+        /* 静默失败 */
       }
-    },
-
-    _bumpSeen() {
-      /* 记录最后一次收到平台数据的时间, 供"心跳"显示用 */
-      const now = Date.now()
-      if (this._lastDataAt) {
-        /* 间隔超过 1 秒就算"掉线"了 (那种情况由上面的 age 读数负责显示),
-         * 不计入"最大间隔"统计, 否则恢复后的第一帧会把掉线时长当成抖动值 */
-        const gap = Math.min(now - this._lastDataAt, 1000)
-        /* 统计最近 3 秒内的最大到达间隔:
-         *   正常链路 ~200ms 上下, 卡顿时会明显变大;
-         *   窗口只用 3 秒, 断线恢复后读数很快回到正常值, 不会一直挂着故障值 */
-        if (!this._maxGap || now - this._maxGapAt > 3000) {
-          this._maxGap = gap
-          this._maxGapAt = now
-        } else if (gap > this._maxGap) {
-          this._maxGap = gap
-          this._maxGapAt = now
-        }
-      }
-      this._lastDataAt = now
-    },
-
-    fmt(v, dec) {
-      if (v === null || v === undefined || Number.isNaN(v)) return '--'
-      return Number(v).toFixed(dec)
-    },
-
-    onTouchStart() {
-      this.isDrawing = true
-    },
-
-    onTouchEnd() {
-      this.isDrawing = false
-    },
-
-
-    goParams() {
-      uni.navigateTo({ url: '/pages/params/params' })
-    },
-
-    /** 跳到配平标定页 (普通页面, 不在 tabBar 里) */
-    goTrim() {
-      uni.navigateTo({ url: '/pages/trim/trim' })
     }
   }
 }
@@ -705,9 +591,23 @@ export default {
 .conn-idle .dot { background: #aaa; }
 .conn-idle { color: #888; }
 
-.last-seen {
-  font-size: 24rpx;
-  color: #888;
+.avatar {
+  width: 60rpx;
+  height: 60rpx;
+  margin-left: 20rpx;
+  border-radius: 50%;
+  background: #1aad19;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.avatar-ble { background: #1677ff; }
+
+.avatar-text {
+  color: #fff;
+  font-size: 26rpx;
+  font-weight: 600;
 }
 
 .card {
@@ -763,41 +663,8 @@ export default {
   color: #888;
   font-family: monospace;
 }
-
-.pose-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16rpx 20rpx;
-  margin-bottom: 24rpx;
-}
-
-.pose-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding: 8rpx 0;
-}
-
-.pose-label { font-size: 26rpx; color: #888; }
-.pose-value { font-size: 34rpx; font-weight: 600; color: #333; font-family: monospace; }
 .pose-mid { color: #f0ad4e; }
 .pose-warn { color: #d9534f; }
-
-.motor-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20rpx;
-  margin-bottom: 20rpx;
-}
-
-.motor-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 8rpx;
-}
-
-.motor-label { font-size: 24rpx; color: #888; }
-.motor-value { font-size: 30rpx; font-weight: 600; color: #333; font-family: monospace; }
 
 .motor-bar {
   width: 100%;
@@ -813,16 +680,6 @@ export default {
   border-radius: 6rpx;
   transition: width 0.2s, background 0.2s;
 }
-
-.row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12rpx 0;
-}
-
-.label { font-size: 26rpx; color: #888; }
-.value { font-size: 26rpx; color: #333; }
 
 /* PID 样式 */
 .pid-item {
@@ -870,4 +727,67 @@ export default {
   color: #666;
   border: 1rpx solid #ddd;
 }
+.legend {
+  display: flex;
+  gap: 32rpx;
+  margin-bottom: 12rpx;
+  font-size: 24rpx;
+  color: #555;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+}
+
+.legend-dot {
+  width: 20rpx;
+  height: 6rpx;
+  border-radius: 3rpx;
+  margin-right: 10rpx;
+}
+
+.lg-main { background: #1aad19; }
+.lg-sub { background: #1677ff; }
+
+.t-row {
+  display: flex;
+  align-items: center;
+  padding: 12rpx 0;
+  border-bottom: 1rpx solid #f3f3f3;
+}
+
+.t-row:last-child { border-bottom: none; }
+
+.t-head { padding-top: 0; }
+
+.t-name {
+  width: 150rpx;
+  font-size: 26rpx;
+  color: #888;
+}
+
+.t-val {
+  flex: 1;
+  font-size: 26rpx;
+  color: #333;
+  font-family: monospace;
+  text-align: center;
+}
+
+.t-main { color: #1aad19; font-weight: 600; font-family: inherit; }
+.t-sub { color: #1677ff; font-weight: 600; font-family: inherit; }
+.t-big { font-size: 32rpx; font-weight: 600; }
+.t-small { font-size: 22rpx; }
+
+.t-bar-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 12rpx;
+}
+
+.lk-ble { color: #1677ff; }
+.lk-net { color: #1aad19; }
+.lk-off { color: #aaa; }
 </style>

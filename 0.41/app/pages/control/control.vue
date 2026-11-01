@@ -11,15 +11,26 @@
       </view>
     </view>
 
+    <!-- 控制方式: 合体 (对接后两车同时控制) / 分体 (主车、副车分别控制) -->
+    <view class="speed-card">
+      <view class="card-title">控制方式</view>
+      <view class="speed-options">
+        <view class="speed-pill" :class="{ active: target === 'both', disabled: !docked }" @click="onTarget('both')">合体</view>
+        <view class="speed-pill" :class="{ active: target === 'main' }" @click="onTarget('main')">主车</view>
+        <view class="speed-pill" :class="{ active: target === 'sub' }" @click="onTarget('sub')">副车</view>
+      </view>
+      <text class="mode-hint">{{ modeHint }}</text>
+    </view>
+
     <!-- 急停 / 起立 / 配平 (移到顶部) -->
     <view class="action-bar">
       <view class="big-btn btn-stop" @click="onEmergencyStop">
         <text>急停</text>
       </view>
-      <view class="big-btn btn-stand" @click="onStand">
+      <view v-if="target !== 'both'" class="big-btn btn-stand" @click="onStand">
         <text>起立</text>
       </view>
-      <view class="big-btn btn-calib" @click="onCalibrate">
+      <view v-if="target !== 'both'" class="big-btn btn-calib" @click="onCalibrate">
         <text>配平</text>
       </view>
     </view>
@@ -46,6 +57,7 @@
       <view class="pad">
         <!-- 左转 -->
         <view
+          v-if="target !== 'both'"
           class="pad-btn pad-btn-left"
           :class="{ active: held === 'left' }"
           @touchstart="onDown('left')"
@@ -76,6 +88,7 @@
 
         <!-- 右转 -->
         <view
+          v-if="target !== 'both'"
           class="pad-btn pad-btn-right"
           :class="{ active: held === 'right' }"
           @touchstart="onDown('right')"
@@ -106,14 +119,14 @@
 
         <!-- 中央提示 -->
         <view class="pad-center">
-          <text class="pad-center-text">原地转向</text>
+          <text class="pad-center-text">{{ target === 'both' ? '合体行进' : '原地转向' }}</text>
           <text class="pad-center-sub">档位: {{ speedLabel }}</text>
         </view>
       </view>
     </view>
 
-    <!-- 对接模块 -->
-    <view class="pad-card">
+    <!-- 对接模块 (只有主车有) -->
+    <view class="pad-card" v-if="target !== 'sub'">
       <view class="card-title">对接模块</view>
 
       <!-- 执行对接按钮 -->
@@ -211,7 +224,9 @@ export default {
         { label: '快', value: 60 },
         { label: '极速', value: 80 }
       ],
-      _cfg: { productId: '', deviceName: '' },
+      _cfg: { productId: '', deviceName: '', subDeviceName: '' },
+      /* 控制对象: 'both' 合体 / 'main' 主车 / 'sub' 副车 */
+      target: controller.target,
       tip: '',
       // RGBW 灯
       ledState: {
@@ -262,12 +277,32 @@ export default {
       return s ? `${s.label} ${s.value}%` : ''
     },
     devicePath() {
-      return '$sys/' + (this._cfg || {}).productId + '/' + (this._cfg || {}).deviceName
+      const c = this._cfg || {}
+      const name = this.target === 'both' ? `${c.deviceName} + ${c.subDeviceName}`
+                 : this.target === 'sub'  ? c.subDeviceName : c.deviceName
+      return '$sys/' + c.productId + '/' + name
+    },
+    /** 对接成功: 电磁铁吸合 + 两个微动开关都压下 */
+    docked() {
+      return this.magnetState.on && this.switchState.sw1 && this.switchState.sw2
+    },
+    modeHint() {
+      if (this.target === 'both') return '合体: 两车同时收指令, 关平衡直驱轮子 (暂不支持转向)'
+      if (this.target === 'sub') return '分体: 只控制副车'
+      return this.docked ? '已对接, 可切到合体' : '分体: 只控制主车'
+    }
+  },
+  watch: {
+    /* 对接成功自动进合体; 取消对接自动回分体 (主车) */
+    docked(v) {
+      if (v && this.target !== 'both') this._applyTarget('both')
+      if (!v && this.target === 'both') this._applyTarget('main')
     }
   },
   onShow() {
     const c = getConfig()
-    this._cfg = { productId: c.productId, deviceName: c.deviceName }
+    this._cfg = { productId: c.productId, deviceName: c.deviceName, subDeviceName: c.subDeviceName }
+    this.target = controller.target
     this._unsubState = oneApi.onState((s) => { this.state = s })
     this._startSwitchPoll()
   },
@@ -281,6 +316,28 @@ export default {
     this.held = null
   },
   methods: {
+    /**
+     * @brief 用户点控制方式
+     * @param {string} t 'both' | 'main' | 'sub'
+     */
+    onTarget(t) {
+      if (t === 'both' && !this.docked) {
+        this._showTip('还没对接成功, 不能合体')
+        return
+      }
+      this._applyTarget(t)
+    },
+    /**
+     * @brief 切换控制对象
+     * @note  进合体时给两车发急停 (关掉各自平衡), 之后方向键走车端开环直驱
+     */
+    _applyTarget(t) {
+      this.held = null
+      controller.setTarget(t)
+      this.target = t
+      if (t === 'both') controller.emergencyStop()
+      this._showTip(t === 'both' ? '合体控制' : t === 'sub' ? '控制副车' : '控制主车')
+    },
     onDown(dir) {
       this.held = dir
       controller.startMove(dir, this.speed)
@@ -407,18 +464,26 @@ export default {
     },
     async _fetchSwitch() {
       try {
-        const res = await queryDeviceProperty()
+        /* 对接状态 (电磁铁 / 微动开关) 只看主车; 灯/舵机跟当前控制的车 */
+        const res = await queryDeviceProperty('main')
         /* 平台返回: { code:0, data:[{identifier, value, ...}] } */
         if (res && res.code === 0 && Array.isArray(res.data)) {
           const props = {}
           res.data.forEach(item => { props[item.identifier] = item.value })
           this.switchState.sw1 = !!Number(props.sw1)
           this.switchState.sw2 = !!Number(props.sw2)
+          if (props.magnet_on !== undefined) this._syncFromDevice('magnet_on', props.magnet_on)
+          if (this.target === 'sub') {
+            const r2 = await queryDeviceProperty('sub')
+            if (!(r2 && r2.code === 0 && Array.isArray(r2.data))) return
+            Object.keys(props).forEach(k => delete props[k])
+            r2.data.forEach(item => { props[item.identifier] = item.value })
+          }
 
           /* 执行器状态以**车上的实际值**为准:
            * 电磁铁/灯可能被物理开关或上一轮会话改过,
            * App 瞎猜的话按钮显示的状态跟车上对不上。 */
-          const SYNC_KEYS = ['magnet_on', 'led_on', 'led_brightness', 'led_color', 'servo1_angle']
+          const SYNC_KEYS = ['led_on', 'led_brightness', 'led_color', 'servo1_angle']
           SYNC_KEYS.forEach(k => {
             if (props[k] !== undefined) this._syncFromDevice(k, props[k])
           })
@@ -625,6 +690,16 @@ export default {
   font-size: 22rpx;
   margin-top: 8rpx;
   color: #bbb;
+}
+
+.speed-pill.disabled {
+  opacity: 0.4;
+}
+.mode-hint {
+  display: block;
+  margin-top: 12rpx;
+  font-size: 22rpx;
+  color: #888;
 }
 
 /* 对接模块样式 */

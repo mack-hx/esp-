@@ -53,10 +53,6 @@
                 "text": "遥控"
             },
             {
-                "pagePath": "pages/connect/connect",
-                "text": "连接"
-            },
-            {
                 "pagePath": "pages/status/status",
                 "text": "状态"
             }

@@ -14,7 +14,6 @@
 | 产品 ID (product_id) | `6YlUqr9lue` |
 | 设备名 (device_name) | `balancing_dog` |
 | 设备级 AccessKey | `YlpFVXlONlMzTUNnMHRocTRXSG04SkZMbmVrdEdmQTI=` |
-| 项目 ID (project_id) | **选填**, 填不填平台都收 |
 | 接入协议 | MQTT |
 
 > AccessKey 用**设备级**那把 (跟 ESP32 端同一把)。开放接口
@@ -194,7 +193,6 @@ App 的方向键要同时表达"方向"和"档位", 但物模型里能写的属�
    - 产品 ID: `6YlUqr9lue`
    - 设备名: `balancing_dog`
    - AccessKey: 设备级那把 (见第 1 节)
-   - 项目 ID: 留空即可
 3. 点 "验证配置" → 算 token → 真拉一次设备属性, 通了才算就绪
 4. 浏览器刷新后 App 会自动重连 (配置存在 localStorage), 不用每次手点
 
