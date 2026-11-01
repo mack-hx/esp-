@@ -58,8 +58,8 @@
  * 生效上限取 param 表的 move_rpm_max, 本宏只是参数为 0 时的兜底 */
 #define BAL_MOVE_RPM_MAX      100.0f
 /* 目标轮速的斜坡 (rpm/s): 目标不跳变, 慢慢加上去, 免得一下子猛冲 */
-#define BAL_SPD_RAMP_UP       15.0f
-#define BAL_SPD_RAMP_DOWN     30.0f
+#define BAL_SPD_RAMP_UP       60.0f
+#define BAL_SPD_RAMP_DOWN     120.0f
 /* 速度环/位置环混合的权重刻度 (rpm): w = min(1, |斜坡后目标轮速| / 本值)
  * w=1 全由速度环给倾角, w=0 全由位置环给倾角 */
 #define BAL_POS_BLEND_RPM     5.0f
