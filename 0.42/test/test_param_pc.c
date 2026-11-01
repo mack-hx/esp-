@@ -89,8 +89,8 @@ static void test_defaults(void)
     CHECK(param_get_float(PARAM_PID_SPD_KP) <= 0.10f,
           "spd_kp 默认不该超过 0.10 (太大走起来会剧烈摇), 实际 %.3f",
           (double)param_get_float(PARAM_PID_SPD_KP));
-    CHECK(param_get_float(PARAM_PID_SPD_KI) <= 0.02f,
-          "spd_ki 默认不该超过 0.02 (太大容易积分饱和), 实际 %.3f",
+    CHECK(param_get_float(PARAM_PID_SPD_KI) <= 0.04f,
+          "spd_ki 默认不该超过 0.04 (太大容易积分饱和), 实际 %.3f",
           (double)param_get_float(PARAM_PID_SPD_KI));
     CHECK(near(param_get_float(PARAM_PID_SPD_KD),  0.0f, 1e-6f), "spd_kd 默认应 0");
     CHECK(near(param_get_float(PARAM_MOTOR_OUT_MAX), 60.0f, 1e-6f), "motor_max 默认应 60");

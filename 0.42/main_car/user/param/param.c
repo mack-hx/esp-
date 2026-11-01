@@ -25,7 +25,7 @@ static const char *TAG = "PARAM";
 #define NVS_KEY_VERSION "ver"   /* 表结构版本, 表变了就忽略旧数据 */
 #define NVS_KEY_STALE   "stale" /* 标记: 最近一次写参数来自旧版 App */
 #endif
-#define PARAM_DATA_VERSION  35  /* 每次增删参数就 +1
+#define PARAM_DATA_VERSION  36  /* 每次增删参数就 +1
                                  * 参数表的布局、默认值或单位一变就必须 +1,
                                  * 否则 NVS 里的旧 blob 会被当成新结构读出来。 */
 
@@ -50,12 +50,12 @@ const param_item_t g_param_items[] = {
       "角速度阻尼。⚠ 默认 0.4, 不要再加大: >1 会激起 8~12Hz 满幅打摆自激。"
       "车晃得停不下来就加, 出现高频嗡嗡声就减小" },
 
-    { PARAM_PID_SPD_KP, "spd_kp", "Speed Kp",   "",   0.06f,   0.0f,  200.0f,  0.01f, 2, PARAM_GRP_SPEED,
+    { PARAM_PID_SPD_KP, "spd_kp", "Speed Kp",   "",   0.08f,   0.0f,  200.0f,  0.01f, 2, PARAM_GRP_SPEED,
       "走多快 (°/rpm)。App 方向键就走这个环: 目标轮速 → 目标倾角 → "
       "平衡环 (平衡环全程不撒手)。调大走得快, 但目标倾角被限制在 4° 以内 "
       "(安全阀), 调太大只会让车左右猛摇。步进 0.01 —— 步进太粗的话 "
       "App 拖出来的中间值会被吸附掉 (比如想设 0.06 却被吸成 0)" },
-    { PARAM_PID_SPD_KI, "spd_ki", "Speed Ki",   "",   0.01f,   0.0f,  300.0f,  0.01f, 2, PARAM_GRP_SPEED,
+    { PARAM_PID_SPD_KI, "spd_ki", "Speed Ki",   "",   0.04f,   0.0f,  300.0f,  0.01f, 2, PARAM_GRP_SPEED,
       "消除稳态速度误差 (走不到目标速度时慢慢补倾角)。太大容易积分饱和, "
       "也会让车越走越歪。步进 0.01 (步进太粗的话中间值会被吸附掉)" },
     { PARAM_PID_SPD_KD, "spd_kd", "Speed Kd",   "",   0.0f,    0.0f,   30.0f,  0.01f, 2, PARAM_GRP_SPEED,
@@ -95,8 +95,8 @@ const param_item_t g_param_items[] = {
     { PARAM_SERVO_CENTER, "servo_c",  "Servo Center", "°", 80.0f,  30.0f,  120.0f, 1.0f, 0, PARAM_GRP_LIMIT,
       "舵机中心角。也是配平表的参考角 (补偿在这一档为 0)" },
 
-    { PARAM_MOVE_RPM_MAX, "move_rpm_max", "Move RPM Max", "rpm", 100.0f, 0.0f, 333.0f, 1.0f, 1, PARAM_GRP_LIMIT,
-      "App 方向键 100% 档位对应的目标轮速 (rpm)。本机轮子最高转速 333 rpm, 默认取 100 (约 30%); "
+    { PARAM_MOVE_RPM_MAX, "move_rpm_max", "Move RPM Max", "rpm", 120.0f, 0.0f, 333.0f, 1.0f, 1, PARAM_GRP_LIMIT,
+      "App 方向键 100% 档位对应的目标轮速 (rpm)。本机轮子最高转速 333 rpm, 默认取 120 (约 36%); "
       "再大目标倾角会顶到 4° 安全阀, 车会左右猛摇。0 = 用代码里的默认值" },
 
     { PARAM_WHEEL_DIA, "wheel_dia", "Wheel Diameter", "cm", 6.5f, 1.0f, 30.0f, 0.1f, 1, PARAM_GRP_LIMIT,

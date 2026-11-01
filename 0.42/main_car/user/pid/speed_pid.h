@@ -26,8 +26,8 @@
 #define SPD_PID_I_DECAY_TAU  3.0f
 
 /* 速度环内置默认增益 (°/rpm): param 表里 spd_kp / spd_ki 为 0 时用它兜底 */
-#define SPD_PID_KP_DEFAULT    0.06f
-#define SPD_PID_KI_DEFAULT    0.01f
+#define SPD_PID_KP_DEFAULT    0.08f
+#define SPD_PID_KI_DEFAULT    0.04f
 
 /**
  * @brief 初始化速度环 (从 param 表读增益 + 清积分)

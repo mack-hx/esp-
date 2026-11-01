@@ -65,3 +65,4 @@
 - 本地 `logs/` 只保留最近 3 天，更早的已在 git 历史里。
 - 不要读自己旧会话的 transcript；跨对话结论只写本文件。
 - 上下文护栏：`.cursor/hooks/context_budget.py`、`limit_verbose_output.py`；监控 `python3 scripts/ctx_check.py --daily`。
+- 11-01 提速：斜坡 150 rpm/s、spd_kp 0.08/ki 0.04、move_rpm_max 120、参数版本 36（参数已重置）。待真机验证：中/快/极速是否跟手、高档超调与松手回收；转向环（目标 120 实测约 70 rpm）尚未调。已知：test lqr 的 40deg 项在改动前就失败。

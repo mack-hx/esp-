@@ -2,7 +2,7 @@
  * @file paramDef.js
  * @brief 1:1 镜像 ESP32 端 param.c 的参数定义
  *
- * 数据来源: 0.42/user/param/param.c (PARAM_DATA_VERSION 35)
+ * 数据来源: 0.42/user/param/param.c (PARAM_DATA_VERSION 36)
  * 改了 param.c 就要同步这个文件, 否则 App 显示的滑块范围/默认值会跟车端对不上.
  *
  * 约定:
@@ -15,7 +15,7 @@
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 35
+export const PARAM_VER = 36
 
 export const PARAM_GROUPS = {
   0: { key: 'balance', label: '平衡环' },
@@ -37,9 +37,9 @@ export const PARAM_DEFS = [
   //    想设 0.06 → 0.0, 想设 0.3 → 0.5 —— App 上拖出来的中间值一个都设不进去
   //    (静默失效: 车端有兜底常量 0.06, 看起来"还能用", 但用户调不动)。
   //    step 只是"怎么吸附", 不影响参数表布局 → PARAM_VER 仍然是 14, 不用动。
-  { id: 3,  key: 'spd_kp',      label: 'Speed Kp',   unit: '',  def: 0.06,  min: 0,  max: 200,  step: 0.01, dec: 2, grp: 1,
+  { id: 3,  key: 'spd_kp',      label: 'Speed Kp',   unit: '',  def: 0.08,  min: 0,  max: 200,  step: 0.01, dec: 2, grp: 1,
     hint: '走多快 (°/rpm)。App 方向键走的就是这个环: 目标轮速 → 目标倾角 → 平衡环 (平衡环全程不撒手)。调大走得快, 但目标倾角被限制在 4° 以内 (安全阀), 调太大只会让车左右猛摇。步进 0.01 —— 步进太粗的话 App 拖出来的中间值会被吸附掉' },
-  { id: 4,  key: 'spd_ki',      label: 'Speed Ki',   unit: '',  def: 0.01,  min: 0,  max: 300,  step: 0.01, dec: 2, grp: 1,
+  { id: 4,  key: 'spd_ki',      label: 'Speed Ki',   unit: '',  def: 0.04,  min: 0,  max: 300,  step: 0.01, dec: 2, grp: 1,
     hint: '消除稳态速度误差 (走不到目标速度时慢慢补倾角)。太大容易积分饱和, 也会让车越走越歪。步进 0.01 (步进太粗的话中间值会被吸附掉)' },
   { id: 5,  key: 'spd_kd',      label: 'Speed Kd',   unit: '',  def: 0.0,   min: 0,  max: 30,   step: 0.01, dec: 2, grp: 1,
     hint: '速度变化阻尼。默认 0: 编码器量化台阶会让 D 项噪声很大。步进 0.01' },
@@ -65,8 +65,8 @@ export const PARAM_DEFS = [
     hint: '启动门控: 需要连续稳定这么久才真正输出。0=不等(不推荐)' },
   { id: 15, key: 'servo_c',     label: 'Servo Center',  unit: '°', def: 80, min: 30, max: 120, step: 1,   dec: 0, grp: 2,
     hint: '舵机中心角。也是配平表的参考角 (补偿在这一档为 0)' },
-  { id: 16, key: 'move_rpm_max',label: 'Move RPM Max',  unit: 'rpm', def: 100, min: 0, max: 333, step: 1, dec: 1, grp: 2,
-    hint: 'App 方向键 100% 档位对应的目标轮速 (rpm)。本机轮子最高转速 333 rpm, 默认取 100 (约 30%); 再大目标倾角会顶到 4° 安全阀, 车会左右猛摇。0 = 用代码里的默认值' },
+  { id: 16, key: 'move_rpm_max',label: 'Move RPM Max',  unit: 'rpm', def: 120, min: 0, max: 333, step: 1, dec: 1, grp: 2,
+    hint: 'App 方向键 100% 档位对应的目标轮速 (rpm)。本机轮子最高转速 333 rpm, 默认取 120 (约 36%); 再大目标倾角会顶到 4° 安全阀, 车会左右猛摇。0 = 用代码里的默认值' },
 
   // 里程计 / 位置环
   { id: 17, key: 'wheel_dia',   label: 'Wheel Diameter', unit: 'cm', def: 6.5, min: 1, max: 30, step: 0.1, dec: 1, grp: 2,
