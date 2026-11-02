@@ -162,12 +162,12 @@ export default {
       state: 'idle',
       servoMin: SERVO_MIN,   // 滑块下限 (°)
       servoMax: SERVO_MAX,   // 滑块上限 (°)
-      servoAngle: 80,        // 滑块上的目标舵机角 (°)
+      servoAngle: 100,       // 滑块上的目标舵机角 (°)
       curServo: 0,           // 车端上报的实际舵机角 (°)
       pitch: 0,              // 遥测上报的修正后 pitch (°)
       rp: 0,                 // 车端上报的当前原始 pitch (°, 记录用)
       pz: 0,                 // 配平零点 (°), 车端 balance_get_pitch_zero()
-      ref: 80,               // 配平表参考角 (= param 的 servo_c)
+      ref: 100,              // 配平表参考角 (= param 的 servo_c)
       pts: [],               // 已录点: [[舵机角, 原始pitch], ...]
       n: 0,                  // 点数
       span: 0,               // 表内俯仰角跨度 (max-min)

@@ -40,6 +40,14 @@
                 "navigationBarBackgroundColor": "#1aad19",
                 "navigationBarTextStyle": "white"
             }
+        },
+        {
+            "path": "pages/pose/pose",
+            "style": {
+                "navigationBarTitleText": "姿态控制",
+                "navigationBarBackgroundColor": "#1aad19",
+                "navigationBarTextStyle": "white"
+            }
         }
     ],
     "tabBar": {

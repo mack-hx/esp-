@@ -45,6 +45,14 @@ static const char *TAG = "BALANCE";
  * 0 = 原串级 PID (增益读参数表)。LQR 模式下 bal_kp/bal_ki/bal_kd/pos_* 滑块不生效。 */
 #define BAL_USE_LQR 1
 
+/* 蹲姿增益调度的腿角区间 (°):
+ * 腿越短 (角度越大) 车身等效转动惯量越小, 同一内环增益的环路增益越大,
+ * 蹲到 100° 附近会在 11Hz 左右激起等幅自激。这里按腿角线性缩小内环增益:
+ *   ≤ BAL_GAIN_STAND_ANGLE → ×1.0;  ≥ BAL_GAIN_CROUCH_ANGLE → ×BAL_GAIN_CROUCH_K */
+#define BAL_GAIN_STAND_ANGLE    40.0f   /* 站姿腿角 (°) */
+#define BAL_GAIN_CROUCH_ANGLE  100.0f   /* 蹲姿腿角 (°) */
+#define BAL_GAIN_CROUCH_K        0.40f  /* 蹲姿内环增益倍率: 蹲下仍打摆就减小, 发软就加大 */
+
 /* ================= 模块内部状态 ================= */
 
 static bal_state_t s_state  = BAL_STATE_IDLE;
@@ -115,19 +123,23 @@ static float s_out_ramp = BAL_RAMP_START_PCT;
 /* ========== 配平零点 (°) ==========
  * 配平 = 记录"车摆正时的 pitch", 之后平衡环以这个角度为 0。
  * 与配平表 (腿角 → pitch) 是两回事: 表管"腿的角度带来的偏移",
- * 零点管"整体安装/摆放的基准角"。 */static float s_pitch_zero = 0.0f;
+ * 零点管"整体安装/摆放的基准角"。 */
+static float s_pitch_zero = 0.0f;
+static float s_roll_zero = 0.0f;   /* Roll 零点 (°), 配平时同步标定 */
 /* 修正链里扣掉配平表补偿、但**还没扣零点**的 pitch (配平采样要用) */
 static float s_pitch_corr = 0.0f;
 
 /* 配平采样状态: 控制任务连续采 CALIB_SAMPLES 个点取平均 */
 #define CALIB_SAMPLES   50          /* 50 个点 × 10ms = 0.5s */
 static int   s_calib_count  = 0;
-static float s_calib_sum    = 0.0f;
+static float s_calib_sum_p  = 0.0f;   /* pitch 累加器 */
+static float s_calib_sum_r  = 0.0f;   /* roll 累加器 */
 static bool  s_calib_active = false;
 
-/* 配平零点的 NVS 存放位置 (namespace "bal", key "pz") */
+/* 配平零点的 NVS 存放位置 (namespace "bal", key "pz" / "rz") */
 #define BAL_NVS_NS        "bal"
-#define BAL_NVS_KEY_ZERO  "pz"
+#define BAL_NVS_KEY_PITCH_ZERO  "pz"
+#define BAL_NVS_KEY_ROLL_ZERO   "rz"
 
 /* ========== 起立时的自动配平零点微调 (°) ==========
  * 起立时如果车相对"上次标定的姿态"几乎没变 (|pitch| 在这个范围内),
@@ -141,7 +153,7 @@ static bool  s_calib_active = false;
 /* ================= 内部辅助 ================= */
 
 /**
- * @brief 从 NVS 读配平零点
+ * @brief 从 NVS 读配平零点 (pitch + roll)
  * @note  存成整数 (角度×10), 避免 float 存 NVS 的对齐问题
  */
 static void balance_load_zero(void)
@@ -149,22 +161,22 @@ static void balance_load_zero(void)
     nvs_handle_t h;
     if (nvs_open(BAL_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
         s_pitch_zero = 0.0f;
+        s_roll_zero = 0.0f;
         return;
     }
-    int16_t v = 0;
-    esp_err_t ret = nvs_get_i16(h, BAL_NVS_KEY_ZERO, &v);
+    int16_t vp = 0, vr = 0;
+    esp_err_t ret_p = nvs_get_i16(h, BAL_NVS_KEY_PITCH_ZERO, &vp);
+    esp_err_t ret_r = nvs_get_i16(h, BAL_NVS_KEY_ROLL_ZERO, &vr);
     nvs_close(h);
 
-    if (ret != ESP_OK) {
-        s_pitch_zero = 0.0f;
-        return;
-    }
-    s_pitch_zero = (float)v / 10.0f;
-    ESP_LOGI(TAG, "已载入配平零点: %.1f°", (double)s_pitch_zero);
+    s_pitch_zero = (ret_p == ESP_OK) ? ((float)vp / 10.0f) : 0.0f;
+    s_roll_zero  = (ret_r == ESP_OK) ? ((float)vr / 10.0f) : 0.0f;
+    ESP_LOGI(TAG, "已载入配平零点: pitch=%.1f° roll=%.1f°", 
+             (double)s_pitch_zero, (double)s_roll_zero);
 }
 
 /**
- * @brief 把配平零点写进 NVS
+ * @brief 把配平零点写进 NVS (pitch + roll)
  */
 static void balance_save_zero(void)
 {
@@ -174,8 +186,10 @@ static void balance_save_zero(void)
         ESP_LOGE(TAG, "配平零点保存失败: NVS 打开失败 (%s)", esp_err_to_name(ret));
         return;
     }
-    int16_t v = (int16_t)lrintf(s_pitch_zero * 10.0f);
-    ret = nvs_set_i16(h, BAL_NVS_KEY_ZERO, v);
+    int16_t vp = (int16_t)lrintf(s_pitch_zero * 10.0f);
+    int16_t vr = (int16_t)lrintf(s_roll_zero * 10.0f);
+    ret = nvs_set_i16(h, BAL_NVS_KEY_PITCH_ZERO, vp);
+    if (ret == ESP_OK) ret = nvs_set_i16(h, BAL_NVS_KEY_ROLL_ZERO, vr);
     if (ret == ESP_OK) ret = nvs_commit(h);
     nvs_close(h);
 
@@ -229,6 +243,23 @@ static float balance_trim_compensation(float phi, float phi_home)
 }
 
 /**
+ * @brief 计算蹲姿增益倍率 (按当前腿角在站姿与蹲姿之间线性过渡)
+ * @return 平衡内环增益倍率, 站姿 1.0, 蹲姿 BAL_GAIN_CROUCH_K
+ * @note  腿角取两路舵机的逻辑角 (镜像安装, 两路相同), 用 SERVO_1 即可
+ */
+static float balance_posture_gain(void)
+{
+    float ang = (float)servo_get_angle(SERVO_1);
+
+    if (ang <= BAL_GAIN_STAND_ANGLE) return 1.0f;
+    if (ang >= BAL_GAIN_CROUCH_ANGLE) return BAL_GAIN_CROUCH_K;
+
+    float t = (ang - BAL_GAIN_STAND_ANGLE) /
+              (BAL_GAIN_CROUCH_ANGLE - BAL_GAIN_STAND_ANGLE);
+    return 1.0f - t * (1.0f - BAL_GAIN_CROUCH_K);
+}
+
+/**
  * @brief 读传感器, 填到 s_data 的输入段
  * @note  MPU 没接时姿态/角速度填 0, 不阻塞控制任务
  */
@@ -248,6 +279,7 @@ static void balance_read_sensors(void)
                                                    param_get_float(PARAM_SERVO_CENTER));
 
             s_data.pitch_raw = euler.pitch;
+            s_data.roll      = euler.roll;  /* 横滚角存入全局状态 */
             s_pitch_corr     = euler.pitch - comp;   /* 配平采样用 (未扣零点) */
             s_data.pitch     = s_pitch_corr - s_pitch_zero;
             s_data.trim_comp = comp;
@@ -269,6 +301,9 @@ static void balance_read_sensors(void)
                 s_gyro_lpf += a * (rate - s_gyro_lpf);
             }
             s_data.gyro = s_gyro_lpf;
+            
+            /* ========== Roll 角更新到舵机补偿模块 ========== */
+            servo_set_roll_angle(euler.roll);
         }
     } else {
         s_data.pitch     = 0.0f;
@@ -659,6 +694,8 @@ static void balance_control_step(float dt)
     s_data.bal_out = balance_pid_update(dt, s_data.pitch,
                                         s_data.target_pitch, s_data.gyro);
 #endif
+    /* 蹲姿增益缩放: 腿越短, 内环环路增益越大, 不缩放会在 11Hz 左右自激 */
+    s_data.bal_out *= balance_posture_gain();
 
     /* --- 执行: 双轮同向输出 (+ 差速) ---
      * BAL_MOTOR_SIGN 烘焙在代码里 (不在网页上可调):
@@ -766,29 +803,31 @@ static void balance_apply_direct_move(void)
 }
 
 /**
- * @brief 配平采样: 控制任务里连续采 CALIB_SAMPLES 个 pitch 取平均
+ * @brief 配平采样: 控制任务里连续采 CALIB_SAMPLES 个 pitch + roll 取平均
  * @note  采样的是**未扣零点**的 pitch (s_pitch_corr),
  *        否则第二次配平会把零点又减一遍, 越配越偏。
+ *        Roll 直接从 servo_get_roll_angle() 读, 无需修正链。
  */
 static void balance_calib_step(void)
 {
     if (!s_calib_active) return;
 
-    s_calib_sum += s_pitch_corr;
+    s_calib_sum_p += s_pitch_corr;
+    s_calib_sum_r += servo_get_roll_angle();
     s_calib_count++;
 
     if (s_calib_count < CALIB_SAMPLES) return;
 
     /* 采样完成: 取平均作为新的配平零点 */
-    float avg = s_calib_sum / (float)s_calib_count;
-    s_pitch_zero = avg;
+    s_pitch_zero = s_calib_sum_p / (float)s_calib_count;
+    s_roll_zero  = s_calib_sum_r / (float)s_calib_count;
     s_calib_active = false;
 
     /* 立刻生效 (内存里的零点), 再落盘 */
     balance_save_zero();
 
-    ESP_LOGI(TAG, "配平完成: 记录零点 pitch=%.2f° (采样 %d 个点), 已落盘",
-             (double)avg, s_calib_count);
+    ESP_LOGI(TAG, "配平完成: pitch=%.2f° roll=%.2f° (采样 %d 个点), 已落盘",
+             (double)s_pitch_zero, (double)s_roll_zero, s_calib_count);
 }
 
 /**
@@ -887,6 +926,7 @@ static void balance_task(void *arg)
             trace_sample_t ts;
             ts.t       = (float)esp_timer_get_time() / 1000000.0f;
             ts.pitch   = s_data.pitch;
+            ts.roll    = s_data.roll;  /* 横滚角 */
             ts.gyro    = s_data.gyro;
             ts.out     = s_data.bal_out;
             ts.tgt     = s_data.target_pitch;
@@ -1022,6 +1062,7 @@ esp_err_t balance_set_enable(bool on)
         balance_arm_reset();          /* 门控从零开始计时 */
         s_state   = BAL_STATE_STANDBY;
         s_enabled = true;
+        servo_set_balance_mode(true);  // 启用 Roll 补偿
         s_out_ramp = BAL_RAMP_START_PCT;   /* 起立软启动: 输出限幅从缓开始 */
 
         /* --- 自动微调配平零点 (断电保存) ---
@@ -1046,12 +1087,13 @@ esp_err_t balance_set_enable(bool on)
                  (double)param_get_float(PARAM_ARM_RATE));
     } else {
         s_enabled = false;
+        servo_set_balance_mode(false);  // 停用 Roll 补偿
         s_state   = BAL_STATE_IDLE;
         balance_arm_reset();
         balance_clear_move();        /* 直驱也要停 */
         motor_brake_all();
-        servo_set_both((uint8_t)param_get_float(PARAM_SERVO_CENTER));
-        ESP_LOGI(TAG, "平衡控制已停止, 电机刹车, 舵机回中");
+        /* 舵机保持当前角度不动 (退出平衡不回中, 避免腿突然弹开) */
+        ESP_LOGI(TAG, "平衡控制已停止, 电机刹车, 舵机保持当前角度");
     }
     return ESP_OK;
 }
@@ -1064,6 +1106,7 @@ bool balance_is_enabled(void)
 esp_err_t balance_emergency_stop(void)
 {
     s_enabled = false;
+    servo_set_balance_mode(false);  // 停用 Roll 补偿
     s_state   = BAL_STATE_IDLE;
     balance_arm_reset();
     balance_reset_pid();       /* 清积分, 避免下次启动猛冲 */
@@ -1146,12 +1189,13 @@ esp_err_t balance_calibrate(void)
     }
 
     /* 只启动采样, 由控制任务连续采 0.5s 取平均。
-     * 这里**不碰电机、不动平衡状态** —— 配平只是记录 pitch。 */
+     * 这里**不碰电机、不动平衡状态** —— 配平只是记录 pitch + roll。 */
     s_calib_count  = 0;
-    s_calib_sum    = 0.0f;
+    s_calib_sum_p  = 0.0f;
+    s_calib_sum_r  = 0.0f;
     s_calib_active = true;
 
-    ESP_LOGI(TAG, "配平开始: 采样 %d 个 pitch 点取平均 (不驱动电机)", CALIB_SAMPLES);
+    ESP_LOGI(TAG, "配平开始: 采样 %d 个 pitch/roll 点取平均 (不驱动电机)", CALIB_SAMPLES);
     return ESP_OK;
 }
 

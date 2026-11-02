@@ -5,7 +5,9 @@
  *        - 第 1 行: 两路舵机当前角度
  *        - 第 2 行: 两路编码器当前计数
  *        - 第 3 行: WiFi 连接状态
- *        - 第 4 行: MPU 俯仰角
+ *        - 第 4 行: MPU 俯仰角 (Pitch)
+ *        - 第 5 行: MPU 横滚角 (Roll)
+ *        - 第 6 行: 版本号
  *        - K1 → 切到菜单页
  * @author ESP32 机械狗项目
  */
@@ -25,8 +27,9 @@
 #define HOME_SERVO_Y    14      // 舵机行 Y
 #define HOME_ENC_Y      24      // 编码器行 Y
 #define HOME_WIFI_Y     34      // WiFi状态行 Y
-#define HOME_MPU_Y      44      // MPU俯仰角行 Y
-#define HOME_VER_Y      54      // 版本号行 Y (最后一行)
+#define HOME_MPU_Y      44      // MPU Pitch角行 Y
+#define HOME_ROLL_Y     54      // MPU Roll角行 Y (新增)
+#define HOME_VER_Y      64      // 版本号行 Y (原54→64)
 
 #define HOME_L_LBL_X    2       // 左路标签 X
 #define HOME_L_VAL_X    24      // 左路数值 X (前两行)
@@ -87,7 +90,7 @@ static void ui_home_draw(void)
     ui_fill_rect(HOME_WIFI_VAL_X, HOME_WIFI_Y, 80, UI_FONT_H, TFT_COLOR_BLACK);
     ui_draw_string(HOME_WIFI_VAL_X, HOME_WIFI_Y, buf, text_color, TFT_COLOR_BLACK);
 
-    /* 第 4 行: MPU 俯仰角 */
+    /* 第 4 行: MPU 俯仰角 (Pitch) */
     ui_draw_string(HOME_L_LBL_X, HOME_MPU_Y, "Pitch:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
     bal_data_t bal_data;
     if (balance_get_data(&bal_data) == ESP_OK) {
@@ -95,11 +98,17 @@ static void ui_home_draw(void)
     } else {
         snprintf(buf, sizeof(buf), "N/A");
     }
-    /* 擦除足够宽的区域(48像素)确保旧内容被清除 */
     ui_fill_rect(HOME_MPU_VAL_X, HOME_MPU_Y, 48, UI_FONT_H, TFT_COLOR_BLACK);
     ui_draw_string(HOME_MPU_VAL_X, HOME_MPU_Y, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
 
-    /* 最后一行: 版本号
+    /* 第 5 行: MPU 横滚角 (Roll) */
+    ui_draw_string(HOME_L_LBL_X, HOME_ROLL_Y, "Roll:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
+    float roll_angle = servo_get_roll_angle();
+    snprintf(buf, sizeof(buf), "%+.1f", (double)roll_angle);
+    ui_fill_rect(HOME_MPU_VAL_X, HOME_ROLL_Y, 48, UI_FONT_H, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_MPU_VAL_X, HOME_ROLL_Y, buf, TFT_COLOR_MAGENTA, TFT_COLOR_BLACK);
+
+    /* 第 6 行: 版本号
      * 版本来自 esp_app_desc (编译时由 version.txt 注入), 不用手写常量,
      * 改版本号只需要改 version.txt */
     ui_draw_string(HOME_L_LBL_X, HOME_VER_Y, "Ver:", TFT_COLOR_CYAN, TFT_COLOR_BLACK);
@@ -177,6 +186,12 @@ static void page_refresh(void)
     }
     ui_fill_rect(HOME_MPU_VAL_X, HOME_MPU_Y, 48, UI_FONT_H, TFT_COLOR_BLACK);
     ui_draw_string(HOME_MPU_VAL_X, HOME_MPU_Y, buf, TFT_COLOR_GREEN, TFT_COLOR_BLACK);
+    
+    /* MPU 横滚角 - 擦除足够宽的区域确保旧内容被清除 */
+    float roll_angle = servo_get_roll_angle();
+    snprintf(buf, sizeof(buf), "%+.1f", (double)roll_angle);
+    ui_fill_rect(HOME_MPU_VAL_X, HOME_ROLL_Y, 48, UI_FONT_H, TFT_COLOR_BLACK);
+    ui_draw_string(HOME_MPU_VAL_X, HOME_ROLL_Y, buf, TFT_COLOR_MAGENTA, TFT_COLOR_BLACK);
 }
 
 /* ========== 页面注册 ========== */

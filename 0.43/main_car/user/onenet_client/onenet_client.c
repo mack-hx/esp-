@@ -37,6 +37,7 @@
 
 #include "balance.h"
 #include "param.h"
+#include "status_led.h"   /* 手动设色后暂停自动状态色 */
 #include "trim.h"     /* 配平表 (标定点记录 / 保存 / 清空 / 导出) */
 #include "led.h"
 #include "servo.h"
@@ -841,11 +842,14 @@ void remote_stand(void)
  */
 static void handle_led_control(const char *json)
 {
+    bool manual = false;   /* 本次有没有手动改灯 */
+
     /* led_on: bool - 开/关 */
     bool led_on = false;
     if (json_find_value_bool(json, "led_on", &led_on)) {
         ESP_LOGI(TAG, "灯控制: led_on=%d", led_on);
         led_set_on(LED_1, led_on);
+        manual = true;
     }
 
     /* led_color: int - RGB 颜色值 (0x00RRGGBB) */
@@ -857,6 +861,7 @@ static void handle_led_control(const char *json)
         ESP_LOGI(TAG, "灯控制: led_color=0x%06X -> RGB(%d,%d,%d)", led_color, r, g, b);
         led_color_t color = { .r = r, .g = g, .b = b };
         led_set_color(LED_1, color);
+        manual = true;
     }
 
     /* led_brightness: int (0-255) - 亮度 */
@@ -866,6 +871,7 @@ static void handle_led_control(const char *json)
         if (led_brightness > 255) led_brightness = 255;
         ESP_LOGI(TAG, "灯控制: led_brightness=%d", led_brightness);
         led_set_brightness(LED_1, (uint8_t)led_brightness);
+        manual = true;
     }
 
     /* led_preset: int - 预设颜色 (0=关,1=红,...,7=白) */
@@ -873,8 +879,12 @@ static void handle_led_control(const char *json)
     if (json_find_value_int(json, "led_preset", &led_preset)) {
         if (led_preset >= 0 && led_preset < LED_PRESET_MAX) {
             led_set_preset(LED_1, (led_preset_t)led_preset);
+            manual = true;
         }
     }
+
+    /* 手动设色后保持用户颜色, 直到下一次状态切换才交还自动状态色 */
+    if (manual) status_led_manual_hold();
 }
 
 /**

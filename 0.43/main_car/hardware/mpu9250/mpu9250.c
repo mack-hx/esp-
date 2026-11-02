@@ -170,11 +170,10 @@ static const float alpha = 0.997f;  // 互补滤波系数 (陀螺权重)
 
 /* ========== 俯仰角零点基准 (°) ==========
  * 俯仰角 = 相对配平姿态往前倾多少度, 配平位读数应换算成 0°。
- * 基准值由平衡位实测 (ax=0.03 ay=-0.85 az=0.57) 算出:
- *     atan2(az, -ay) = atan2(0.57, 0.85) = 33.85°
- * 换 MPU 或改安装方向需重算: 车扶到平衡姿态, 读 ay / az, 代入 atan2(az, -ay)。
- * 水平位 az≈1, ay≈0 → atan2(1,0)=90°, 故 PITCH_ZERO_REF = 90 */
-#define PITCH_ZERO_REF   90.0f
+ * 当前公式 atan2(ay, az): 水平时 ay≈0, az≈1 → atan2(0,1)=0°,
+ * 所以 PITCH_ZERO_REF = 0 (无需减去基准值)。
+ * 若换 MPU 或改安装方向需重新标定: 车扶到平衡姿态, 读一次角度作为零点。 */
+#define PITCH_ZERO_REF   0.0f
 
 /* I2C 总线互斥锁
  * 控制任务 (10ms) 与 UI 任务 (50ms) 都会调 mpu9250_read_data(), 并发访问同一
@@ -866,11 +865,14 @@ static void mpu9250_fuse_euler(const mpu9250_data_t *data, euler_angle_t *out)
      *     车体左右轴 = MPU 的 X 轴
      *     俯仰旋转轴 = MPU 的 X 轴
      */
-    float accel_pitch = atan2f(data->accel.z, -data->accel.y) * 180.0f / M_PI
-                       - PITCH_ZERO_REF;   /* 前倾为负 */
-    /* roll 是左右倾 (绕车体前后轴 = MPU 的 Z 轴), 本车不控制, 保留一个
-     * 粗略值仅供观察: 左右倾时重力在 X↔Y 之间转移 */
-    float accel_roll  = atan2f(data->accel.x, -data->accel.y) * 180.0f / M_PI;
+    /* 重力参考：水平时 az≈1g, ax≈0, ay≈0
+     * pitch（俯仰）：前倾时 ay 增大，用 atan2(ay, az)
+     * roll（横滚）：左倾时 ax 增大，用 atan2(ax, az) */
+    float accel_pitch = atan2f(data->accel.y, data->accel.z) * 180.0f / M_PI
+                       - PITCH_ZERO_REF;
+    float accel_roll  = atan2f(data->accel.x, data->accel.z) * 180.0f / M_PI;
+
+
 
     if (!s_filt_primed) {
         current_angle.pitch = accel_pitch;
@@ -906,8 +908,9 @@ static void mpu9250_fuse_euler(const mpu9250_data_t *data, euler_angle_t *out)
     current_angle.pitch += data->gyro.x * dt;
     current_angle.yaw   += data->gyro.y * dt;
 
-    /* 互补滤波融合: 陀螺仪负责短时响应, 加速度计负责长期拉回真实水平 */
-    current_angle.roll  = alpha * current_angle.roll  + (1 - alpha) * accel_roll;
+    /* 互补滤波融合: 陀螺仪负责短时响应, 加速度计负责长期拉回真实水平
+     * roll 用更大权重 (10%) 以提高响应速度，pitch 保持 2% (控制环需要稳定) */
+    current_angle.roll  = 0.90f * current_angle.roll  + 0.10f * accel_roll;
     current_angle.pitch = alpha * current_angle.pitch + (1 - alpha) * accel_pitch;
 
     *out = current_angle;

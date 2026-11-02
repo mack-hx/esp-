@@ -11,6 +11,8 @@
 #define SERVO_H
 
 #include <stdint.h>
+#include <stdbool.h>
+#include "driver/gpio.h"
 #include "esp_err.h"
 
 /* ========== 引脚配置 ==========
@@ -88,6 +90,13 @@ esp_err_t servo_set_both(uint8_t angle);
 uint8_t servo_get_angle(servo_id_t id);
 
 /**
+ * @brief 获取逻辑角度变化计数 (每次目标角度真的改变 +1)
+ * @note  后台保持任务重写硬件不会增加此计数, 只反映用户/上层改角度的动作
+ * @return 累计变化次数
+ */
+uint32_t servo_get_change_seq(void);
+
+/**
  * @brief 把两路舵机当前角度同步到硬件
  * @note  后台任务周期性调用
  * @return ESP_OK 成功
@@ -100,6 +109,19 @@ esp_err_t servo_apply_both(void);
  * @return ESP_OK 成功
  */
 esp_err_t servo_keep_alive_start(void);
+
+/**
+ * @brief 更新 Roll 角数据 (供平衡控制循环调用)
+ * @param roll_deg Roll 角 (°, 正=右侧高/左倾, 负=左侧高/右倾)
+ * @note  补偿自动应用到下次 servo_apply_both() / servo_set_angle() 输出
+ */
+void servo_set_roll_angle(float roll_deg);
+
+/**
+ * @brief 获取当前 Roll 角
+ * @return Roll 角 (°)
+ */
+float servo_get_roll_angle(void);
 
 /**
  * @brief 获取舵机诊断信息 (用于调试)
@@ -117,5 +139,11 @@ void servo_get_diagnostics(uint32_t *duty1, uint32_t *duty2,
  * @return LEDC 占空比值
  */
 uint32_t servo_angle_to_duty(uint8_t angle);
+
+/**
+ * @brief 设置平衡模式标志 (仅在平衡起立状态应用 Roll 补偿)
+ * @param enabled true = 平衡起立状态 (应用 Roll 补偿), false = 其他状态 (不应用补偿)
+ */
+void servo_set_balance_mode(bool enabled);
 
 #endif // SERVO_H

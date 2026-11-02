@@ -28,6 +28,7 @@ extern "C" {
 typedef struct {
     float t;          /* esp_timer 时刻 (秒) */
     float pitch;      /* 修正后姿态角 (°) */
+    float roll;       /* 横滚角 (°) */
     float gyro;       /* 俯仰角速度 (°/s) */
     float out;        /* 平衡环输出 (%) */
     float tgt;        /* 目标倾角 (°) */

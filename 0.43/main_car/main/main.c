@@ -23,6 +23,7 @@
 #include "wifi_sta.h"
 #include "param.h"
 #include "balance.h"
+#include "status_led.h"
 #include "onenet_client.h"
 #include "ble_ctrl.h"
 #include "ui_home.h"
@@ -156,6 +157,11 @@ void app_main(void)
     esp_err_t bal_ret = balance_init();
     if (bal_ret != ESP_OK) {
         ESP_LOGE(TAG, "平衡控制初始化失败 (%s)", esp_err_to_name(bal_ret));
+    }
+
+    /* 8.0.1 启动状态灯: 依赖 balance/servo/magnet/pcf8574, 必须在它们之后 */
+    if (status_led_start() != ESP_OK) {
+        ESP_LOGW(TAG, "状态灯任务未启动, 灯只受 App/LCD 手动控制");
     }
 
     /* 8.0 启动 BLE 直控: 控制器要连续的内部 RAM, 必须在 WiFi/MQTT 占用内存之前; 允许失败 */

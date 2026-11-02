@@ -17,6 +17,7 @@
 #include "led.h"
 #include "magnet.h"
 #include "pcf8574.h"
+#include "status_led.h"   /* 手动设色后暂停自动状态色 */
 #include <stdio.h>
 
 /* ========== 页面状态 ========== */
@@ -108,6 +109,8 @@ static int preset_index_of(led_color_t c)
 static void apply_led(void)
 {
     led_set_color_brightness(LED_1, PRESET_RGB[s_preset], s_bright);
+    /* 手动设色 → 保持用户颜色, 直到下一次状态切换才恢复自动状态色 */
+    status_led_manual_hold();
 }
 
 /**

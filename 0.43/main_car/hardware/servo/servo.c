@@ -3,6 +3,7 @@
  * @brief 舵机控制驱动实现 (标准 PWM 舵机, 50Hz, 1-2ms 脉宽)
  * @note  - 双路独立目标角度 (逻辑角度), 物理安装不对称由 servo_logic_to_phys() 补偿
  *        - 后台任务每 SERVO_KEEP_ALIVE_MS ms 重新同步硬件, 跨页不失力不跳变
+ *        - Roll 补偿: 根据横滚角自动调整左右腿长度适应地形
  * @author ESP32 机械狗项目
  */
 
@@ -11,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "roll_compensator.h"
 
 static const char *TAG = "SERVO";
 
@@ -32,6 +34,13 @@ static uint8_t s_angle[SERVO_2 + 1] = {
 /* 舵机更新统计 (用于诊断) */
 static uint32_t s_update_count = 0;    // 总更新次数
 static uint32_t s_update_errors = 0;   // 更新失败次数
+
+/* 逻辑角度变化计数 (只在上层真的改了目标角度时 +1, 供状态灯判断) */
+static volatile uint32_t s_change_seq = 0;
+
+/* Roll 补偿状态 */
+static float s_roll_angle = 0.0f;       // 当前 Roll 角 (°, 外部定期更新)
+static bool s_balance_mode = false;     // 是否在平衡起立状态 (外部设置, 仅此状态应用 Roll 补偿)
 
 /**
  * @brief 将逻辑角度转换为舵机 ID 对应的物理角度
@@ -168,6 +177,7 @@ esp_err_t servo_set_angle(servo_id_t id, uint8_t angle)
     }
     if (angle < SERVO_LIMIT_MIN) angle = SERVO_LIMIT_MIN;
     if (angle > SERVO_LIMIT_MAX) angle = SERVO_LIMIT_MAX;
+    if (s_angle[id] != angle) s_change_seq++;
     s_angle[id] = angle;
     return servo_write_hw(id, angle);
 }
@@ -179,6 +189,7 @@ esp_err_t servo_set_both(uint8_t angle)
 {
     if (angle < SERVO_LIMIT_MIN) angle = SERVO_LIMIT_MIN;
     if (angle > SERVO_LIMIT_MAX) angle = SERVO_LIMIT_MAX;
+    if (s_angle[SERVO_1] != angle || s_angle[SERVO_2] != angle) s_change_seq++;
     s_angle[SERVO_1] = angle;
     s_angle[SERVO_2] = angle;
     esp_err_t ret = servo_write_hw(SERVO_1, angle);
@@ -195,6 +206,11 @@ uint8_t servo_get_angle(servo_id_t id)
         return 0;
     }
     return s_angle[id];
+}
+
+uint32_t servo_get_change_seq(void)
+{
+    return s_change_seq;
 }
 
 /**
@@ -279,4 +295,19 @@ esp_err_t servo_keep_alive_start(void)
     }
     ESP_LOGI(TAG, "后台舵机保持任务已启动 (周期 %dms)", SERVO_KEEP_ALIVE_MS);
     return ESP_OK;
+}
+
+void servo_set_balance_mode(bool enabled)
+{
+    s_balance_mode = enabled;
+}
+
+float servo_get_roll_angle(void)
+{
+    return s_roll_angle;
+}
+
+void servo_set_roll_angle(float roll_deg)
+{
+    s_roll_angle = roll_deg;
 }

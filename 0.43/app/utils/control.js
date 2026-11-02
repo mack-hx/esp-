@@ -425,6 +425,26 @@ class Controller {
     }
   }
 
+  /**
+   * @brief 设置舵机角度
+   * @param {number} servo1 左腿角度 (30~120°)
+   * @param {number} servo2 右腿角度 (30~120°)
+   * @return {Promise<boolean>} 是否成功
+   */
+  async setServo(servo1, servo2) {
+    if (!this._check()) return false
+    try {
+      const values = { servo1_angle: servo1, servo2_angle: servo2 }
+      await this._setAll(values)
+      return true
+    } catch (e) {
+      this.reportError(e)
+      throw e
+    }
+  }
+
 }
 
 export const controller = new Controller()
+/** 向后兼容的别名 */
+export const ctrl = controller

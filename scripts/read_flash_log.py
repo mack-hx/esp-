@@ -12,7 +12,7 @@
 输出: <前缀>.csv, 表头与 capture_trace.py 一致, 分析脚本通用。
 读完板子会被 esptool 复位一次; flash 里的记录不会被清除, 下次离开平衡态时才被覆盖。
 
-⚠ 记录格式必须跟 trace.c 的 flog_hdr_t / trace_sample_t 一致 (68 字节/条)。
+⚠ 记录格式必须跟 trace.c 的 flog_hdr_t / trace_sample_t 一致 (72 字节/条)。
 """
 import glob
 import os
@@ -24,11 +24,11 @@ import tempfile
 PART_ADDR = 0x720000      # partitions.csv 里 storage 的偏移
 SECTOR = 4096
 HDR_FMT = "<4I"           # magic, count, rec_size, reserved
-REC_FMT = "<16fb3x"       # 16 个 float + int8 状态 + 3 字节对齐
+REC_FMT = "<17fb3x"       # 17 个 float + int8 状态 + 3 字节对齐
 REC_SIZE = struct.calcsize(REC_FMT)
 MAGIC = 0x474F4C54
 FLOG_MAX = 4000           # 固件 FLOG_N: 最多记录条数
-HEAD = "t_ms,pitch,gyro,out,tgt,spd,yaw,pos,pos_err,pos_out,pos_vel,kd,dt,tavg,tdiff,diff,st\n"
+HEAD = "t_ms,pitch,roll,gyro,out,tgt,spd,yaw,pos,pos_err,pos_out,pos_vel,kd,dt,tavg,tdiff,diff,st\n"
 
 ESPTOOL = os.path.expanduser("~/.platformio/packages/tool-esptoolpy/esptool.py")
 PYTHON = os.path.expanduser("~/.platformio/penv/bin/python")
@@ -77,9 +77,9 @@ def main():
     with open(base + ".csv", "w") as f:
         f.write(HEAD)
         for i in range(count):
-            (t, pitch, gyro, out, tgt, spd, yaw, pos, pos_err, pos_out, pos_vel,
+            (t, pitch, roll, gyro, out, tgt, spd, yaw, pos, pos_err, pos_out, pos_vel,
              kd, dt, tavg, tdiff, diff, st) = struct.unpack_from(REC_FMT, data, i * REC_SIZE)
-            f.write(f"{t * 1000:.0f},{pitch:.2f},{gyro:.1f},{out:.1f},{tgt:.2f},"
+            f.write(f"{t * 1000:.0f},{pitch:.2f},{roll:.2f},{gyro:.1f},{out:.1f},{tgt:.2f},"
                     f"{spd:.1f},{yaw:.1f},{pos:.1f},{pos_err:.2f},{pos_out:.1f},"
                     f"{pos_vel:.2f},{kd:.2f},{dt:.1f},{tavg:.1f},{tdiff:.1f},{diff:.1f},{st}\n")
     print("读出 %d 条, 写入 %s.csv" % (count, base))

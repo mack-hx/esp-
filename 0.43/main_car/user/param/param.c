@@ -30,7 +30,7 @@ static const char *TAG = "PARAM";
  * 37: LQR 放开 (KP 22/KD 0.6/VMAX 35, motor_max 95%, 倾角限 35°, 起立 30%/800ms)
  *     + 速度环提速 (斜坡 150/120, kp 0.08/ki 0.04, move_rpm_max 120)
  *     + LCD 刷新 50ms + BLE 优先级 23 */
-#define PARAM_DATA_VERSION  37
+#define PARAM_DATA_VERSION  38
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
 static float s_values[PARAM_MAX];
@@ -94,7 +94,7 @@ const param_item_t g_param_items[] = {
       "启动门控: 需要连续稳定这么久才真正输出。0=不等(不推荐)" },
 
     /* ---------- 舵机 ---------- */
-    { PARAM_SERVO_CENTER, "servo_c",  "Servo Center", "°", 80.0f,  30.0f,  120.0f, 1.0f, 0, PARAM_GRP_LIMIT,
+    { PARAM_SERVO_CENTER, "servo_c",  "Servo Center", "°", 100.0f, 30.0f,  120.0f, 1.0f, 0, PARAM_GRP_LIMIT,
       "舵机中心角。也是配平表的参考角 (补偿在这一档为 0)" },
 
     { PARAM_MOVE_RPM_MAX, "move_rpm_max", "Move RPM Max", "rpm", 120.0f, 0.0f, 333.0f, 1.0f, 1, PARAM_GRP_LIMIT,

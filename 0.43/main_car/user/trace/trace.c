@@ -39,7 +39,7 @@ typedef struct {
     uint32_t reserved;
 } flog_hdr_t;
 
-_Static_assert(sizeof(trace_sample_t) == 68, "读出脚本按 68 字节解析, 改结构体要同步改脚本");
+_Static_assert(sizeof(trace_sample_t) == 72, "读出脚本按 72 字节解析, 改结构体要同步改脚本");
 
 static trace_sample_t *s_flog = NULL;           /* PSRAM 环形缓冲, FLOG_N 条 */
 static volatile uint32_t s_flog_total = 0;      /* 累计写入条数 */
@@ -89,14 +89,14 @@ static SemaphoreHandle_t s_push_lock = NULL;
  */
 static void trace_print_one(const trace_sample_t *r)
 {
-    char line[220];
+    char line[240];
     int n = snprintf(line, sizeof(line),
-                     "TRACE t=%.3f pitch=%.2f gyro=%.1f out=%.1f tgt=%.2f "
+                     "TRACE t=%.3f pitch=%.2f roll=%.2f gyro=%.1f out=%.1f tgt=%.2f "
                      "spd=%.1f yaw=%.1f pos=%.1f pos_err=%.2f pos_out=%.1f "
                      "pos_vel=%.2f "
                      "kd=%.2f dt=%.1f tavg=%.1f tdiff=%.1f diff=%.1f st=%d\n",
                      (double)r->t,
-                     (double)r->pitch, (double)r->gyro, (double)r->out,
+                     (double)r->pitch, (double)r->roll, (double)r->gyro, (double)r->out,
                      (double)r->tgt,  (double)r->spd,   (double)r->yaw,
                      (double)r->pos,  (double)r->pos_err,
                      (double)r->pos_out, (double)r->pos_vel,

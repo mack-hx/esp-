@@ -125,6 +125,7 @@ typedef enum {
 typedef struct {
     /* --- 传感器输入 --- */
     float pitch;        /* 修正后姿态角 (°): 已扣配平表补偿; 前倾 (车头往下) 为负数 */
+    float roll;         /* 横滚角 (°, 左倾为负, 右倾为正) */
     float gyro;         /* 俯仰方向角速度 (°/s), 与 pitch 同号 */
     float speed;        /* 两轮平均轮速 (rpm), **前进为正** */
     float trim_comp;    /* 配平表补偿量 (°), 观察补偿是否在工作 */

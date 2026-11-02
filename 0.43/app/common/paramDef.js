@@ -2,7 +2,7 @@
  * @file paramDef.js
  * @brief 1:1 镜像 ESP32 端 param.c 的参数定义
  *
- * 数据来源: 0.42/user/param/param.c (PARAM_DATA_VERSION 37)
+ * 数据来源: 0.43/user/param/param.c (PARAM_DATA_VERSION 38)
  * 改了 param.c 就要同步这个文件, 否则 App 显示的滑块范围/默认值会跟车端对不上.
  *
  * 约定:
@@ -20,7 +20,7 @@
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 37
+export const PARAM_VER = 38
 
 export const PARAM_GROUPS = {
   0: { key: 'balance', label: '平衡环' },
@@ -68,7 +68,7 @@ export const PARAM_DEFS = [
     hint: '启动门控: 角速度小于这个值才允许输出。防止推着车启动' },
   { id: 14, key: 'arm_time',    label: 'Arm Time',      unit: 'ms',def: 500, min: 0, max: 3000, step: 100, dec: 0, grp: 2,
     hint: '启动门控: 需要连续稳定这么久才真正输出。0=不等(不推荐)' },
-  { id: 15, key: 'servo_c',     label: 'Servo Center',  unit: '°', def: 80, min: 30, max: 120, step: 1,   dec: 0, grp: 2,
+  { id: 15, key: 'servo_c',     label: 'Servo Center',  unit: '°', def: 100, min: 30, max: 120, step: 1,   dec: 0, grp: 2,
     hint: '舵机中心角。也是配平表的参考角 (补偿在这一档为 0)' },
   { id: 16, key: 'move_rpm_max',label: 'Move RPM Max',  unit: 'rpm', def: 120, min: 0, max: 333, step: 1, dec: 1, grp: 2,
     hint: 'App 方向键 100% 档位对应的目标轮速 (rpm)。本机轮子最高转速 333 rpm, 默认取 120 (约 36%); 再大目标倾角会顶到 7° 安全阀, 车会左右猛摇。0 = 用代码里的默认值' },

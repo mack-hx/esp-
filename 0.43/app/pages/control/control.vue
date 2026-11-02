@@ -159,6 +159,28 @@
       </view>
     </view>
 
+    <!-- 姿态控制 (快捷姿态 + 跳舞) -->
+    <view class="pad-card">
+      <view class="card-title">姿态控制</view>
+      <view class="pose-btns">
+        <view class="pose-btn pose-btn-squat" @click="onPoseSquat">
+          <text class="pose-icon">⊓</text>
+          <text class="pose-label">蹲下</text>
+        </view>
+        <view class="pose-btn pose-btn-stand" @click="onPoseStand">
+          <text class="pose-icon">⊏</text>
+          <text class="pose-label">起立</text>
+        </view>
+        <view class="pose-btn pose-btn-dance" :class="{ active: dancing }" @click="onPoseDance">
+          <text class="pose-icon">♪</text>
+          <text class="pose-label">{{ dancing ? '停止' : '跳舞' }}</text>
+        </view>
+      </view>
+      <view class="pose-more" @click="goPosePage">
+        <text>姿态页 (跳舞频率可调) ›</text>
+      </view>
+    </view>
+
     <!-- 舵机控制 (范围 30-120° 与 ESP32 servo.h 同步) -->
     <view class="pad-card">
       <view class="card-title">舵机控制</view>
@@ -251,6 +273,10 @@ export default {
       switchState: { sw1: false, sw2: false },
       // 舵机 (范围 30-120° 与 ESP32 servo.h 同步: SERVO_LIMIT_MIN=30, SERVO_LIMIT_MAX=120)
       servoAngle: 100,
+      // 跳舞状态
+      dancing: false,
+      _danceTimer: null,
+      _dancePhase: false, // false=蹲下(100°), true=起立(40°)
       /**
        * App 最近一次下发给设备的值 + 下发时刻。
        * 用途: 轮询到设备上报的值时, 只有"跟 App 下发的值不一样"才认为是
@@ -309,11 +335,13 @@ export default {
   onUnload() {
     if (this._unsubState) this._unsubState()
     if (this._pollTimer) clearInterval(this._pollTimer)
+    if (this._danceTimer) clearInterval(this._danceTimer)
     controller.stopMove()
   },
   onHide() {
     controller.stopMove()
     this.held = null
+    this._stopDance()
   },
   methods: {
     /**
@@ -360,6 +388,9 @@ export default {
     },
     goConnect() {
       uni.navigateTo({ url: '/pages/connect/connect' })
+    },
+    goPosePage() {
+      uni.navigateTo({ url: '/pages/pose/pose' })
     },
     _showTip(msg) {
       this.tip = msg
@@ -520,6 +551,92 @@ export default {
       controller.sendServo(payload)
         .then(() => this._showTip(`舵机 ${label} 已设为 ${this.servoAngle}°`))
         .catch(e => controller.reportError(e))
+    },
+
+    // ========== 姿态控制 ==========
+
+    /**
+     * @brief 蹲下姿态 (100°)
+     */
+    onPoseSquat() {
+      this._stopDance()
+      this.servoAngle = 100
+      const payload = { servo1_angle: 100, servo2_angle: 100 }
+      this._markSent(payload)
+      controller.sendServo(payload)
+        .then(() => this._showTip('蹲下姿态 100°'))
+        .catch(e => controller.reportError(e))
+    },
+
+    /**
+     * @brief 起立姿态 (40°)
+     */
+    onPoseStand() {
+      this._stopDance()
+      this.servoAngle = 40
+      const payload = { servo1_angle: 40, servo2_angle: 40 }
+      this._markSent(payload)
+      controller.sendServo(payload)
+        .then(() => this._showTip('起立姿态 40°'))
+        .catch(e => controller.reportError(e))
+    },
+
+    /**
+     * @brief 跳舞: 周期性切换 40° ↔ 100° (1Hz 频率)
+     */
+    onPoseDance() {
+      if (this.dancing) {
+        this._stopDance()
+      } else {
+        this._startDance()
+      }
+    },
+
+    /**
+     * @brief 启动跳舞定时器 (1Hz, 每 1s 切换一次姿态)
+     */
+    _startDance() {
+      this.dancing = true
+      this._dancePhase = false
+      this._showTip('开始跳舞 ♪')
+      
+      // 立即执行第一次
+      this._danceStep()
+      
+      // 每 1s 切换一次
+      this._danceTimer = setInterval(() => {
+        this._danceStep()
+      }, 1000)
+    },
+
+    /**
+     * @brief 停止跳舞
+     */
+    _stopDance() {
+      if (this._danceTimer) {
+        clearInterval(this._danceTimer)
+        this._danceTimer = null
+      }
+      if (this.dancing) {
+        this.dancing = false
+        this._showTip('停止跳舞')
+      }
+    },
+
+    /**
+     * @brief 执行一次跳舞动作
+     */
+    _danceStep() {
+      this._dancePhase = !this._dancePhase
+      const angle = this._dancePhase ? 40 : 100
+      this.servoAngle = angle
+      
+      const payload = { servo1_angle: angle, servo2_angle: angle }
+      this._markSent(payload)
+      controller.sendServo(payload).catch(e => {
+        // 跳舞时发送失败不弹错误，避免打断
+        console.error('跳舞指令发送失败', e)
+      })
     }
   }
 }
@@ -943,6 +1060,70 @@ export default {
 .btn-stop { background: #d9534f; }
 .btn-stand { background: #1aad19; }
 .btn-calib { background: #f0ad4e; }
+
+/* 姿态控制样式 */
+.pose-btns {
+  display: flex;
+  gap: 16rpx;
+  padding: 8rpx 0;
+}
+
+/* 姿态页入口 */
+.pose-more {
+  padding: 12rpx 0 0;
+  text-align: right;
+  font-size: 24rpx;
+  color: #1aad19;
+}
+
+.pose-btn {
+  flex: 1;
+  height: 140rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16rpx;
+  background: #f7f7f7;
+  border: 2rpx solid #e0e0e0;
+  user-select: none;
+  transition: all 0.1s;
+}
+
+.pose-btn:active {
+  transform: scale(0.96);
+}
+
+.pose-btn.active {
+  background: #1aad19;
+  border-color: #168b16;
+}
+
+.pose-btn.active .pose-icon,
+.pose-btn.active .pose-label {
+  color: #fff;
+}
+
+.pose-icon {
+  font-size: 52rpx;
+  color: #1aad19;
+  line-height: 1;
+  margin-bottom: 8rpx;
+}
+
+.pose-label {
+  font-size: 26rpx;
+  color: #666;
+  font-weight: 500;
+}
+
+.pose-btn-squat .pose-icon { color: #f0ad4e; }
+.pose-btn-stand .pose-icon { color: #1aad19; }
+.pose-btn-dance .pose-icon { color: #5bc0de; }
+
+.pose-btn.active .pose-icon {
+  color: #fff;
+}
 
 .tip-mask {
   position: fixed;
