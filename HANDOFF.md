@@ -13,6 +13,10 @@
 - 编译：0.43、0.44 的 `main_car` 均 `pio run` 通过；`scripts/run_tests.sh`（默认 0.44）55 项全过，参数表 24 项一致（版本 38）。
 - 0.41 / 0.42 目录已删，源码和压缩包在 tag 与 GitHub Release 里。
 
+## 仓库文档（2026-11-04）
+- 根 `README.md` 已重写为开源介绍（功能 / 硬件引脚表 / 架构 / 快速开始 / 协议 / 工具 / 版本），新增 `LICENSE`（MIT）。
+- 遗留：`0.44/main_car/README.md` 标题仍是 0.42；`0.44/README.md` 部分命令写 0.43；`0.44/app/common/config.js` 里有作者设备 AccessKey。
+
 ## 待办
 1. **烧录真机验证 0.43**：pitch 新公式（能否正常直立，这是首要）、Roll 正负方向、LCD Roll 显示、配平 Roll 零点、姿态按钮与跳舞、状态灯配色。
 2. App 重新打包验证姿态页与参数版本 38（建议点"恢复默认"让 `servo_c=100` 生效）。
