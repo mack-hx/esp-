@@ -30,10 +30,11 @@ ESP32-S3R8N8 平衡轮腿机械狗 **配套 App**（uni-app 项目，H5 为主�
 │   ├── control/control.vue # 遥控页 (前后 + 急停/起立/配平 + 灯/电磁铁/舵机)
 │   ├── params/params.vue   # 参数页 (拉取/保存参数)
 │   └── status/status.vue   # 状态页 (实时属性 + 去调参入口)
-├── dev/
-│   └── onenet_proxy.js     # 本地开发用代理 (跨域时用)
-└── onenet_物模型.md        # 物模型接入指南 (给操作员看)
+└── dev/
+    └── onenet_proxy.js     # 本地开发用代理 (跨域时用)
 ```
+
+物模型表格、MQTT topic 与报文格式见 `../docs/onenet_mqtt_guide.md`。
 
 ## 通信方式
 

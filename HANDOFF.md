@@ -15,7 +15,13 @@
 
 ## 仓库文档（2026-11-04）
 - 根 `README.md` 已重写为开源介绍（功能 / 硬件引脚表 / 架构 / 快速开始 / 协议 / 工具 / 版本），新增 `LICENSE`（MIT）。
-- 遗留：`0.44/main_car/README.md` 标题仍是 0.42；`0.44/README.md` 部分命令写 0.43；`0.44/app/common/config.js` 里有作者设备 AccessKey。
+- 遗留：`0.44/main_car/README.md` 标题仍是 0.42；`0.44/README.md` 部分命令写 0.43。
+
+## 密钥安全（2026-11-04）
+- 仓库 public，设备级 AccessKey 已泄露在 git 历史。**用户需去 OneNET 控制台重置 `balancing_dog` / `balancing_dog_sub` 的访问密钥**，重置后旧 key 自动作废（历史里的副本变废串）；主车/副车要重烧固件，App 连接页重填。
+- 固件密钥位置：`main_car|sub_car/user/onenet_client/onenet_secret.h`（不入库），模板 `onenet_secret.example.h`。`onenet_client.h` 只留产品 ID 和设备名。
+- App 默认值：`0.44/app/common/config.js` 的三元组留空，用户在连接页填一次，存 storage。
+- 新文档：`0.44/docs/onenet_mqtt_guide.md`（建产品到 MQTT 报文全流程）；旧的 `0.44/app/onenet_物模型*.md` 已删。
 
 ## 待办
 1. **烧录真机验证 0.43**：pitch 新公式（能否正常直立，这是首要）、Roll 正负方向、LCD Roll 显示、配平 Roll 零点、姿态按钮与跳舞、状态灯配色。

@@ -17,20 +17,22 @@
 const STORAGE_KEY = 'ebr_config_v3'
 
 /**
- * @brief 默认配置 (OneNet 产品 6YlUqr9lue / 设备 balancing_dog)
- * @note  accessKey 用**设备级** AccessKey (跟 ESP32 端同一把) 即可:
+ * @brief 默认配置: 设备三元组留空, 由用户在"连接"页填写
+ * @note  仓库是公开的, 不能把 AccessKey 写进源码。
+ *        用户在连接页填一次后会存进 storage, 之后自动带上。
+ *        accessKey 用**设备级** AccessKey (跟 ESP32 端同一把) 即可:
  *        开放接口 (query-device-property / set-device-desired-property /
- *        call-service) 都通。另一把产品级的 key 反而会返回 10403 无效鉴权。
+ *        call-service) 都通。产品级 key 会返回 10403 无效鉴权。
  */
 const DEFAULT_CONFIG = {
-  // === OneNet 设备三元组 ===
-  productId: '6YlUqr9lue',
-  deviceName: 'balancing_dog',
-  deviceAccessKey: 'YlpFVXlONlMzTUNnMHRocTRXSG04SkZMbmVrdEdmQTI=',
+  // === OneNet 设备三元组 (用户自行填写) ===
+  productId: '',
+  deviceName: '',
+  deviceAccessKey: '',
 
-  // === 副车 (同一产品下的第二个设备) ===
-  subDeviceName: 'balancing_dog_sub',
-  subDeviceAccessKey: 'ZkhDYklSU0NHY1MyWVk3cGEwMm1XN0FydXVpb2w2SDA=',
+  // === 副车 (同一产品下的第二个设备, 可选) ===
+  subDeviceName: '',
+  subDeviceAccessKey: '',
 
   // === HTTP API 调优 ===
   tokenExpireSec: 86400,   // 24h

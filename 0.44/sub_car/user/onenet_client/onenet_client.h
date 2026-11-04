@@ -29,12 +29,12 @@
 #include "esp_err.h"
 #include <stdbool.h>
 
-/* ========== 编译期配置 (用户填的) ==========
- * 这里写死项目对应的产品/设备. 后续如果换项目, 改这三行 + 重算 token. */
+/* ========== 编译期配置 ==========
+ * 产品 / 设备名写在这里; 设备级 AccessKey 放在不入库的 onenet_secret.h
+ * (参考 onenet_secret.example.h), 避免公开仓库泄露密钥. */
 #define ONENET_PRODUCT_ID    "6YlUqr9lue"
 #define ONENET_DEVICE_NAME   "balancing_dog_sub"
-/** 设备级 AccessKey (Base64 字符串), 跟 App 端 onenet.js 里写的一致 */
-#define ONENET_DEVICE_AK     "ZkhDYklSU0NHY1MyWVk3cGEwMm1XN0FydXVpb2w2SDA="
+#include "onenet_secret.h"   /* 提供 ONENET_DEVICE_AK */
 
 /* ========== 对外 API ========== */
 

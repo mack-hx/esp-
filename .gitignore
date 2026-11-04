@@ -41,3 +41,6 @@ __pycache__/
 compile_commands.json
 skills-lock.json
 
+
+# OneNet 设备密钥 (不入库, 参考 onenet_secret.example.h)
+onenet_secret.h
