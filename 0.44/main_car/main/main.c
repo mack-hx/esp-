@@ -24,6 +24,7 @@
 #include "param.h"
 #include "balance.h"
 #include "status_led.h"
+#include "rolltest.h"
 #include "onenet_client.h"
 #include "ble_ctrl.h"
 #include "ui_home.h"
@@ -163,6 +164,9 @@ void app_main(void)
     if (status_led_start() != ESP_OK) {
         ESP_LOGW(TAG, "状态灯任务未启动, 灯只受 App/LCD 手动控制");
     }
+
+    /* 8.0.2 横滚角实测工具 (串口命令, 允许失败) */
+    rolltest_start();
 
     /* 8.0 启动 BLE 直控: 控制器要连续的内部 RAM, 必须在 WiFi/MQTT 占用内存之前; 允许失败 */
     esp_err_t ble_ret = ble_ctrl_start();

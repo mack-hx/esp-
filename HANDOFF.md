@@ -1,7 +1,8 @@
 # HANDOFF.md
 
 ## 当前状态
-- **最新版本 `0.44/`**（2026-11-02 从 0.43 复制，**还没有新改动**，HBuilderX 打开 `0.44/app`）。0.43 已发布：tag v0.43 + GitHub Release + `releases/esp_balance_rob_v0.43.zip`，不再修改。
+- **最新版本 `0.44/`**（HBuilderX 打开 `0.44/app`）。0.43 已发布：tag v0.43 + GitHub Release + `releases/esp_balance_rob_v0.43.zip`，不再修改。
+- **0.44 新改动（2026-11-04，已编译烧录，待实测填表）**：横滚补偿改为查实测表 —— `hardware/roll_compensator/servo_roll_table.{h,c}` 存 (两腿平均角 base, 角度差 delta) → 实测横滚角，`servo_roll_gain()` 每组过原点拟合后按 base 插值；`user/rolltest/` 串口工具（`help`/`r <左> <右>`/`sweep`/`comp on|off`）自动扫点并打印可粘贴的表格行；`servo_write_hw()` 在「起立态 && 补偿开」时叠加补偿（默认关）。`servo_height_table.h` 已删。
 - **0.43 已发布内容（全部未烧录真机验证）**：
   - App：遥控页姿态按钮（蹲下 100° / 起立 40° / 跳舞 1Hz）+ 独立姿态页 `pages/pose`（跳舞频率可调，遥控页右下角链接进入）
   - 固件：`hardware/roll_compensator` 横滚角补偿，**默认关闭**（增益 0、死区 10°、限幅 25°），仅起立状态生效
@@ -26,7 +27,7 @@
 ## 待办
 1. **烧录真机验证 0.43**：pitch 新公式（能否正常直立，这是首要）、Roll 正负方向、LCD Roll 显示、配平 Roll 零点、姿态按钮与跳舞、状态灯配色。
 2. App 重新打包验证姿态页与参数版本 38（建议点"恢复默认"让 `servo_c=100` 生效）。
-3. Roll 补偿参数可调 + 使能开关（加入参数表或 OneNET/App 控制）——真机确认方向后再开。
+3. 横滚角实测表：车放平后串口发 `sweep`（约 30 s），把 12 行 `{ base, delta, rollf },` 抄进 `0.44/main_car/hardware/roll_compensator/servo_roll_table.c`，重编译烧录；再起立后 `comp on` 验证补偿方向（若无实测数据灵敏度为 0，补偿自动不生效）。
 4. 脱机测试：flash 记录已含 `tavg/tdiff/diff/roll`（72 字节/条），按急停或摔落后插线 `python3.11 scripts/read_flash_log.py /tmp/flog` 读出；待分析：转弯后位置不稳 / 向一侧走 / 摔倒。
 5. 遥控速度环与 `BAL_POS_BLEND_RPM` 因轮速放大 2.7 倍尚未重调。
 6. 静止时若再出现晃动：先查电机死区/静摩擦（静止 out 仅 ±6%，死区实测约 2.2%，参数 `deadzone` 默认 4%），不要再动位置环。
