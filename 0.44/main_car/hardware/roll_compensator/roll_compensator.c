@@ -52,12 +52,7 @@ void roll_comp_calculate(float roll_deg, uint8_t servo_left, uint8_t servo_right
     if (need > ROLL_COMP_MAX) need = ROLL_COMP_MAX;
     int comp_abs = (int)(need + 0.5f);
 
-    /* 站立: 高侧收腿; 蹲下: 低侧伸腿; 每次只动一侧 */
-    if (output->stance == ROLL_STANCE_STAND) {
-        if (roll_deg > 0) output->right_comp = (int8_t)comp_abs;
-        else              output->left_comp  = (int8_t)comp_abs;
-    } else {
-        if (roll_deg > 0) output->left_comp  = (int8_t)-comp_abs;
-        else              output->right_comp = (int8_t)-comp_abs;
-    }
+    /* 实测: 收腿(角度增大)会抬高该侧, 因此把高侧那条腿伸长(角度减小) */
+    if (roll_deg > 0) output->right_comp = (int8_t)-comp_abs;  /* 右侧高 */
+    else              output->left_comp  = (int8_t)-comp_abs;  /* 左侧高 */
 }

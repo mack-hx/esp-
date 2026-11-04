@@ -2,9 +2,11 @@
  * @file servo_roll_table.h
  * @brief 舵机角度差 ↔ 车身横滚角 实测对照表
  *
- * @note 测量方法 (固件串口命令 sweep 自动跑, 见 user/rolltest):
- *   两腿平均角固定为 base, 左腿 = base - delta/2, 右腿 = base + delta/2,
- *   等车体静止后取 1 s 横滚角平均。delta 为正表示"左腿伸长"。
+ * @note 测量方法 (固件串口命令 sweep 自动跑, 见 user/rolltest), 四组各 5 点:
+ *      A 固定左腿 40°, 右腿 40→80;  B 固定右腿 40°, 左腿 40→80
+ *      C 固定左腿 100°, 右腿 100→60; D 固定右腿 100°, 左腿 100→60
+ *   delta = 右腿角度 - 左腿角度; delta > 0 表示右腿更短 (该侧被抬高)。
+ *   base 填不动那条腿的角度, 查表时按两腿平均角选最近的一组。
  *
  * @note 表只存实测原始值; 每组 (base) 以 delta=0 的点为零点,
  *       用最小二乘过原点拟合出该组的灵敏度 gain = Δroll / Δdelta。

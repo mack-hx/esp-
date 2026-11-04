@@ -302,8 +302,8 @@ static void balance_read_sensors(void)
             }
             s_data.gyro = s_gyro_lpf;
             
-            /* ========== Roll 角更新到舵机补偿模块 ========== */
-            servo_set_roll_angle(euler.roll);
+            /* Roll 角更新到舵机补偿模块 (扣配平零点, 正值=右侧高) */
+            servo_set_roll_angle(euler.roll - s_roll_zero);
         }
     } else {
         s_data.pitch     = 0.0f;
