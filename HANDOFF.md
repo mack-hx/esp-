@@ -9,6 +9,10 @@
   - 上坡/下坡：`SPD_PID_WALK_PITCH_MAX` 7→10°；新增坡度前馈 `SLOPE_FF_K=0.35`（低通 1.5 s 倾角按比例补进目标，限幅 ±3°）。
   - `test_speed_pid_pc.c` 的 7° 断言改为用宏。
   - 编译通过、已烧录、`scripts/run_tests.sh` 全过。
+- **0.44 新改动（2026-11-05 晚 2）**：修 roll 配平失效 + 平衡页加显示。
+  - **roll 配平失效（重要 bug）**：`balance_calib_step()` 采的 roll 已扣过旧零点，却直接当新零点赋值 → 新零点 = 原始roll − 旧零点，显示又回到原始值，每配一次把零点抹回 0。现改为 `s_roll_zero += mean`。pitch 采的是未扣零点值，本来就对。
+  - `s_data.roll` 改为已扣零点，LCD / TRACE / 横滚闭环同源。
+  - 平衡页新增 `Rol:` 行与 `Svo: S1/S2` 行。
 - **0.44 上一轮改动（2026-11-05 白天）**：坡道保持 + 横滚闭环 + 偏航阻尼。
   - `lqr_pos_integral()` 新增「正在远离锚点」判定，溜坡时继续累积不衰减；`LQR_POS_I_MAX` 5→12°，`LQR_POS_I_BAND` 6→8 cm，`POS_PID_LEAN_MAX` 8→12°。
   - `hardware/roll_compensator/` 重写为 IMU 横滚闭环（PD+弱积分）。**实测灵敏度仅 0.14 °横滚/°舵机**（舵机差 30° → 横滚 4°），`ROLL_COMP_SIGN=-1`（角度增大抬高该侧），Kp 2.0 / Ki 0.4 / Kd 0.10。`servo_set_roll_trim()` 在 `servo_write_hw()` 里叠加，不改 `s_angle[]`。查表开环 `servo_roll_table.c/h` 已删。
