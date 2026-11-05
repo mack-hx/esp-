@@ -25,17 +25,12 @@
       -o /tmp/param_test -I test -I main_car/user/param -DPARAM_OFFLINE_TEST
   /tmp/param_test
 
-  # 速度环 / 位置环: 这两个模块要读 param 表, 离线编译用 param_offline.h 桩头
+  # 速度环: 读 param 表, 离线编译用 param_offline.h 桩头
   # (param.h 里 #ifndef PARAM_OFFLINE_TEST 才 include esp_err.h)
   gcc -std=c99 -Wall -Wextra -DPARAM_OFFLINE_TEST \
       test/test_speed_pid_pc.c main_car/user/pid/speed_pid.c main_car/user/pid/pid.c \
       -o /tmp/speed_pid_test -I test -I main_car/user/pid -I main_car/user/param -lm
   /tmp/speed_pid_test
-
-  gcc -std=c99 -Wall -Wextra -DPARAM_OFFLINE_TEST \
-      test/test_position_pid_pc.c main_car/user/pid/position_pid.c main_car/user/pid/pid.c \
-      -o /tmp/position_pid_test -I test -I main_car/user/pid -I main_car/user/param -lm
-  /tmp/position_pid_test
 
 全部通过时退出码为 0。
 

@@ -24,8 +24,7 @@
 
 /* ========== 参数分组 (网页按分组折叠显示) ========== */
 typedef enum {
-    PARAM_GRP_BALANCE = 0,   // 平衡环 (直立)
-    PARAM_GRP_SPEED,         // 速度环 (前后走)
+    PARAM_GRP_SPEED = 0,     // 速度环 / 位置环 (前后走)
     PARAM_GRP_LIMIT,         // 限幅 / 死区 / 启动门控
     PARAM_GRP_MAX            // 哨兵
 } param_group_t;
@@ -33,12 +32,8 @@ typedef enum {
 /* ========== 参数 ID (每个滑块一个) ==========
  * 顺序 = NVS blob 的下标顺序, 只在末尾追加; 改了数量就把 PARAM_DATA_VERSION +1 */
 typedef enum {
-    /* --- 平衡环: 靠 Pitch 把车扶正 --- */
-    PARAM_PID_BAL_KP = 0,    // 平衡 Kp (越大越"硬", 但容易抖)
-    PARAM_PID_BAL_KI,        // 平衡 Ki (消除持续倾斜)
-    PARAM_PID_BAL_KD,        // 平衡 Kd (角速度阻尼)
     /* --- 速度环: 控制前进后退速度 --- */
-    PARAM_PID_SPD_KP,
+    PARAM_PID_SPD_KP = 0,
     PARAM_PID_SPD_KI,
     PARAM_PID_SPD_KD,
     /* --- 限幅 / 死区 / 滤波 / 摔倒检测 --- */
@@ -55,14 +50,12 @@ typedef enum {
     PARAM_ARM_TIME,          // 需要连续稳定的时长 (ms)
     /* --- 舵机 --- */
     PARAM_SERVO_CENTER,      // 舵机中心角 (°) —— 配平表的参考角
-    PARAM_MOVE_RPM_MAX,     // 走路上限 (rpm): App 方向键 100% 档位对应的目标轮速
-    PARAM_WHEEL_DIA,        // 轮子直径 (cm): 里程计用, 距离 = 脉冲数 / (44 × gear) × π × 轮径
-    PARAM_POS_KP,           // 位置保持环比例增益 (°/cm)
-    PARAM_POS_KD,           // 位置保持环速度阻尼增益 (°/(cm/s))
-    PARAM_POS_KI,           // 位置保持环积分增益 (°/(cm·s))
-    PARAM_LQR_KX,           // LQR 位置偏差增益 (%/cm)
-    PARAM_LQR_KV,           // LQR 平移速度增益 (%/(cm/s))
-    PARAM_LQR_AMAX,         // LQR 回位减速度上限 (cm/s²)
+    PARAM_MOVE_RPM_MAX,      // 走路上限 (rpm): App 方向键 100% 档位对应的目标轮速
+    PARAM_WHEEL_DIA,         // 轮子直径 (cm): 里程计用, 距离 = 脉冲数 / (44 × gear) × π × 轮径
+    /* --- 位置环 (LQR) --- */
+    PARAM_LQR_KX,            // LQR 位置偏差增益 (%/cm)
+    PARAM_LQR_KV,            // LQR 平移速度增益 (%/(cm/s))
+    PARAM_LQR_AMAX,          // LQR 回位减速度上限 (cm/s²)
     PARAM_MAX                // 哨兵
 } param_id_t;
 

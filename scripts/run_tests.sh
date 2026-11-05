@@ -38,10 +38,6 @@ run "speed_pid" sh -c "gcc -std=c99 -Wall -Wextra -DPARAM_OFFLINE_TEST \
     test/test_speed_pid_pc.c main_car/user/pid/speed_pid.c main_car/user/pid/pid.c \
     -o /tmp/speed_pid_test -I test -I main_car/user/pid -I main_car/user/param -lm && /tmp/speed_pid_test"
 
-run "position_pid" sh -c "gcc -std=c99 -Wall -Wextra -DPARAM_OFFLINE_TEST \
-    test/test_position_pid_pc.c main_car/user/pid/position_pid.c main_car/user/pid/pid.c \
-    -o /tmp/position_pid_test -I test -I main_car/user/pid -I main_car/user/param -lm && /tmp/position_pid_test"
-
 run "lqr" sh -c "gcc -std=c99 -Wall -Wextra -DPARAM_OFFLINE_TEST \
     test/test_lqr_pc.c main_car/user/pid/lqr.c main_car/user/pid/pid.c \
     -o /tmp/lqr_test -I test -I main_car/user/pid -I main_car/user/param -lm && /tmp/lqr_test"

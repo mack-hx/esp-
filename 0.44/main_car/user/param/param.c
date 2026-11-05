@@ -27,10 +27,11 @@ static const char *TAG = "PARAM";
 #endif
 
 /* 参数表版本与 App 前端同步, 每次增删参数就 +1
+ * 39: 删除 LQR 下不生效的 bal_kp/bal_ki/bal_kd 与 pos_kp/pos_kd/pos_ki (24 → 18 项)
  * 37: LQR 放开 (KP 22/KD 0.6/VMAX 35, motor_max 95%, 倾角限 35°, 起立 30%/800ms)
  *     + 速度环提速 (斜坡 150/120, kp 0.08/ki 0.04, move_rpm_max 120)
  *     + LCD 刷新 50ms + BLE 优先级 23 */
-#define PARAM_DATA_VERSION  38
+#define PARAM_DATA_VERSION  39
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
 static float s_values[PARAM_MAX];
@@ -44,15 +45,7 @@ static bool s_stale_write = false;
 
 /* ========== 参数描述表 ========== */
 const param_item_t g_param_items[] = {
-    /* ---------- 平衡环 (直立) ---------- */
-    { PARAM_PID_BAL_KP, "bal_kp", "Balance Kp", "",  13.0f,   0.0f,  200.0f,  0.5f, 1, PARAM_GRP_BALANCE,
-      "越大越硬。太小扶不倒, 太大高频抖。这是**最需要真机试出来的**参数" },
-    { PARAM_PID_BAL_KI, "bal_ki", "Balance Ki", "",   0.5f,   0.0f,  100.0f,  0.5f, 1, PARAM_GRP_BALANCE,
-      "消除配平残余偏差。太大容易积分饱和 (车会先猛冲再回不来)" },
-    { PARAM_PID_BAL_KD, "bal_kd", "Balance Kd", "",   0.4f,   0.0f,   30.0f,  0.1f, 1, PARAM_GRP_BALANCE,
-      "角速度阻尼。⚠ 默认 0.4, 不要再加大: >1 会激起 8~12Hz 满幅打摆自激。"
-      "车晃得停不下来就加, 出现高频嗡嗡声就减小" },
-
+    /* ---------- 速度环 (直立环由 LQR 接管, 无参数) ---------- */
     { PARAM_PID_SPD_KP, "spd_kp", "Speed Kp",   "",   0.08f,   0.0f,  200.0f,  0.01f, 2, PARAM_GRP_SPEED,
       "走多快 (°/rpm)。App 方向键就走这个环: 目标轮速 → 目标倾角 → "
       "平衡环 (平衡环全程不撒手)。调大走得快, 但目标倾角被限制在 10° 以内 "
@@ -105,27 +98,12 @@ const param_item_t g_param_items[] = {
       "**轮子直径** (cm)。里程计靠它把编码器脉冲换算成位移: "
       "距离 = 脉冲数 / (44 × gear) × π × 轮径。本机实测 6.5 cm。"
       "填错会让位置反馈整体缩放错误 (位置保持环纠偏力度不对)" },
-    { PARAM_POS_KP, "pos_kp", "Position Kp", "°/cm", 1.27f, 0.0f, 2.0f, 0.01f, 2, PARAM_GRP_SPEED,
-      "位置保持环比例增益 (°/cm): 位置偏差 1 cm 时, 给平衡环多少度的回位倾角。"
-      "这一环是**弹簧** —— 推得越远回位力越大, 松手后自己回到原位。"
-      "**默认 1.27** (偏差 2 cm → 约 2.5° 倾角)。"
-      "⚠ 倾角小于 1° 时电机死区里轮子不转, 车根本不会动, 所以别调得比 0.4 小。"
-      "太大 → 回位太猛, 冲过头来回晃。一次加 0.1, 推一下车看效果" },
-    { PARAM_POS_KD, "pos_kd", "Position Kd", "°/(cm/s)", 0.18f, 0.0f, 2.0f, 0.01f, 2, PARAM_GRP_SPEED,
-      "位置保持环速度阻尼 (°/(cm/s)): 回位时的速度反馈, 相当于**刹车**。"
-      "**默认 0.18** (速度 10 cm/s → 约 1.8° 刹车倾角)。"
-      "⚠ 太大会让这一环自己振起来 (速度测量有约 30 ms 滞后)。"
-      "冲过头停不下来 → 每次加 0.03; 车身一直来回晃 → 每次减 0.03" },
-    { PARAM_POS_KI, "pos_ki", "Position Ki", "°/(cm·s)", 0.1f, 0.0f, 1.0f, 0.01f, 2, PARAM_GRP_SPEED,
-      "位置保持环积分增益: 消掉站住之后慢慢偏这种稳态位置偏差。"
-      "**默认 0.1**: 补平衡环零点偏差 / 地面略斜造成的常驻位置偏差, 倾角小于 1° 时也靠它慢慢补掉。"
-      "配大了车会来回慢晃, 配 0 则停位会留偏差。步进 0.01" },
     { PARAM_LQR_KX, "lqr_kx", "LQR Kx", "%/cm", 5.0f, 0.0f, 20.0f, 0.25f, 2, PARAM_GRP_SPEED,
       "LQR 位置偏差增益 (%/cm): 站立时位置偏差 1 cm 对应的回位力度, 越大回位越硬。"
-      "仅 LQR 模式生效 (此时 pos_kp/pos_kd/pos_ki 不生效)。步进 0.25" },
+      "回位冲过头 → 减小; 回位太慢 → 加大。步进 0.25" },
     { PARAM_LQR_KV, "lqr_kv", "LQR Kv", "%/(cm/s)", 2.25f, 0.0f, 10.0f, 0.125f, 3, PARAM_GRP_SPEED,
       "LQR 平移速度增益 (%/(cm/s)): 回位时的速度阻尼(刹车)。推完来回摆多次 → 加大; "
-      "车身高频抖或自己振起来 → 减小。仅 LQR 模式生效。步进 0.125" },
+      "车身高频抖或自己振起来 → 减小。步进 0.125" },
     { PARAM_LQR_AMAX, "lqr_amax", "LQR 回位减速度", "cm/s²", 8.0f, 0.0f, 150.0f, 1.0f, 0, PARAM_GRP_SPEED,
       "回位减速度上限 (cm/s²): 偏差大时期望回位速度 = sqrt(2·值·偏差), 车会提前减速, 到位时速度接近 0。"
       "回位冲过头 → 减小; 回位太慢 → 加大。0 = 不限制回位速度 (退回纯线性)。步进 1" },

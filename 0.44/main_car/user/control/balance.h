@@ -1,20 +1,7 @@
 /**
  * @file balance.h
  * @brief 平衡控制串级控制器 (双轮同向驱动)
- *
- * @note  控制结构 (串级, 从外到内):
- *   速度环 (行走时) / 位置保持环 (停车时) → 目标倾角 target_pitch (°)
- *   → 平衡环 (内环) → 电机输出 (%)
- *
- * @note  各控制环的 PID 运算在独立组件 user/pid/ 里:
- *        balance_pid.c (平衡环) / speed_pid.c (速度环) /
- *        steer_pid.c (转向环) / position_pid.c (位置保持环)。
- *        本头文件只放跨模块共享的内容: 控制周期、方向常量、
- *        行走/起立的机械参数、状态机枚举、对外 API。
- *
- * @note  配平 (balance_calibrate): 连采 50 个 pitch + roll 点取平均当零点,
- *        存 NVS `bal`/`pz`+`rz`, 不驱动电机。
- *
+ 
  * @author ESP32 平衡轮腿机器人
  */
 
@@ -43,7 +30,7 @@
  * w=1 全由速度环给倾角, w=0 全由位置环给倾角 */
 #define BAL_POS_BLEND_RPM     5.0f
 
-/* 位置保持环的常量 (死区 / 输出上限) 放在 user/pid/position_pid.h
+/* 位置保持环的常量 (死区 / 输出上限) 放在 user/pid/lqr.h
  * 速度环死区 / 倾角上限 / 默认增益 → user/pid/speed_pid.h
  * 转向环增益与输出上限              → user/pid/steer_pid.h */
 
@@ -82,7 +69,7 @@
 #define GYRO_PITCH_SIGN        (+1.0f)  /* 角速度与 pitch 同号 (前倾为负) */
 
 /* 偏航阻尼: 航向角速度反馈进差速环, 车头被带偏时用轮速差把它拉回来
- * GYRO_YAW_SIGN: 陀螺 Y 轴 (车体竖直轴) → 左转为正的符号 (装配方向反了改 -1)
+ * GYRO_YAW_SIGN: 陀螺 Z 轴 → 左转为正的符号 (装配方向反了改 -1)
  * YAW_DAMP_K:    (°/s) → 目标轮速差 (rpm), 0 = 关闭 */
 #define GYRO_YAW_SIGN          (+1.0f)
 #define YAW_DAMP_K             0.40f
@@ -90,10 +77,10 @@
 #define YAW_DAMP_MAX_RPM       4.0f   /* rpm 阻尼项对目标差速的最大修正 (防单侧悬空打滑时越拱越快) */
 
 /* ========== 坡度前馈 ==========
- * 低通后的车身倾角 ≈ 坡上必须常驻的倾角。行走时按比例补进倾角目标,
+ * 低通后的车身倾角 ≈ 坡上必须常驻的倾角。行走时按比例补进倾角目标:
  * 上坡 (前倾, pitch<0) 多给前倾, 下坡 (后仰, pitch>0) 多给后仰。
- * K=0 关闭: 倾角本身是平衡环的输出, 按比例回灌目标会自我放大 (平地上猛冲)。 */
-#define SLOPE_FF_K             0.0f
+ * K=0 关闭。 */
+#define SLOPE_FF_K             0.35f
 #define SLOPE_FF_LPF_TAU       1.5f   /* s 倾角低通时间常数 */
 #define SLOPE_FF_MAX           3.0f   /* ° 前馈量上限 */
 

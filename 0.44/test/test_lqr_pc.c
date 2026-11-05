@@ -4,7 +4,7 @@
  *
  * @note  覆盖:
  *   1) 倾角项/角速度项 —— u = KP*倾角误差 + KD*角速度, 过零且线性
- *   2) 位置项符号与饱和 —— 目标在前方 → 前倾; 向前运动 → 刹车; 不超过 ±POS_PID_LEAN_MAX
+ *   2) 位置项符号与饱和 —— 目标在前方 → 前倾; 向前运动 → 刹车; 不超过 ±LQR_LEAN_MAX
  *   3) 闭环仿真 —— 把 lqr.c 接到 40°/70°/100° 三个腿角的辨识模型上
  *      (含 15~20 ms 执行延迟、10 ms 采样保持、±60% 输出限幅),
  *      3° 倾斜与 6 cm 偏移都要回到零点; 输入增益 ±30%、延迟 ±5 ms 仍然稳定;
@@ -23,7 +23,7 @@
 #include <stdbool.h>
 
 #include "lqr.h"
-#include "position_pid.h"
+#include "lqr.h"
 #include "pid.h"
 
 static int g_pass = 0;
@@ -147,16 +147,16 @@ static void test_pos_lean(void)
 
     float e = pid_soft_deadband(1.0f, LQR_ERR_DEADBAND, LQR_ERR_SOFT_BAND);
     float raw = (-LQR_KX * e) / LQR_KP;
-    float expect = POS_PID_LEAN_MAX * tanhf(raw / POS_PID_LEAN_MAX);
+    float expect = LQR_LEAN_MAX * tanhf(raw / LQR_LEAN_MAX);
     CHECK(near(lqr_pos_lean(1.0f, 0.0f), expect, 1e-5f),
           "1 cm 偏差 → %.3f° (期望 %.3f°)", (double)lqr_pos_lean(1.0f, 0.0f), (double)expect);
 
     CHECK(lqr_pos_lean(30.0f, 10.0f) < lqr_pos_lean(30.0f, 0.0f) - 0.5f,
           "大偏差下速度项仍起刹车作用");
 
-    CHECK(lqr_pos_lean(1000.0f, 0.0f) <= POS_PID_LEAN_MAX + 1e-4f &&
-          lqr_pos_lean(-1000.0f, 0.0f) >= -POS_PID_LEAN_MAX - 1e-4f,
-          "极大偏差 → 不超过 ±%.1f°", (double)POS_PID_LEAN_MAX);
+    CHECK(lqr_pos_lean(1000.0f, 0.0f) <= LQR_LEAN_MAX + 1e-4f &&
+          lqr_pos_lean(-1000.0f, 0.0f) >= -LQR_LEAN_MAX - 1e-4f,
+          "极大偏差 → 不超过 ±%.1f°", (double)LQR_LEAN_MAX);
 
     int mono = 1;
     float prev = lqr_pos_lean(0.0f, 0.0f);
@@ -170,7 +170,7 @@ static void test_pos_lean(void)
     CHECK(isfinite(lqr_pos_lean(1e30f, -1e30f)), "极端输入 → 输出有限");
 
     /* 增益可在线设置: 速度项随 kv 线性变化, 默认值与宏一致, 负值按 0 */
-    #define RAW_OF(l) (POS_PID_LEAN_MAX * atanhf((l) / POS_PID_LEAN_MAX))   /* tanh 之前的原始量 */
+    #define RAW_OF(l) (LQR_LEAN_MAX * atanhf((l) / LQR_LEAN_MAX))   /* tanh 之前的原始量 */
     float base = lqr_pos_lean(0.0f, 6.0f);
     lqr_set_pos_gains(-LQR_KX, 2.0f * -LQR_KV, LQR_AMAX);
     CHECK(near(RAW_OF(lqr_pos_lean(0.0f, 6.0f)), 2.0f * RAW_OF(base), 1e-4f), "kv 翻倍 → 速度项翻倍 (%.3f°)",
@@ -233,7 +233,7 @@ static void test_return_profile(void)
     CHECK(ok, "偏差 0~40 cm 扫描 → 单调不减且无跳变");
 
     CHECK(near(lqr_pos_lean(e, 5.0f), -lqr_pos_lean(-e, -5.0f), 1e-5f), "大偏差关于原点奇对称");
-    CHECK(isfinite(lqr_pos_lean(0.0f, 1e30f)) && lqr_pos_lean(0.0f, 1e30f) >= -POS_PID_LEAN_MAX - 1e-4f,
+    CHECK(isfinite(lqr_pos_lean(0.0f, 1e30f)) && lqr_pos_lean(0.0f, 1e30f) >= -LQR_LEAN_MAX - 1e-4f,
           "极大速度 → 输出有限且不超限");
 
     /* 比纯线性更早收力: 4 cm 偏差、静止时, 开启曲线的前倾指令比线性小 */

@@ -18,6 +18,7 @@
 #define LQR_VEL_HI 5.0f    /* cm/s        |速度| 大于此值时速度项完全参与, 两者之间平滑过渡 */
 #define LQR_ERR_DEADBAND  0.267f  /* cm   位置偏差死区 */
 #define LQR_ERR_SOFT_BAND 0.533f  /* cm   死区软化过渡带宽度 */
+#define LQR_LEAN_MAX      12.0f   /* °    位置环给平衡环的最大倾角目标 */
 
 /**
  * @brief 设置位置项增益 (覆盖 LQR_KX / LQR_KV / LQR_AMAX 的默认值)
@@ -31,7 +32,7 @@ void lqr_set_pos_gains(float kx, float kv, float amax);
  * @brief 位置项折算成等效倾角
  * @param err_cm  锚点位置 − 当前位置 (cm, 前进为正)
  * @param v_cmps  平移速度 (cm/s, 前进为正)
- * @return 等效倾角 (°, 前倾为正), 不超过 ±POS_PID_LEAN_MAX
+ * @return 等效倾角 (°, 前倾为正), 不超过 ±LQR_LEAN_MAX
  * @note  期望回位速度 v_des: 偏差小时 = (KX/KV)·偏差 (线性), 偏差大时按
  *        sqrt(2·AMAX·偏差) 增长并限到 LQR_VMAX, 让车提前减速; 倾角 = (KX·偏差_等效 − KV·速度)/KP,
  *        其中 偏差_等效 = KV·v_des/KX; 速度先乘平滑增益 (|v| < LQR_VEL_LO 为 0, > LQR_VEL_HI 为 1)

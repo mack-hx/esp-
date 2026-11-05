@@ -7,10 +7,8 @@
 #include "balance.h"
 #include "esp_timer.h"
 #include "param.h"
-#include "balance_pid.h"
 #include "speed_pid.h"
 #include "steer_pid.h"
-#include "position_pid.h"
 #include "lqr.h"
 #include "trim.h"
 #include "mpu9250.h"
@@ -41,10 +39,6 @@ static const char *TAG = "BALANCE";
 
 /* 跟踪采样周期 (ms): 100Hz */
 #define BAL_TRACE_PERIOD_MS 10
-
-/* 站立控制器选择: 1 = LQR 状态反馈 (user/pid/lqr.c, 增益固定在代码里);
- * 0 = 原串级 PID (增益读参数表)。LQR 模式下 bal_kp/bal_ki/bal_kd/pos_* 滑块不生效。 */
-#define BAL_USE_LQR 1
 
 /* 蹲姿增益调度的腿角区间 (°):
  * 腿越短 (角度越大) 车身等效转动惯量越小, 同一内环增益的环路增益越大,
@@ -213,24 +207,21 @@ static void balance_save_zero(void)
  */
 static void balance_load_params(void)
 {
-    balance_pid_load_params();   /* 平衡环 */
     speed_pid_load_params();     /* 速度环 */
     steer_pid_load_params();     /* 转向环 */
-    position_pid_load_params();  /* 位置保持环 */
     lqr_set_pos_gains(param_get_float(PARAM_LQR_KX),
                       param_get_float(PARAM_LQR_KV),
                       param_get_float(PARAM_LQR_AMAX));  /* LQR 位置项 */
 }
 
 /**
- * @brief 清空各控制环的积分和微分历史
+ * @brief 清空各控制环的积分状态
  */
 static void balance_reset_pid(void)
 {
-    balance_pid_reset();
     speed_pid_reset();
     steer_pid_reset();
-    position_pid_reset();
+    lqr_pos_integral_reset();
     s_lpf_primed = false;
     /* 目标轮速也归零: 摔倒 / 停机时不能还挂着"往前走"的目标 */
     s_tgt_avg  = 0.0f;
@@ -288,7 +279,7 @@ static void balance_read_sensors(void)
                                                    param_get_float(PARAM_SERVO_CENTER));
 
             s_data.pitch_raw = euler.pitch;
-            s_data.roll      = euler.roll - s_roll_zero;  /* 已扣配平零点, 与横滚闭环一致 */
+            s_data.roll      = euler.roll;  /* 横滚角存入全局状态 */
             s_pitch_corr     = euler.pitch - comp;   /* 配平采样用 (未扣零点) */
             s_data.pitch     = s_pitch_corr - s_pitch_zero;
             s_data.trim_comp = comp;
@@ -313,8 +304,7 @@ static void balance_read_sensors(void)
 
             /* 航向角速度: 车体绕竖直轴转动 = 绕 MPU 的 **Y 轴** (见 mpu9250.c
              * 的姿态积分: yaw 用 gyro.y, roll 用 gyro.z, pitch 用 gyro.x)。
-             * ⚠ 这里原来取的是 gyro.z, 那是横滚角速度 —— 等于把横滚抖动
-             *   灌进差速环, 车会走不直、单侧轮悬空时还会越拱越疯。 */
+             * gyro.z 是横滚角速度, 不能用作航向。 */
             float yaw_rate = gyro.y * GYRO_YAW_SIGN;
             if (!s_yaw_lpf_primed) {
                 s_yaw_lpf = yaw_rate;
@@ -325,11 +315,10 @@ static void balance_read_sensors(void)
             s_yaw_rate = s_yaw_lpf;
             
             /* Roll 角更新到舵机补偿模块 (扣配平零点, 正值=右侧高) */
-            servo_set_roll_angle(s_data.roll);
+            servo_set_roll_angle(euler.roll - s_roll_zero);
         }
     } else {
         s_data.pitch     = 0.0f;
-        s_data.roll      = 0.0f;
         s_data.gyro      = 0.0f;
         s_data.pitch_raw = 0.0f;
         s_data.trim_comp = 0.0f;
@@ -558,7 +547,7 @@ static float balance_move_toward(float cur, float tgt, float up, float down)
  * @note 优先用参数表里的 move_rpm_max (App 参数页可实时调),
  *       为 0 时退回代码里的兜底值 BAL_MOVE_RPM_MAX。
  *       目标轮速越大, 速度环要求的车身倾角越大,
- *       而倾角被 SPD_PID_WALK_PITCH_MAX (10°) 卡着。
+ *       而倾角被 SPD_PID_WALK_PITCH_MAX (7°) 卡着。
  */
 static float balance_move_rpm_max(void)
 {
@@ -641,22 +630,14 @@ static float balance_update_position(float dt)
 
     if (s_state != BAL_STATE_BALANCING) {
         s_data.pos_out = 0.0f;
-        position_pid_reset();
         lqr_pos_integral_reset();
         return 0.0f;
     }
 
-#if BAL_USE_LQR
-    {
-        float err = s_pos_target_cm - cur;
-        float vel = odom_get_velocity_cmps();
-        float lean = lqr_pos_lean(err, vel) + lqr_pos_integral(dt, err, vel);
-        s_data.pos_out = fminf(fmaxf(lean, -POS_PID_LEAN_MAX), POS_PID_LEAN_MAX);
-    }
-#else
-    s_data.pos_out = position_pid_update(dt, s_pos_target_cm - cur,
-                                         odom_get_velocity_cmps());
-#endif
+    float err  = s_pos_target_cm - cur;
+    float vel  = odom_get_velocity_cmps();
+    float lean = lqr_pos_lean(err, vel) + lqr_pos_integral(dt, err, vel);
+    s_data.pos_out = fminf(fmaxf(lean, -LQR_LEAN_MAX), LQR_LEAN_MAX);
     return s_data.pos_out;
 }
 
@@ -699,8 +680,10 @@ static void balance_control_step(float dt)
     float target_pitch = w * spd_pitch - (1.0f - w) * pos_lean;
 
     /* --- 坡度前馈 ---
-     * 倾角是平衡环的输出, 把它按比例回灌倾角目标会形成正反馈 (平地上猛冲),
-     * 所以默认关闭 (SLOPE_FF_K=0); 需要时再调大, 并同步观察是否自激。 */
+     * 平衡环把车身姿态锁在目标倾角上, 所以低通后的实际倾角就是坡上
+     * 必须常驻的那个倾角。行走时按比例补进目标:
+     * 上坡 (pitch<0) 多给前倾 → 爬得动; 下坡 (pitch>0) 多给后仰 → 刹得住。
+     * 停车时把低通跟到当前值, 下次起步不继承旧坡度。 */
     if (w > 0.0f) {
         float a = dt / (SLOPE_FF_LPF_TAU + dt);
         s_slope_lpf += a * (s_data.pitch - s_slope_lpf);
@@ -713,7 +696,7 @@ static void balance_control_step(float dt)
     }
 
     /* 安全阀: 倾角设定点上限 = max(走路上限, 位置环上限), 防止外环把车放倒 */
-    const float pitch_cap = fmaxf(SPD_PID_WALK_PITCH_MAX, POS_PID_LEAN_MAX);
+    const float pitch_cap = fmaxf(SPD_PID_WALK_PITCH_MAX, LQR_LEAN_MAX);
     if (target_pitch >  pitch_cap) target_pitch =  pitch_cap;
     if (target_pitch < -pitch_cap) target_pitch = -pitch_cap;
 
@@ -733,15 +716,8 @@ static void balance_control_step(float dt)
     float yaw = steer_pid_update(dt, s_diff_fwd, yaw_tgt);
     s_data.yaw_out = yaw;
 
-    /* --- 内环: 平衡环 → 电机输出 ---
-     * 误差方向、D 项用角速度反馈 (阻尼) 的细节都在
-     * user/pid/balance_pid.c 里。 */
-#if BAL_USE_LQR
+    /* --- 内环: LQR 倾角/角速度反馈 → 电机输出 --- */
     s_data.bal_out = lqr_balance_out(s_data.pitch - s_data.target_pitch, s_data.gyro);
-#else
-    s_data.bal_out = balance_pid_update(dt, s_data.pitch,
-                                        s_data.target_pitch, s_data.gyro);
-#endif
     /* 蹲姿增益缩放: 腿越短, 内环环路增益越大, 不缩放会在 11Hz 左右自激 */
     s_data.bal_out *= balance_posture_gain();
 
@@ -753,16 +729,6 @@ static void balance_control_step(float dt)
     float out = s_data.bal_out * BAL_MOTOR_SIGN;
 
     float out_max = param_get_float(PARAM_MOTOR_OUT_MAX);
-    if (out >  out_max) out =  out_max;
-    if (out < -out_max) out = -out_max;
-
-    /* --- 起立软启动: 输出限幅慢慢放开 ---
-     * 刚进入平衡状态时车多半还歪着 (甚至被人扶着), 误差大,
-     * PID 输出会直接顶到限幅 → 电机猛地冲一下, 看着就是"剧烈抖动"。
-     * 所以起立后先把输出压在 BAL_RAMP_START_PCT, 再用 BAL_RAMP_TIME_MS
-     * 慢慢放到全功率。 */
-    if (out >  s_out_ramp) out =  s_out_ramp;
-    if (out < -s_out_ramp) out = -s_out_ramp;
 
     /* --- 叠加差速 (转向) ---
      * 差速为正 = 左轮更快 = 左轮输出更小 (电机输出负 = 往车头 = 前进) */
@@ -771,14 +737,12 @@ static void balance_control_step(float dt)
     if (BAL_MOTOR_A_IS_LEFT) { out_a = out - yaw; out_b = out + yaw; }
     else                     { out_a = out + yaw; out_b = out - yaw; }
 
-    if (out_a >  out_max) out_a =  out_max;
-    if (out_a < -out_max) out_a = -out_max;
-    if (out_b >  out_max) out_b =  out_max;
-    if (out_b < -out_max) out_b = -out_max;
-    if (out_a >  s_out_ramp) out_a =  s_out_ramp;
-    if (out_a < -s_out_ramp) out_a = -s_out_ramp;
-    if (out_b >  s_out_ramp) out_b =  s_out_ramp;
-    if (out_b < -s_out_ramp) out_b = -s_out_ramp;
+    /* 每轮限幅: 取"总输出上限"与"起立软启动限幅"中更小的一个 */
+    float out_lim = fminf(out_max, s_out_ramp);
+    if (out_a >  out_lim) out_a =  out_lim;
+    if (out_a < -out_lim) out_a = -out_lim;
+    if (out_b >  out_lim) out_b =  out_lim;
+    if (out_b < -out_lim) out_b = -out_lim;
 
     s_data.motor_a = (int8_t)out_a;
     s_data.motor_b = (int8_t)out_b;
@@ -852,9 +816,9 @@ static void balance_apply_direct_move(void)
 
 /**
  * @brief 配平采样: 控制任务里连续采 CALIB_SAMPLES 个 pitch + roll 取平均
- * @note  pitch 采的是**未扣零点**的 s_pitch_corr, 平均值直接就是新零点。
- * @note  roll 采的是 servo_get_roll_angle(), 它已经扣过旧零点,
- *        所以新零点 = 旧零点 + 采样均值 (不加旧零点会把已有的零点抹掉)。
+ * @note  采样的是**未扣零点**的 pitch (s_pitch_corr),
+ *        否则第二次配平会把零点又减一遍, 越配越偏。
+ *        Roll 直接从 servo_get_roll_angle() 读, 无需修正链。
  */
 static void balance_calib_step(void)
 {
@@ -868,7 +832,7 @@ static void balance_calib_step(void)
 
     /* 采样完成: 取平均作为新的配平零点 */
     s_pitch_zero = s_calib_sum_p / (float)s_calib_count;
-    s_roll_zero += s_calib_sum_r / (float)s_calib_count;
+    s_roll_zero  = s_calib_sum_r / (float)s_calib_count;
     s_calib_active = false;
 
     /* 立刻生效 (内存里的零点), 再落盘 */
@@ -994,8 +958,8 @@ static void balance_task(void *arg)
             ts.pos_err = s_pos_target_cm - s_data.position_cm;
             ts.pos_out = s_data.pos_out;
             ts.pos_vel = odom_get_velocity_cmps();
-            /* kd 可以热改, 必须逐条记采样时刻的值 */
-            ts.kd      = param_get_float(PARAM_PID_BAL_KD);
+            /* kd 记录当前生效的角速度阻尼系数 (LQR_KD 为编译期常量) */
+            ts.kd      = LQR_KD;
             ts.dt      = dt * 1000.0f;
             ts.tavg    = s_tgt_avg;
             ts.tdiff   = s_tgt_diff;
@@ -1021,12 +985,10 @@ static void balance_task(void *arg)
 esp_err_t balance_init(void)
 {
     /* 各控制环初始化: 读 param 表的增益 + 清积分。
-     * 位置保持环 (user/pid/position_pid.c) 接入里程计 (user/odom/):
-     * 里程计用编码器脉冲 + 轮径参数算出位移, 位置反馈因此可用。 */
-    balance_pid_init();
+     * 位置环用里程计 (user/odom/) 的位移与速度做反馈。 */
     speed_pid_init();
     steer_pid_init();
-    position_pid_init();
+    lqr_pos_integral_reset();
     odom_init();
     s_lpf_primed = false;
 

@@ -24,14 +24,14 @@ m = re.search(r"#define\s+PARAM_DATA_VERSION\s+(\d+)", pc)
 fw_ver = int(m.group(1)) if m else None
 
 # 条目: { PARAM_XXX, "key", "label", "unit", def, min, max, step, dec, grp, "hint" }
-# ⚠ grp 字段写的是枚举名 (PARAM_GRP_BALANCE), 不是数字 —— 两种都要能匹配
+# ⚠ grp 字段写的是枚举名 (PARAM_GRP_SPEED), 不是数字 —— 两种都要能匹配
 pat = re.compile(
     r"\{\s*(PARAM_[A-Z0-9_]+)\s*,\s*\"(\w+)\"\s*,\s*\"[^\"]*\"\s*,\s*\"[^\"]*\"\s*,"
     r"\s*([-\d.]+)f\s*,\s*([-\d.]+)f\s*,\s*([-\d.]+)f\s*,\s*([-\d.]+)f\s*,\s*(\d+)\s*,"
     r"\s*(PARAM_GRP_[A-Z]+|\d+)\s*,",
     re.M)
 # 枚举名 → 数字 (跟 param.h 的定义顺序一致)
-GRP = {"PARAM_GRP_BALANCE": 0, "PARAM_GRP_SPEED": 1, "PARAM_GRP_LIMIT": 2}
+GRP = {"PARAM_GRP_SPEED": 0, "PARAM_GRP_LIMIT": 1}
 fw = {}
 order = []
 for mm in pat.finditer(pc):

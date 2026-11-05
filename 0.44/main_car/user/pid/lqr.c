@@ -6,7 +6,6 @@
 
 #include "lqr.h"
 #include "pid.h"
-#include "position_pid.h"
 #include <math.h>
 
 /* 当前位置/速度增益与回位减速度上限 (取正值), 默认等于 lqr.h 的 -LQR_KX / -LQR_KV / LQR_AMAX */
@@ -57,7 +56,7 @@ float lqr_pos_lean(float err_cm, float v_cmps)
     } else {
         raw = (s_kx * e - s_kv * v_cmps) / LQR_KP;
     }
-    return POS_PID_LEAN_MAX * tanhf(raw / POS_PID_LEAN_MAX);
+    return LQR_LEAN_MAX * tanhf(raw / LQR_LEAN_MAX);
 }
 
 /* 位置积分项当前值 (°) */
