@@ -214,10 +214,11 @@ static void test_output_clamp(void)
 
     speed_pid_init();
 
-    /* 巨大误差, 输出应被夹在 ±7° (spdout_max 桩给 8, 取小 = 7) */
+    /* 巨大误差, 输出应被夹在 ±SPD_PID_WALK_PITCH_MAX (spdout_max 桩给 8, 取小) */
     float out = speed_pid_update(0.01f, 500.0f, 0.0f);
-    CHECK(fabsf(out) <= 7.0f + 1e-4f,
-          "巨大误差下输出=%.4f° (期望 |x|<=7.0, 安全阀生效)", out);
+    CHECK(fabsf(out) <= SPD_PID_WALK_PITCH_MAX + 1e-4f,
+          "巨大误差下输出=%.4f° (期望 |x|<=%.1f, 安全阀生效)",
+          out, (double)SPD_PID_WALK_PITCH_MAX);
 }
 
 int main(void)

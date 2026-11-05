@@ -111,9 +111,18 @@ esp_err_t servo_apply_both(void);
 esp_err_t servo_keep_alive_start(void);
 
 /**
+ * @brief 设置横滚闭环的左右舵机角度偏置
+ * @param left_delta  左腿逻辑角度偏置 (°, 正 = 角度增大 = 收腿)
+ * @param right_delta 右腿逻辑角度偏置 (°, 同上)
+ * @note  只影响硬件输出, 不改变 servo_get_angle() 返回的用户目标;
+ *        下一次 servo_write_hw 生效, 后台保持任务也会带上同样的偏置
+ */
+void servo_set_roll_trim(int8_t left_delta, int8_t right_delta);
+
+/**
  * @brief 更新 Roll 角数据 (供平衡控制循环调用)
  * @param roll_deg Roll 角 (°, 正=右侧高/左倾, 负=左侧高/右倾)
- * @note  补偿自动应用到下次 servo_apply_both() / servo_set_angle() 输出
+ * @note  仅记录, 实际补偿由 roll_compensator 计算后经 servo_set_roll_trim 下发
  */
 void servo_set_roll_angle(float roll_deg);
 

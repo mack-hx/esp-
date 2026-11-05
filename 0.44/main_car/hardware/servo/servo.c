@@ -12,7 +12,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "roll_compensator.h"
 
 static const char *TAG = "SERVO";
 
@@ -40,7 +39,16 @@ static volatile uint32_t s_change_seq = 0;
 
 /* Roll 补偿状态 */
 static float s_roll_angle = 0.0f;       // 当前 Roll 角 (°, 外部定期更新)
-static bool s_balance_mode = false;     // 是否在平衡起立状态 (外部设置, 仅此状态应用 Roll 补偿)
+static bool s_balance_mode = false;     // 是否在平衡起立状态 (外部设置)
+
+/* 横滚闭环的左右角度偏置 (°, 正 = 角度增大 = 收腿), 只影响硬件输出 */
+static int8_t s_trim[SERVO_2 + 1] = { 0 };
+
+void servo_set_roll_trim(int8_t left_delta, int8_t right_delta)
+{
+    s_trim[SERVO_1] = left_delta;
+    s_trim[SERVO_2] = right_delta;
+}
 
 /**
  * @brief 将逻辑角度转换为舵机 ID 对应的物理角度
@@ -65,10 +73,15 @@ static uint8_t servo_logic_to_phys(servo_id_t id, uint8_t logic_angle)
 
 /**
  * @brief 将舵机 ID 的逻辑角度写到硬件 (经逻辑→物理映射)
+ * @note  逻辑角度会先叠加横滚偏置 s_trim[], 再映射到物理角度;
+ *        s_angle[] 保存的仍是用户目标, 不受偏置影响。
  */
 static esp_err_t servo_write_hw(servo_id_t id, uint8_t logic_angle)
 {
-    uint8_t  phys = servo_logic_to_phys(id, logic_angle);
+    int trimmed = (int)logic_angle + (int)s_trim[id];
+    if (trimmed < SERVO_LIMIT_MIN) trimmed = SERVO_LIMIT_MIN;
+    if (trimmed > SERVO_LIMIT_MAX) trimmed = SERVO_LIMIT_MAX;
+    uint8_t  phys = servo_logic_to_phys(id, (uint8_t)trimmed);
     uint32_t duty = servo_angle_to_duty(phys);
 
     s_update_count++;
@@ -263,11 +276,10 @@ static void servo_keep_alive_task(void *arg)
             servo_get_diagnostics(&duty1, &duty2, &pulse1, &pulse2);
             if (ret == ESP_OK) {
                 ESP_LOGI(TAG, "舵机状态: 计数=%u, 错误=%u, "
-                         "S1=%u°→物理%u° duty=%u pulse=%uus, "
-                         "S2=%u°→物理%u° duty=%u pulse=%uus",
+                         "S1=%u°(偏%+d)→物理%u°, S2=%u°(偏%+d)→物理%u°",
                          (unsigned)s_update_count, (unsigned)s_update_errors,
-                         s_angle[SERVO_1], 180 - s_angle[SERVO_1], (unsigned)duty1, (unsigned)pulse1,
-                         s_angle[SERVO_2], s_angle[SERVO_2], (unsigned)duty2, (unsigned)pulse2);
+                         s_angle[SERVO_1], (int)s_trim[SERVO_1], 180 - (s_angle[SERVO_1] + s_trim[SERVO_1]),
+                         s_angle[SERVO_2], (int)s_trim[SERVO_2], s_angle[SERVO_2] + s_trim[SERVO_2]);
             } else {
                 ESP_LOGW(TAG, "舵机更新失败: 计数=%u, 错误=%u",
                          (unsigned)s_update_count, (unsigned)s_update_errors);

@@ -2,7 +2,17 @@
 
 ## 当前状态
 - **最新版本 `0.44/`**（HBuilderX 打开 `0.44/app`）。0.43 已发布：tag v0.43 + GitHub Release + `releases/esp_balance_rob_v0.43.zip`，不再修改。
-- **0.44 新改动（2026-11-04，已编译烧录，待实测填表）**：横滚补偿改为查实测表 —— `hardware/roll_compensator/servo_roll_table.{h,c}` 存 (两腿平均角 base, 角度差 delta) → 实测横滚角，`servo_roll_gain()` 每组过原点拟合后按 base 插值；`user/rolltest/` 串口工具（`help`/`r <左> <右>`/`sweep`/`comp on|off`）自动扫点并打印可粘贴的表格行；`servo_write_hw()` 在「起立态 && 补偿开」时叠加补偿（默认关）。`servo_height_table.h` 已删。
+- **0.44 新改动（2026-11-05 晚，已烧录待实测）**：针对三项实测问题的修复。
+  - **偏航阻尼取错轴（重要 bug）**：原来用 `gyro.z` 当航向角速度，但车体 yaw 轴是 MPU 的 **Y 轴**（`gyro.z` 是横滚角速度）→ 横滚抖动被灌进差速环，造成"走不直 / 单侧轮空转狂转"。现改 `gyro.y`，并加死区 10°/s、限幅 ±4 rpm（`YAW_DAMP_MIN_RATE` / `YAW_DAMP_MAX_RPM`，balance.h）。
+  - 横滚环：新增 `roll_comp_reset()`；积分在死区内 3 s 泄放（**不锁存**，坡度变了能重找平衡）；偏置抬起 30°/s、收回 12°/s；上限 15°、死区 1.5°；新增**无响应看门狗**（输出 >3° 且横滚变化 <2°/s 持续 0.6 s → 冻结积分），防腿悬空时积分饱和后落地猛跳。
+  - 配平：采样前先 `roll_comp_reset()` + `servo_set_roll_trim(0,0)`，采完再复位，修"配平 roll 零点不生效"。
+  - 上坡/下坡：`SPD_PID_WALK_PITCH_MAX` 7→10°；新增坡度前馈 `SLOPE_FF_K=0.35`（低通 1.5 s 倾角按比例补进目标，限幅 ±3°）。
+  - `test_speed_pid_pc.c` 的 7° 断言改为用宏。
+  - 编译通过、已烧录、`scripts/run_tests.sh` 全过。
+- **0.44 上一轮改动（2026-11-05 白天）**：坡道保持 + 横滚闭环 + 偏航阻尼。
+  - `lqr_pos_integral()` 新增「正在远离锚点」判定，溜坡时继续累积不衰减；`LQR_POS_I_MAX` 5→12°，`LQR_POS_I_BAND` 6→8 cm，`POS_PID_LEAN_MAX` 8→12°。
+  - `hardware/roll_compensator/` 重写为 IMU 横滚闭环（PD+弱积分）。**实测灵敏度仅 0.14 °横滚/°舵机**（舵机差 30° → 横滚 4°），`ROLL_COMP_SIGN=-1`（角度增大抬高该侧），Kp 2.0 / Ki 0.4 / Kd 0.10。`servo_set_roll_trim()` 在 `servo_write_hw()` 里叠加，不改 `s_angle[]`。查表开环 `servo_roll_table.c/h` 已删。
+  - `balance.c` 新增偏航阻尼：陀螺 Z 轴 → 差速环目标 `s_tgt_diff − YAW_DAMP_K·yaw_rate`（`YAW_DAMP_K=0.40` rpm/(°/s)，`GYRO_YAW_SIGN=+1`）。
 - **0.43 已发布内容（全部未烧录真机验证）**：
   - App：遥控页姿态按钮（蹲下 100° / 起立 40° / 跳舞 1Hz）+ 独立姿态页 `pages/pose`（跳舞频率可调，遥控页右下角链接进入）
   - 固件：`hardware/roll_compensator` 横滚角补偿，**默认关闭**（增益 0、死区 10°、限幅 25°），仅起立状态生效
@@ -25,9 +35,11 @@
 - 新文档：`0.44/docs/onenet_mqtt_guide.md`（建产品到 MQTT 报文全流程）；旧的 `0.44/app/onenet_物模型*.md` 已删。
 
 ## 待办
-1. **烧录真机验证 0.43**：pitch 新公式（能否正常直立，这是首要）、Roll 正负方向、LCD Roll 显示、配平 Roll 零点、姿态按钮与跳舞、状态灯配色。
+1. **实测 0.44 本轮修复**：① 单边桥架高一边，腿抬平后应缓慢回位不摔；② 上坡能否自己爬动、下坡刹不刹得住（前馈太猛会晃，`SLOPE_FF_K` 降到 0.2）；③ 单腿过桥是否还走歪/狂转（偏航轴已从 z 改 y，反了改 `GYRO_YAW_SIGN=-1`）。
+2. 烧录真机验证 0.43 遗留项：pitch 新公式、Roll 正负方向、LCD Roll 显示、姿态按钮与跳舞、状态灯配色。
 2. App 重新打包验证姿态页与参数版本 38（建议点"恢复默认"让 `servo_c=100` 生效）。
-3. 横滚角实测表：车放平后串口发 `sweep`（约 30 s），把 12 行 `{ base, delta, rollf },` 抄进 `0.44/main_car/hardware/roll_compensator/servo_roll_table.c`，重编译烧录；再起立后 `comp on` 验证补偿方向（若无实测数据灵敏度为 0，补偿自动不生效）。
+3. 横滚闭环待验证：平地起立后侧向轻推，看车身是否**回正**（`ROLL_COMP_SIGN=-1`、Kp 2.0 已按实测灵敏度 0.14 °/° 放大）。若越推越歪说明符号或增益不对，先降 `ROLL_KP` 到 1.0 再试。
+4. 偏航阻尼待验证：上坡/地面走直线，看车头被带偏后是否自动回正（`YAW_DAMP_K=0.40`，符号反了改 `GYRO_YAW_SIGN=-1`）。
 4. 脱机测试：flash 记录已含 `tavg/tdiff/diff/roll`（72 字节/条），按急停或摔落后插线 `python3.11 scripts/read_flash_log.py /tmp/flog` 读出；待分析：转弯后位置不稳 / 向一侧走 / 摔倒。
 5. 遥控速度环与 `BAL_POS_BLEND_RPM` 因轮速放大 2.7 倍尚未重调。
 6. 静止时若再出现晃动：先查电机死区/静摩擦（静止 out 仅 ±6%，死区实测约 2.2%，参数 `deadzone` 默认 4%），不要再动位置环。

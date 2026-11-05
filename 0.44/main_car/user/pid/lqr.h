@@ -39,9 +39,9 @@ void lqr_set_pos_gains(float kx, float kv, float amax);
 float lqr_pos_lean(float err_cm, float v_cmps);
 
 #define LQR_POS_KI        0.5625f  /* °/(cm·s)  静止时位置偏差的积分速率 */
-#define LQR_POS_I_MAX     5.0f   /* °         积分项上限 */
-#define LQR_POS_I_VEL     4.0f   /* cm/s      |速度| 小于此值才累积 */
-#define LQR_POS_I_BAND    6.0f   /* cm        |偏差| 小于此值才累积 */
+#define LQR_POS_I_MAX     12.0f  /* °         积分项上限 (坡上保持要靠它) */
+#define LQR_POS_I_VEL     4.0f   /* cm/s      |速度| 小于此值才按静止处理 */
+#define LQR_POS_I_BAND    8.0f   /* cm        |偏差| 小于此值才累积 */
 #define LQR_POS_I_DECAY   0.3f   /* s         远离锚点或车在动时的衰减时间常数 */
 #define LQR_POS_I_RELEASE 0.5f   /* s         锚点附近 (死区内/偏差变号) 且车慢时的衰减时间常数 */
 

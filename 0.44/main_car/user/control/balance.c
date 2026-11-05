@@ -19,6 +19,7 @@
 #include "motor_driver.h"
 #include "trace.h"
 #include "servo.h"
+#include "roll_compensator.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "onenet_client.h"
@@ -74,8 +75,16 @@ static bool s_mpu_ready = false;
 static float s_gyro_lpf = 0.0f;
 static bool  s_lpf_primed = false;
 
+/* 航向角速度 (°/s, 左转为正) 与其低通状态 */
+static float s_yaw_rate = 0.0f;
+static float s_yaw_lpf = 0.0f;
+static bool  s_yaw_lpf_primed = false;
+
 /* 本周期算出的配平补偿量 (°), 供 UI / 网页观察 */
 static float s_trim_comp = 0.0f;
+
+/* 低通后的车身倾角 (°), 坡度前馈用 */
+static float s_slope_lpf = 0.0f;
 
 /* 已连续满足门控条件的累计时长 (ms); 任何条件不满足立即清零 */
 static float s_arm_hold_ms = 0.0f;
@@ -301,6 +310,19 @@ static void balance_read_sensors(void)
                 s_gyro_lpf += a * (rate - s_gyro_lpf);
             }
             s_data.gyro = s_gyro_lpf;
+
+            /* 航向角速度: 车体绕竖直轴转动 = 绕 MPU 的 **Y 轴** (见 mpu9250.c
+             * 的姿态积分: yaw 用 gyro.y, roll 用 gyro.z, pitch 用 gyro.x)。
+             * ⚠ 这里原来取的是 gyro.z, 那是横滚角速度 —— 等于把横滚抖动
+             *   灌进差速环, 车会走不直、单侧轮悬空时还会越拱越疯。 */
+            float yaw_rate = gyro.y * GYRO_YAW_SIGN;
+            if (!s_yaw_lpf_primed) {
+                s_yaw_lpf = yaw_rate;
+                s_yaw_lpf_primed = true;
+            } else {
+                s_yaw_lpf += a * (yaw_rate - s_yaw_lpf);
+            }
+            s_yaw_rate = s_yaw_lpf;
             
             /* Roll 角更新到舵机补偿模块 (扣配平零点, 正值=右侧高) */
             servo_set_roll_angle(euler.roll - s_roll_zero);
@@ -310,6 +332,8 @@ static void balance_read_sensors(void)
         s_data.gyro      = 0.0f;
         s_data.pitch_raw = 0.0f;
         s_data.trim_comp = 0.0f;
+        s_yaw_rate       = 0.0f;
+        s_yaw_lpf_primed = false;
     }
 
     /* --- 编码器: 每周期取增量 (里程计) + 300ms 滑动窗口统计轮速 ---
@@ -673,6 +697,22 @@ static void balance_control_step(float dt)
     }
     float target_pitch = w * spd_pitch - (1.0f - w) * pos_lean;
 
+    /* --- 坡度前馈 ---
+     * 平衡环把车身姿态锁在目标倾角上, 所以低通后的实际倾角就是坡上
+     * 必须常驻的那个倾角。行走时按比例补进目标:
+     * 上坡 (pitch<0) 多给前倾 → 爬得动; 下坡 (pitch>0) 多给后仰 → 刹得住。
+     * 停车时把低通跟到当前值, 下次起步不继承旧坡度。 */
+    if (w > 0.0f) {
+        float a = dt / (SLOPE_FF_LPF_TAU + dt);
+        s_slope_lpf += a * (s_data.pitch - s_slope_lpf);
+        float ff = SLOPE_FF_K * s_slope_lpf;
+        if (ff >  SLOPE_FF_MAX) ff =  SLOPE_FF_MAX;
+        if (ff < -SLOPE_FF_MAX) ff = -SLOPE_FF_MAX;
+        target_pitch += ff;
+    } else {
+        s_slope_lpf = s_data.pitch;
+    }
+
     /* 安全阀: 倾角设定点上限 = max(走路上限, 位置环上限), 防止外环把车放倒 */
     const float pitch_cap = fmaxf(SPD_PID_WALK_PITCH_MAX, POS_PID_LEAN_MAX);
     if (target_pitch >  pitch_cap) target_pitch =  pitch_cap;
@@ -681,8 +721,17 @@ static void balance_control_step(float dt)
     s_data.target_pitch = target_pitch;
 
     /* --- 差速环 (转向): 左−右 轮速差 → 两轮输出的差 ---
-     * 转向时两轮反向转 (原地转), 平均轮速保持 0, 平衡环照常扶住车身。 */
-    float yaw = steer_pid_update(dt, s_diff_fwd, s_tgt_diff);
+     * 转向时两轮反向转 (原地转), 平均轮速保持 0, 平衡环照常扶住车身。
+     * 偏航阻尼: 车头被带偏时用轮速差拉回。死区避开编码器/陀螺噪声,
+     * 限幅避免单侧轮悬空打滑时空转的那条腿被越拱越快。 */
+    float yaw_tgt = s_tgt_diff;
+    if (fabsf(s_yaw_rate) > YAW_DAMP_MIN_RATE) {
+        float damp = YAW_DAMP_K * s_yaw_rate;
+        if (damp >  YAW_DAMP_MAX_RPM) damp =  YAW_DAMP_MAX_RPM;
+        if (damp < -YAW_DAMP_MAX_RPM) damp = -YAW_DAMP_MAX_RPM;
+        yaw_tgt -= damp;
+    }
+    float yaw = steer_pid_update(dt, s_diff_fwd, yaw_tgt);
     s_data.yaw_out = yaw;
 
     /* --- 内环: 平衡环 → 电机输出 ---
@@ -825,6 +874,8 @@ static void balance_calib_step(void)
 
     /* 立刻生效 (内存里的零点), 再落盘 */
     balance_save_zero();
+    /* 横滚环从新零点重新起步, 否则残留偏置会让车身继续被顶歪 */
+    roll_comp_reset();
 
     ESP_LOGI(TAG, "配平完成: pitch=%.2f° roll=%.2f° (采样 %d 个点), 已落盘",
              (double)s_pitch_zero, (double)s_roll_zero, s_calib_count);
@@ -869,6 +920,14 @@ static void balance_task(void *arg)
         balance_calib_step();
 
         balance_state_machine(dt);
+
+        /* 2.6) 横滚闭环: 只在平衡起立时生效, 用左右腿长差把车身横滚拉回 0 */
+        roll_comp_set_enable(s_state == BAL_STATE_BALANCING);
+        {
+            roll_comp_output_t roll_out;
+            roll_comp_calculate(dt, servo_get_roll_angle(), &roll_out);
+            servo_set_roll_trim(roll_out.left_comp, roll_out.right_comp);
+        }
 
         /* 2.5) 陀螺零偏慢漂跟随的开关
          * ⚠ 只有**不在平衡状态**时才允许跟随:
@@ -1194,6 +1253,11 @@ esp_err_t balance_calibrate(void)
     s_calib_sum_p  = 0.0f;
     s_calib_sum_r  = 0.0f;
     s_calib_active = true;
+
+    /* 采样前先把横滚偏置清掉: 零点必须是"腿在中位时的车身姿态",
+     * 带着偏置采出来的零点等于把当前的歪斜当成水平 */
+    roll_comp_reset();
+    servo_set_roll_trim(0, 0);
 
     ESP_LOGI(TAG, "配平开始: 采样 %d 个 pitch/roll 点取平均 (不驱动电机)", CALIB_SAMPLES);
     return ESP_OK;

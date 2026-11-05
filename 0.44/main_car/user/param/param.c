@@ -55,7 +55,7 @@ const param_item_t g_param_items[] = {
 
     { PARAM_PID_SPD_KP, "spd_kp", "Speed Kp",   "",   0.08f,   0.0f,  200.0f,  0.01f, 2, PARAM_GRP_SPEED,
       "走多快 (°/rpm)。App 方向键就走这个环: 目标轮速 → 目标倾角 → "
-      "平衡环 (平衡环全程不撒手)。调大走得快, 但目标倾角被限制在 7° 以内 "
+      "平衡环 (平衡环全程不撒手)。调大走得快, 但目标倾角被限制在 10° 以内 "
       "(安全阀), 调太大只会让车左右猛摇。步进 0.01 —— 步进太粗的话 "
       "App 拖出来的中间值会被吸附掉 (比如想设 0.06 却被吸成 0)" },
     { PARAM_PID_SPD_KI, "spd_ki", "Speed Ki",   "",   0.04f,   0.0f,  300.0f,  0.01f, 2, PARAM_GRP_SPEED,

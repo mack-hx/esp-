@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "roll_compensator.c" "servo_roll_table.c"
+    SRCS "roll_compensator.c"
     INCLUDE_DIRS "."
     REQUIRES ""
 )

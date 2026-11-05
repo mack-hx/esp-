@@ -1,8 +1,8 @@
 /**
  * @file roll_compensator.h
- * @brief 横滚角姿态补偿 (适应左右高度差地形)
- * @note  灵敏度不写死, 取自 servo_roll_table.h 的实测量表。
- *        站立时高侧收腿, 蹲下时低侧伸腿, 每次只动一侧。
+ * @brief 横滚闭环: 用左右腿长差把车身横滚拉回 0
+ * @note  输入横滚角, 输出左右舵机角度偏置 (对称, 一收一伸)。
+ *        只在平衡起立时生效; 未使能时偏置按斜率退回 0。
  * @author ESP32 机械狗项目
  */
 
@@ -12,64 +12,66 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ========== 姿态阈值 ========== */
-#define ROLL_STANCE_THRESHOLD   70      // 站立/蹲下分界 (°)
+/* ========== 增益 (输出 = 舵机角度差, 单位 °) ==========
+ * 机构实测: 舵机差 30° 只产生约 4° 横滚 (≈0.14 °/°), 增益按此放大 */
+#define ROLL_KP           2.00f   /* °舵机 / °横滚 */
+#define ROLL_KI           0.40f   /* °舵机 / (°·s) */
+#define ROLL_KD           0.10f   /* °舵机 / (°/s) */
+#ifndef ROLL_COMP_SIGN
+#define ROLL_COMP_SIGN    (-1)    /* +1 = 高侧收腿(角度增大); 实测角度增大抬高该侧, 取 -1 */
+#endif
 
-/* ========== 补偿参数 ========== */
-#define ROLL_DEADZONE           2.0f    // Roll 角死区 (°, 小于此值不补偿)
+/* ========== 限制 ========== */
+#define ROLL_DEADZONE     1.5f    /* ° 横滚死区: 车身本来就允许带一点倾角, 不硬掰到 0 */
+#define ROLL_SOFT_BAND    1.0f    /* ° 死区外平滑过渡带 */
+#define ROLL_COMP_MAX     15.0f   /* ° 单侧最大偏置 */
+#define ROLL_I_MAX_DEG    8.0f    /* ° 积分项单独贡献的上限 (只用来吃掉静态偏置) */
 
-/* ========== 补偿限制 ========== */
-#define ROLL_COMP_MAX           25      // 单侧最大补偿量 (°)
+/* 偏置变化率: 抬起比收回快。收回慢是为了不在横滚刚变平的瞬间"啪"地把腿收掉 */
+#define ROLL_SLEW_PER_S     30.0f /* °/s 偏置增大时的速率上限 */
+#define ROLL_RELEASE_PER_S  12.0f /* °/s 偏置回零时的速率上限 */
 
-/** 姿态类型 */
-typedef enum {
-    ROLL_STANCE_STAND = 0,  // 站立态 (≤70°)
-    ROLL_STANCE_SQUAT = 1   // 蹲下态 (>70°)
-} roll_stance_t;
+/* 死区内积分泄放时间常数 (s): 车身已经够平时, 积分慢慢退, 让腿缓慢回中位。
+ * 不做锁存 —— 坡道坡度变了仍能重新找平衡 */
+#define ROLL_I_RELEASE_TAU  3.0f
+
+/* ========== 无响应看门狗 ==========
+ * 输出已经不小、横滚却几乎不动 → 该侧腿没受力 (悬空 / 打滑 / 卡住),
+ * 此时继续积分只会攒出巨大的偏置, 落地的瞬间腿猛跳 (实测"一条腿抽风")。 */
+#define ROLL_RESP_MIN_OUT    3.0f  /* ° 输出超过它才开始判响应 */
+#define ROLL_RESP_MIN_RATE   2.0f  /* °/s 横滚变化率低于它算"没响应" */
+#define ROLL_RESP_TIMEOUT    0.6f  /* s 连续没响应多久后冻结积分 */
+
+/** 横滚异常阈值: 超过它认为车已经侧翻, 偏置退回 0 */
+#define ROLL_FAULT_ANGLE  35.0f
 
 /** 补偿输出结果 */
 typedef struct {
-    int8_t left_comp;       // 左腿补偿量 (°, 正=收腿/角度增大)
-    int8_t right_comp;      // 右腿补偿量 (°, 正=收腿/角度增大)
-    roll_stance_t stance;   // 当前姿态
-    float roll_angle;       // 当前 Roll 角 (°)
-    float gain;             // 本周期灵敏度 (° roll / ° 角度差)
+    int8_t left_comp;       /* 左腿舵机角度偏置 (°, 正 = 角度增大 = 收腿) */
+    int8_t right_comp;      /* 右腿舵机角度偏置 (°) */
+    float  roll_angle;      /* 本周期使用的横滚角 (°, 正 = 右侧高) */
+    float  raw_out;         /* 未取整的偏置 (°), 调试用 */
 } roll_comp_output_t;
 
-/**
- * @brief 初始化横滚角补偿器
- */
+/** @brief 复位内部状态 (积分清零, 偏置归零) */
 void roll_comp_init(void);
 
-/**
- * @brief 使能/禁用补偿
- * @param enable true=使能, false=禁用
- */
+/** @brief 清掉积分和当前偏置, 下一周期从 0 重新开始 (配平后调用) */
+void roll_comp_reset(void);
+
+/** @brief 使能/禁用补偿 */
 void roll_comp_set_enable(bool enable);
 
-/**
- * @brief 获取补偿使能状态
- * @return true=使能, false=禁用
- */
+/** @brief 补偿是否使能 */
 bool roll_comp_is_enabled(void);
 
 /**
- * @brief 计算横滚角补偿量
- * @param roll_deg Roll 角 (°, 正=右侧高)
- * @param servo_left 左腿当前角度 (°)
- * @param servo_right 右腿当前角度 (°)
- * @param[out] output 补偿输出结果
- * @note  灵敏度取自 servo_roll_gain(), 表里没数据时补偿量为 0
+ * @brief 计算横滚闭环偏置
+ * @param dt         控制周期 (s)
+ * @param roll_deg   横滚角 (°, 正 = 右侧高; 已扣配平零点)
+ * @param[out] output 左右舵机角度偏置
+ * @note  未使能 / 角度超限 / 非有限值时, 偏置按 ROLL_RELEASE_PER_S 退回 0
  */
-void roll_comp_calculate(float roll_deg, uint8_t servo_left, uint8_t servo_right,
-                         roll_comp_output_t *output);
-
-/**
- * @brief 判断当前姿态 (站立/蹲下)
- * @param servo_left 左腿角度 (°)
- * @param servo_right 右腿角度 (°)
- * @return 姿态类型
- */
-roll_stance_t roll_comp_get_stance(uint8_t servo_left, uint8_t servo_right);
+void roll_comp_calculate(float dt, float roll_deg, roll_comp_output_t *output);
 
 #endif // ROLL_COMPENSATOR_H

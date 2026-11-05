@@ -21,7 +21,7 @@
 #define POS_PID_ERR_SOFT_BAND 0.2f
 
 /* 目标倾角上限 (°): 位置偏差最大时车最多歪这么多 */
-#define POS_PID_LEAN_MAX      8.0f
+#define POS_PID_LEAN_MAX      12.0f
 
 /* 积分状态上限 (cm·s): ∫(位置误差)dt 的限幅 */
 #define POS_PID_I_MAX         20.0f

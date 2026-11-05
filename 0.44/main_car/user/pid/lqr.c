@@ -71,8 +71,12 @@ void lqr_pos_integral_reset(void)
 float lqr_pos_integral(float dt, float err_cm, float v_cmps)
 {
     float ea = fabsf(err_cm);
+    /* 偏差与速度反向 = 正在远离锚点 (溜坡)。这种情况必须继续累积并保留积分,
+     * 否则"越溜越没倾角、越没倾角越溜"会形成正反馈。 */
+    const bool sliding_away = (err_cm * v_cmps) < 0.0f;
     int accumulate = ea > LQR_ERR_DEADBAND && ea < LQR_POS_I_BAND &&
-                     fabsf(v_cmps) < LQR_POS_I_VEL && (s_pos_i * err_cm) >= 0.0f;
+                     (fabsf(v_cmps) < LQR_POS_I_VEL || sliding_away) &&
+                     (s_pos_i * err_cm) >= 0.0f;
 
     if (accumulate) {
         s_pos_i += LQR_POS_KI * err_cm * dt;

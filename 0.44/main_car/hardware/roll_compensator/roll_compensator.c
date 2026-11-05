@@ -1,28 +1,57 @@
 /**
  * @file roll_compensator.c
- * @brief 横滚角姿态补偿实现
+ * @brief 横滚闭环实现 (PD + 弱积分, 输出左右舵机角度偏置)
  */
 
 #include "roll_compensator.h"
-#include "servo_roll_table.h"
 #include <math.h>
 
-/* 补偿使能, 默认关闭: 灵敏度要等实测表填好才有意义 */
-static bool s_enabled = false;
+static bool  s_enabled = false;
+static float s_integral = 0.0f;   /* 积分项 (°·s 累积) */
+static float s_prev_roll = 0.0f;  /* 上周期横滚角 (°), 用于微分 */
+static float s_out = 0.0f;        /* 当前偏置 (°), 带变化率限制 */
+static float s_no_resp = 0.0f;    /* 连续无响应时长 (s) */
 
-roll_stance_t roll_comp_get_stance(uint8_t servo_left, uint8_t servo_right)
+static float clampf(float v, float lo, float hi)
 {
-    uint8_t avg_angle = (servo_left + servo_right) / 2;
-    return (avg_angle <= ROLL_STANCE_THRESHOLD) ? ROLL_STANCE_STAND : ROLL_STANCE_SQUAT;
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+/* 死区软化: |e| ≤ band 内按平方过渡, 输出处处连续 */
+static float soft_deadband(float e)
+{
+    float a = fabsf(e);
+    if (a <= ROLL_DEADZONE) return 0.0f;
+    float x = (a - ROLL_DEADZONE) / ROLL_SOFT_BAND;
+    if (x > 1.0f) x = 1.0f;
+    float y = x * x * (3.0f - 2.0f * x);
+    return (e > 0.0f) ? y * (a - 0.5f * ROLL_DEADZONE)
+                      : -y * (a - 0.5f * ROLL_DEADZONE);
 }
 
 void roll_comp_init(void)
 {
+    roll_comp_reset();
     s_enabled = false;
+}
+
+void roll_comp_reset(void)
+{
+    s_integral = 0.0f;
+    s_prev_roll = 0.0f;
+    s_out = 0.0f;
+    s_no_resp = 0.0f;
 }
 
 void roll_comp_set_enable(bool enable)
 {
+    if (!enable) {
+        s_integral = 0.0f;
+        s_prev_roll = 0.0f;
+        s_no_resp = 0.0f;
+    }
     s_enabled = enable;
 }
 
@@ -31,28 +60,60 @@ bool roll_comp_is_enabled(void)
     return s_enabled;
 }
 
-void roll_comp_calculate(float roll_deg, uint8_t servo_left, uint8_t servo_right,
-                         roll_comp_output_t *output)
+void roll_comp_calculate(float dt, float roll_deg, roll_comp_output_t *output)
 {
     if (!output) return;
 
+    if (!isfinite(roll_deg)) roll_deg = 0.0f;
+    if (!isfinite(dt) || dt <= 0.0f) dt = 0.01f;
+    if (dt > 0.1f) dt = 0.1f;
+
+    const bool valid = s_enabled && fabsf(roll_deg) < ROLL_FAULT_ANGLE;
+    float target = 0.0f;
+
+    if (valid) {
+        float err = soft_deadband(roll_deg);
+
+        /* 无响应看门狗: 出了力但横滚不动 = 该侧腿没受力, 冻结积分 */
+        float droll_rate = (roll_deg - s_prev_roll) / dt;
+        if (fabsf(s_out) > ROLL_RESP_MIN_OUT &&
+            fabsf(droll_rate) < ROLL_RESP_MIN_RATE) {
+            s_no_resp += dt;
+        } else {
+            s_no_resp = 0.0f;
+        }
+        const bool responsive = s_no_resp < ROLL_RESP_TIMEOUT;
+
+        if (err != 0.0f && responsive) {
+            s_integral += err * dt;
+            float i_lim = ROLL_I_MAX_DEG / (ROLL_KI > 1e-6f ? ROLL_KI : 1.0f);
+            s_integral = clampf(s_integral, -i_lim, i_lim);
+        } else {
+            /* 车身够平 或 该侧腿没受力: 积分缓慢泄放 (不锁存, 坡度变了能重新找平衡) */
+            s_integral *= expf(-dt / ROLL_I_RELEASE_TAU);
+        }
+
+        float rate = (roll_deg - s_prev_roll) / dt;
+        target = ROLL_KP * err + ROLL_KI * s_integral + ROLL_KD * rate;
+    } else {
+        s_integral = 0.0f;
+        s_no_resp = 0.0f;
+    }
+
+    /* ROLL_COMP_SIGN 决定方向: 实测舵机角度增大抬高该侧, 故取 -1 —
+     * roll > 0 (右侧高) 时右腿角度减小 (伸腿) 把右侧压下来 */
+    target *= (float)ROLL_COMP_SIGN;
+    target = clampf(target, -ROLL_COMP_MAX, ROLL_COMP_MAX);
+
+    /* 变化率限制: 抬起快、收回慢, 避免横滚刚归零就把腿收掉 */
+    float step = ((fabsf(target) > fabsf(s_out)) ? ROLL_SLEW_PER_S
+                                                 : ROLL_RELEASE_PER_S) * dt;
+    s_out += clampf(target - s_out, -step, step);
+    s_prev_roll = roll_deg;
+
     output->roll_angle = roll_deg;
-    output->stance     = roll_comp_get_stance(servo_left, servo_right);
-    output->left_comp  = 0;
-    output->right_comp = 0;
-
-    /* 灵敏度: 车身横滚角变化 / 左右角度差变化 */
-    output->gain = servo_roll_gain((servo_left + servo_right) * 0.5f);
-
-    if (!s_enabled || fabsf(roll_deg) < ROLL_DEADZONE) return;
-    if (fabsf(output->gain) < 1e-3f) return;   /* 表里没有可用数据 */
-
-    /* 抵消当前横滚角需要的角度差 (°) */
-    float need = fabsf(roll_deg / output->gain);
-    if (need > ROLL_COMP_MAX) need = ROLL_COMP_MAX;
-    int comp_abs = (int)(need + 0.5f);
-
-    /* 实测: 收腿(角度增大)会抬高该侧, 因此把高侧那条腿伸长(角度减小) */
-    if (roll_deg > 0) output->right_comp = (int8_t)-comp_abs;  /* 右侧高 */
-    else              output->left_comp  = (int8_t)-comp_abs;  /* 左侧高 */
+    output->raw_out    = s_out;
+    /* 正值: 右腿角度增大(收腿), 左腿角度减小(伸腿) */
+    output->right_comp = (int8_t)lrintf(s_out);
+    output->left_comp  = (int8_t)lrintf(-s_out);
 }
