@@ -13,7 +13,7 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-VER = sys.argv[1] if len(sys.argv) > 1 else "0.44"
+VER = sys.argv[1] if len(sys.argv) > 1 else "0.45"
 BASE = os.path.join(ROOT, VER)
 
 # ---------- 车端: user/param/param.c ----------

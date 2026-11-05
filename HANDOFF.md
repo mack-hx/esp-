@@ -1,47 +1,29 @@
 # HANDOFF.md
 
 ## 当前状态
-- **最新版本 `0.44/`**（HBuilderX 打开 `0.44/app`）。0.43 已发布：tag v0.43 + GitHub Release + `releases/esp_balance_rob_v0.43.zip`，不再修改。
-- **0.44 新改动（2026-11-05 晚，已烧录待实测）**：针对三项实测问题的修复。
-  - **偏航阻尼取错轴（重要 bug）**：原来用 `gyro.z` 当航向角速度，但车体 yaw 轴是 MPU 的 **Y 轴**（`gyro.z` 是横滚角速度）→ 横滚抖动被灌进差速环，造成"走不直 / 单侧轮空转狂转"。现改 `gyro.y`，并加死区 10°/s、限幅 ±4 rpm（`YAW_DAMP_MIN_RATE` / `YAW_DAMP_MAX_RPM`，balance.h）。
-  - 横滚环：新增 `roll_comp_reset()`；积分在死区内 3 s 泄放（**不锁存**，坡度变了能重找平衡）；偏置抬起 30°/s、收回 12°/s；上限 15°、死区 1.5°；新增**无响应看门狗**（输出 >3° 且横滚变化 <2°/s 持续 0.6 s → 冻结积分），防腿悬空时积分饱和后落地猛跳。
-  - 配平：采样前先 `roll_comp_reset()` + `servo_set_roll_trim(0,0)`，采完再复位，修"配平 roll 零点不生效"。
-  - 上坡/下坡：`SPD_PID_WALK_PITCH_MAX` 7→10°。坡度前馈 `SLOPE_FF_K` **已设为 0（关闭）**：把低通后的实际倾角回灌倾角目标会自激，平地上按方向键猛冲。
-  - `test_speed_pid_pc.c` 的 7° 断言改为用宏。
-  - 编译通过、已烧录、`scripts/run_tests.sh` 全过。
-- **0.44 新改动（2026-11-05 晚 2）**：修 roll 配平失效 + 平衡页加显示。
-  - **roll 配平失效（重要 bug）**：`balance_calib_step()` 采的 roll 已扣过旧零点，却直接当新零点赋值 → 新零点 = 原始roll − 旧零点，显示又回到原始值，每配一次把零点抹回 0。现改为 `s_roll_zero += mean`。pitch 采的是未扣零点值，本来就对。
-  - `s_data.roll` 改为已扣零点，LCD / TRACE / 横滚闭环同源。
-  - 平衡页新增 `Rol:` 行与 `Svo: S1/S2` 行。
-- **0.44 上一轮改动（2026-11-05 白天）**：坡道保持 + 横滚闭环 + 偏航阻尼。
-  - `lqr_pos_integral()` 新增「正在远离锚点」判定，溜坡时继续累积不衰减；`LQR_POS_I_MAX` 5→12°，`LQR_POS_I_BAND` 6→8 cm，`POS_PID_LEAN_MAX` 8→12°。
-  - `hardware/roll_compensator/` 重写为 IMU 横滚闭环（PD+弱积分）。**实测灵敏度仅 0.14 °横滚/°舵机**（舵机差 30° → 横滚 4°），`ROLL_COMP_SIGN=-1`（角度增大抬高该侧），Kp 2.0 / Ki 0.4 / Kd 0.10。`servo_set_roll_trim()` 在 `servo_write_hw()` 里叠加，不改 `s_angle[]`。查表开环 `servo_roll_table.c/h` 已删。
-  - `balance.c` 新增偏航阻尼：陀螺 Z 轴 → 差速环目标 `s_tgt_diff − YAW_DAMP_K·yaw_rate`（`YAW_DAMP_K=0.40` rpm/(°/s)，`GYRO_YAW_SIGN=+1`）。
-- **0.43 已发布内容（全部未烧录真机验证）**：
-  - App：遥控页姿态按钮（蹲下 100° / 起立 40° / 跳舞 1Hz）+ 独立姿态页 `pages/pose`（跳舞频率可调，遥控页右下角链接进入）
-  - 固件：`hardware/roll_compensator` 横滚角补偿，**默认关闭**（增益 0、死区 10°、限幅 25°），仅起立状态生效
-  - 固件：`user/status_led` 状态灯自动配色（摔倒红 > 舵机粉 > 合体蓝 > 未对齐红 > 对接闪黄 > 站立绿 > 未站立黄），App/LCD 手动设色后保持
-  - 姿态解算改公式：pitch `atan2(ay,az)`、roll `atan2(ax,az)`，roll 融合权重 10%，`PITCH_ZERO_REF=0`
-  - LCD 主页新增 Roll 行；配平同时标定 pitch/roll 零点（NVS `bal_zero_p`/`bal_zero_r`）
-  - 参数版本 **38**，`servo_c` 默认 80→100；固件版本 0.43.0、App versionCode 153
-  - 脱机记录 `trace_sample_t` 加 `roll`，**68→72 字节**；`read_flash_log.py` / `capture_trace.py` 的 CSV 新增 roll 列
-- 编译：0.43、0.44 的 `main_car` 均 `pio run` 通过；`scripts/run_tests.sh`（默认 0.44）55 项全过，参数表 24 项一致（版本 38）。
-- 0.41 / 0.42 目录已删，源码和压缩包在 tag 与 GitHub Release 里。
+- **最新版本 `0.45/`**（HBuilderX 打开 `0.45/app`）。0.44 已发布：tag v0.44 + GitHub Release + `releases/esp_balance_rob_v0.44.zip`，不再修改。
+- **0.45 = 0.44 + 代码清理**：删掉 LQR 上线后从不执行的串级 PID 分支（`balance_pid.c/h`、`position_pid.c/h`）、删除 6 个 LQR 下不生效的参数（`bal_kp/bal_ki/bal_kd`、`pos_kp/pos_kd/pos_ki`），参数表 24 → 18 项、版本 39；`POS_PID_LEAN_MAX` → `lqr.h` 的 `LQR_LEAN_MAX`；输出限幅从 3 层 clamp 合成 1 层。**控制行为与 0.44 一致**（同一套 LQR 增益、同一套斜坡/死区/前馈）。
+- **控制行为（与 0.44 相同）**：
+  - 内环 LQR（`lqr_balance_out`，KP 18 / KD 0.5），外环 = 速度环与位置环按目标轮速加权（`BAL_POS_BLEND_RPM` 5），坡度前馈 `SLOPE_FF_K=0.35`（限 ±3°）。
+  - 偏航阻尼：陀螺 **Y 轴**（车体竖直轴）→ 差速环 `s_tgt_diff − 0.40·yaw_rate`，死区 10°/s、限幅 ±4 rpm。
+  - 横滚闭环：`hardware/roll_compensator`（PD+弱积分，Kp 2.0 / Ki 0.4 / Kd 0.10，`ROLL_COMP_SIGN=-1`，限 ±15°），`servo_set_roll_trim()` 在写硬件时叠加。
+  - Roll 零点：`s_data.roll` 存原始值，舵机补偿处扣 `s_roll_zero`；配平采均值直接赋给零点（与原始值同源）。
+- 0.44 已发布内容：上述控制律 + App 姿态页 + 状态灯 + LCD Roll 行；参数版本 38（24 项）。
+
 
 ## 仓库文档（2026-11-04）
 - 根 `README.md` 已重写为开源介绍（功能 / 硬件引脚表 / 架构 / 快速开始 / 协议 / 工具 / 版本），新增 `LICENSE`（MIT）。
-- 遗留：`0.44/main_car/README.md` 标题仍是 0.42；`0.44/README.md` 部分命令写 0.43。
+- 遗留：`0.45/main_car/README.md` 标题仍是旧版号。
 
 ## 密钥安全（2026-11-04）
 - 仓库 public，设备级 AccessKey 已泄露在 git 历史。**用户需去 OneNET 控制台重置 `balancing_dog` / `balancing_dog_sub` 的访问密钥**，重置后旧 key 自动作废（历史里的副本变废串）；主车/副车要重烧固件，App 连接页重填。
 - 固件密钥位置：`main_car|sub_car/user/onenet_client/onenet_secret.h`（不入库），模板 `onenet_secret.example.h`。`onenet_client.h` 只留产品 ID 和设备名。
-- App 默认值：`0.44/app/common/config.js` 的三元组留空，用户在连接页填一次，存 storage。
-- 新文档：`0.44/docs/onenet_mqtt_guide.md`（建产品到 MQTT 报文全流程）；旧的 `0.44/app/onenet_物模型*.md` 已删。
+- App 默认值：`0.45/app/common/config.js` 的三元组留空，用户在连接页填一次，存 storage。
+- 新文档：`0.45/docs/onenet_mqtt_guide.md`（建产品到 MQTT 报文全流程）；旧的 `app/onenet_物模型*.md` 已删。
 
 ## 待办
-1. **实测 0.44 本轮修复**：① 单边桥架高一边，腿抬平后应缓慢回位不摔；② 上坡能否自己爬动、下坡刹不刹得住（前馈已关，靠 10° 倾角上限）；③ 单腿过桥是否还走歪/狂转（偏航轴已从 z 改 y，反了改 `GYRO_YAW_SIGN=-1`）；④ 平地按方向键不应再猛冲。
-2. 烧录真机验证 0.43 遗留项：pitch 新公式、Roll 正负方向、LCD Roll 显示、姿态按钮与跳舞、状态灯配色。
-2. App 重新打包验证姿态页与参数版本 38（建议点"恢复默认"让 `servo_c=100` 生效）。
+1. **烧录真机验证 0.45**（行为同 0.44）：单边桥抬腿回位、上坡能否爬、下坡刹不刹得住、单腿过桥是否还走歪。
+2. App 重新打包验证姿态页与参数版本 39（建议点"恢复默认"，旧参数表会被丢弃重填）。
 3. 横滚闭环待验证：平地起立后侧向轻推，看车身是否**回正**（`ROLL_COMP_SIGN=-1`、Kp 2.0 已按实测灵敏度 0.14 °/° 放大）。若越推越歪说明符号或增益不对，先降 `ROLL_KP` 到 1.0 再试。
 4. 偏航阻尼待验证：上坡/地面走直线，看车头被带偏后是否自动回正（`YAW_DAMP_K=0.40`，符号反了改 `GYRO_YAW_SIGN=-1`）。
 4. 脱机测试：flash 记录已含 `tavg/tdiff/diff/roll`（72 字节/条），按急停或摔落后插线 `python3.11 scripts/read_flash_log.py /tmp/flog` 读出；待分析：转弯后位置不稳 / 向一侧走 / 摔倒。
@@ -49,13 +31,13 @@
 6. 静止时若再出现晃动：先查电机死区/静摩擦（静止 out 仅 ±6%，死区实测约 2.2%，参数 `deadzone` 默认 4%），不要再动位置环。
 
 ## 位置保持（LQR）现状
-- 控制律：`user/pid/lqr.c`，`BAL_USE_LQR=1`（balance.c）；0 切回原串级 PID。LQR 模式下 `bal_*`/`pos_*` 滑块不生效。
-- 增益：`LQR_KX -5 / KV -2.25 / KP 22 / KD 0.6 / VMAX 35`（lqr.h），单位按真实 cm（编码器两轮都四倍频）。
-- 回位曲线：期望回位速度 = `sqrt(2·lqr_amax·偏差)`，限 `LQR_VMAX`=35 cm/s；`lqr_amax` 默认 8，App 在线可调。
-- 位置积分：仅在 0.27~6 cm 偏差、速度 < 4 cm/s 时累积；其余指数衰减（0.3 s，锚点附近 0.5 s），不清零。积分上限 5°。
+- 控制律：`user/pid/lqr.c`（唯一实现，串级 PID 分支已删）。位置项 `lqr_pos_lean` + `lqr_pos_integral`，倾角/角速度项 `lqr_balance_out`。
+- 增益：`LQR_KX -5 / KV -2.25 / KP 18 / KD 0.5 / VMAX 30`（lqr.h），单位按真实 cm（编码器两轮都四倍频）。
+- 回位曲线：期望回位速度 = `sqrt(2·lqr_amax·偏差)`，限 `LQR_VMAX`=30 cm/s；`lqr_amax` 默认 8，App 在线可调。
+- 位置积分：0.27~8 cm 偏差、速度 < 4 cm/s（或正在远离锚点）时累积；其余指数衰减（0.3 s，锚点附近 0.5 s），不清零。积分上限 12°。
 - 速度项渐隐：|v| ≤ 2 cm/s 不参与，≥ 5 cm/s 完全参与（`vel_gain`）。
-- 参数表 `PARAM_DATA_VERSION`=38，车端 24 项，App `PARAM_VER`=38，改参数必须两边同步（`scripts/check_param_sync.py`）。
-- 倾角限幅：位置环 8°、速度环 7°、平衡环 motor_max 95% / ang_limit 35°。起立软启动 30%/800ms。
+- 参数表 `PARAM_DATA_VERSION`=39，车端 18 项，App `PARAM_VER`=39，改参数必须两边同步（`scripts/check_param_sync.py`）。
+- 倾角限幅：位置环 12°（`LQR_LEAN_MAX`）、速度环 10°（`SPD_PID_WALK_PITCH_MAX`）、平衡环 motor_max 95% / ang_limit 35°。起立软启动 30%/800ms。
 
 ## 工具
 - 脱机 flash 记录：车离开平衡态时把最近 40 s 写进 `storage` 分区，断电不丢。读取 `python3 scripts/read_flash_log.py /tmp/flog`（约 26 s，读完板子复位）。下一次离开平衡态会覆盖旧记录，先读再测。
@@ -73,7 +55,7 @@
   - 用户说"迭代到 X"：把当前版本（改好的那版）的 tag、压缩包、发布说明、GitHub Release 做完；新建的 X 目录只提交，**不打包、不打 tag、不建 Release**。
   - 流程：提交 → 推 main + tag → `git archive` 打包到 `releases/`（只留最新两版）→ 更新 `RELEASE_NOTES.md` 与 `releases/GITHUB_PUBLISH_GUIDE.md` → 建 GitHub Release（`releases/RELEASE_NOTES.md` 是根目录副本，同步覆盖）。
   - 凭据：`gh` 没登录，用 `GH_TOKEN="$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=//p')"` 只在当条命令的环境变量里传给 `gh release create --repo mack-hx/esp-`，不打印、不落盘。
-- 版本号只在用户明确要求时递增；本地只保留最新两版（0.44、0.43），更早的在 git 历史和 tag 里。
+- 版本号只在用户明确要求时递增；本地只保留最新两版（0.45、0.44），更早的在 git 历史和 tag 里。
 - 本地 `logs/` 只保留最近 3 天，更早的已在 git 历史里。
 - `scripts/run_tests.sh` 与 `scripts/test_hooks.py` 改完必须跑。
 - 不要读自己旧会话的 transcript；跨对话结论只写本文件。

@@ -1,0 +1,106 @@
+/**
+ * @file config.js
+ * @brief OneNet 连接配置 (产品ID / 设备名 / 设备级 AccessKey)
+ * @date 2026-10-10
+ *
+ * 数据全部存 uni.storage (H5 走 localStorage, 小程序走 wx.storage).
+ * 修改后立即生效.
+ *
+ * OneNet 相关字段:
+ *   - productId:  产品 ID (OneNet 后台产品详情页可见)
+ *   - deviceName: 设备名 (OneNet 后台设备详情页可见)
+ *   - deviceAccessKey: 设备级 AccessKey (Base64 字符串, 用于生成 token)
+ *   - subDeviceName / subDeviceAccessKey: 副车设备名 / 副车设备级 AccessKey (同一产品下)
+ *   - tokenExpireSec: token 有效期 (秒), 默认 86400 = 1 天
+ */
+
+const STORAGE_KEY = 'ebr_config_v3'
+
+/**
+ * @brief 默认配置: 设备三元组留空, 由用户在"连接"页填写
+ * @note  仓库是公开的, 不能把 AccessKey 写进源码。
+ *        用户在连接页填一次后会存进 storage, 之后自动带上。
+ *        accessKey 用**设备级** AccessKey (跟 ESP32 端同一把) 即可:
+ *        开放接口 (query-device-property / set-device-desired-property /
+ *        call-service) 都通。产品级 key 会返回 10403 无效鉴权。
+ */
+const DEFAULT_CONFIG = {
+  // === OneNet 设备三元组 (用户自行填写) ===
+  productId: '',
+  deviceName: '',
+  deviceAccessKey: '',
+
+  // === 副车 (同一产品下的第二个设备, 可选) ===
+  subDeviceName: '',
+  subDeviceAccessKey: '',
+
+  // === HTTP API 调优 ===
+  tokenExpireSec: 86400,   // 24h
+
+  // === 内部标识 ===
+  clientId: 'app_' + Math.random().toString(36).slice(2, 10)
+}
+
+let _config = null
+
+export function initConfig() {
+  if (_config) return _config
+  try {
+    const stored = uni.getStorageSync(STORAGE_KEY)
+    if (stored && typeof stored === 'object') {
+      _config = Object.assign({}, DEFAULT_CONFIG, stored)
+    } else {
+      _config = Object.assign({}, DEFAULT_CONFIG)
+    }
+  } catch (e) {
+    console.warn('[config] 读取 storage 失败, 用默认值:', e)
+    _config = Object.assign({}, DEFAULT_CONFIG)
+  }
+  return _config
+}
+
+export function getConfig() {
+  if (!_config) initConfig()
+  return _config
+}
+
+/**
+ * @brief 本地是否已经配过 OneNet (产品ID/设备名/AccessKey 都填了)
+ * @return {boolean} 配全了返回 true
+ * @note  用来决定 App 启动后要不要自动做一次连通性检查
+ */
+/**
+ * @brief 取某辆车的设备三元组
+ * @param {string} which 'main' 主车 / 'sub' 副车
+ * @return {{productId:string, deviceName:string, deviceAccessKey:string}}
+ */
+export function getDevice(which = 'main') {
+  const c = getConfig()
+  if (which === 'sub') {
+    return { productId: c.productId, deviceName: c.subDeviceName, deviceAccessKey: c.subDeviceAccessKey }
+  }
+  return { productId: c.productId, deviceName: c.deviceName, deviceAccessKey: c.deviceAccessKey }
+}
+
+export function hasConfig() {
+  const c = getConfig()
+  return !!(c.productId && c.deviceName && c.deviceAccessKey)
+}
+
+export function saveConfig(patch) {
+  if (!_config) initConfig()
+  Object.assign(_config, patch)
+  try {
+    uni.setStorageSync(STORAGE_KEY, _config)
+    console.log('[config] 已保存:', _config)
+  } catch (e) {
+    console.error('[config] 写 storage 失败:', e)
+  }
+  return _config
+}
+
+export function resetConfig() {
+  _config = Object.assign({}, DEFAULT_CONFIG)
+  uni.setStorageSync(STORAGE_KEY, _config)
+  return _config
+}
