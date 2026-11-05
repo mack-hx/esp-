@@ -288,7 +288,7 @@ static void balance_read_sensors(void)
                                                    param_get_float(PARAM_SERVO_CENTER));
 
             s_data.pitch_raw = euler.pitch;
-            s_data.roll      = euler.roll;  /* 横滚角存入全局状态 */
+            s_data.roll      = euler.roll - s_roll_zero;  /* 已扣配平零点, 与横滚闭环一致 */
             s_pitch_corr     = euler.pitch - comp;   /* 配平采样用 (未扣零点) */
             s_data.pitch     = s_pitch_corr - s_pitch_zero;
             s_data.trim_comp = comp;
@@ -325,10 +325,11 @@ static void balance_read_sensors(void)
             s_yaw_rate = s_yaw_lpf;
             
             /* Roll 角更新到舵机补偿模块 (扣配平零点, 正值=右侧高) */
-            servo_set_roll_angle(euler.roll - s_roll_zero);
+            servo_set_roll_angle(s_data.roll);
         }
     } else {
         s_data.pitch     = 0.0f;
+        s_data.roll      = 0.0f;
         s_data.gyro      = 0.0f;
         s_data.pitch_raw = 0.0f;
         s_data.trim_comp = 0.0f;
@@ -853,9 +854,9 @@ static void balance_apply_direct_move(void)
 
 /**
  * @brief 配平采样: 控制任务里连续采 CALIB_SAMPLES 个 pitch + roll 取平均
- * @note  采样的是**未扣零点**的 pitch (s_pitch_corr),
- *        否则第二次配平会把零点又减一遍, 越配越偏。
- *        Roll 直接从 servo_get_roll_angle() 读, 无需修正链。
+ * @note  pitch 采的是**未扣零点**的 s_pitch_corr, 平均值直接就是新零点。
+ * @note  roll 采的是 servo_get_roll_angle(), 它已经扣过旧零点,
+ *        所以新零点 = 旧零点 + 采样均值 (不加旧零点会把已有的零点抹掉)。
  */
 static void balance_calib_step(void)
 {
@@ -869,7 +870,7 @@ static void balance_calib_step(void)
 
     /* 采样完成: 取平均作为新的配平零点 */
     s_pitch_zero = s_calib_sum_p / (float)s_calib_count;
-    s_roll_zero  = s_calib_sum_r / (float)s_calib_count;
+    s_roll_zero += s_calib_sum_r / (float)s_calib_count;
     s_calib_active = false;
 
     /* 立刻生效 (内存里的零点), 再落盘 */
