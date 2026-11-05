@@ -558,7 +558,7 @@ static float balance_move_toward(float cur, float tgt, float up, float down)
  * @note 优先用参数表里的 move_rpm_max (App 参数页可实时调),
  *       为 0 时退回代码里的兜底值 BAL_MOVE_RPM_MAX。
  *       目标轮速越大, 速度环要求的车身倾角越大,
- *       而倾角被 SPD_PID_WALK_PITCH_MAX (7°) 卡着。
+ *       而倾角被 SPD_PID_WALK_PITCH_MAX (10°) 卡着。
  */
 static float balance_move_rpm_max(void)
 {
@@ -699,10 +699,8 @@ static void balance_control_step(float dt)
     float target_pitch = w * spd_pitch - (1.0f - w) * pos_lean;
 
     /* --- 坡度前馈 ---
-     * 平衡环把车身姿态锁在目标倾角上, 所以低通后的实际倾角就是坡上
-     * 必须常驻的那个倾角。行走时按比例补进目标:
-     * 上坡 (pitch<0) 多给前倾 → 爬得动; 下坡 (pitch>0) 多给后仰 → 刹得住。
-     * 停车时把低通跟到当前值, 下次起步不继承旧坡度。 */
+     * 倾角是平衡环的输出, 把它按比例回灌倾角目标会形成正反馈 (平地上猛冲),
+     * 所以默认关闭 (SLOPE_FF_K=0); 需要时再调大, 并同步观察是否自激。 */
     if (w > 0.0f) {
         float a = dt / (SLOPE_FF_LPF_TAU + dt);
         s_slope_lpf += a * (s_data.pitch - s_slope_lpf);
