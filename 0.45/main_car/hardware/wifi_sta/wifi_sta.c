@@ -582,7 +582,7 @@ static esp_err_t start_provision_httpd(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers = 4;
+    cfg.max_uri_handlers = 8;
     cfg.stack_size = 8192;
 
     esp_err_t err = httpd_start(&s_prov_httpd, &cfg);
