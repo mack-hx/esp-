@@ -52,13 +52,17 @@
 
       <view class="form-item">
         <text class="form-label">AccessKey</text>
-        <input
-          v-model="form.deviceAccessKey"
-          class="form-input"
-          password
-          placeholder="Base64 字符串, 产品详情页查看"
-          placeholder-class="form-placeholder"
-        />
+        <view class="secret-row">
+          <input
+            v-model="form.deviceAccessKey"
+            class="form-input secret-input"
+            :password="hideMain"
+            placeholder="Base64 字符串, 设备详情 → 鉴权信息"
+            placeholder-class="form-placeholder"
+          />
+          <text class="mini-btn" @click="hideMain = !hideMain">{{ hideMain ? '显示' : '隐藏' }}</text>
+          <text class="mini-btn" @click="copySecret('main')">复制</text>
+        </view>
         <text class="form-hint">设备级 AccessKey 即可 (跟 ESP32 端用同一把, 平台会同时校验产品+设备权限)</text>
       </view>
 
@@ -74,13 +78,17 @@
 
       <view class="form-item">
         <text class="form-label">副车 AccessKey</text>
-        <input
-          v-model="form.subDeviceAccessKey"
-          class="form-input"
-          password
-          placeholder="副车设备详情页的设备级 AccessKey"
-          placeholder-class="form-placeholder"
-        />
+        <view class="secret-row">
+          <input
+            v-model="form.subDeviceAccessKey"
+            class="form-input secret-input"
+            :password="hideSub"
+            placeholder="副车设备详情页的设备级 AccessKey"
+            placeholder-class="form-placeholder"
+          />
+          <text class="mini-btn" @click="hideSub = !hideSub">{{ hideSub ? '显示' : '隐藏' }}</text>
+          <text class="mini-btn" @click="copySecret('sub')">复制</text>
+        </view>
       </view>
     </view>
 
@@ -138,6 +146,8 @@ export default {
   data() {
     return {
       form: {},
+      hideMain: true,     // 主车 AccessKey 是否掩码显示
+      hideSub: true,      // 副车 AccessKey 是否掩码显示
       state: 'idle',
       errorMsg: '',
       connecting: false,
@@ -204,15 +214,31 @@ export default {
     onBleDisconnect(w) {
       bleApi.disconnect(w)
     },
-    async onConnect() {
-      // 1. 保存配置
-      saveConfig({
-        productId: this.form.productId,
-        deviceName: this.form.deviceName,
-        deviceAccessKey: this.form.deviceAccessKey,
-        subDeviceName: this.form.subDeviceName,
-        subDeviceAccessKey: this.form.subDeviceAccessKey
+    /** 复制某车 AccessKey 到剪贴板 (方便核对内容对不对)
+     * @param {string} which 'main' 主车 / 'sub' 副车
+     */
+    copySecret(which) {
+      const text = which === 'sub' ? this.form.subDeviceAccessKey : this.form.deviceAccessKey
+      if (!text) {
+        uni.showToast({ title: 'AccessKey 为空', icon: 'none' })
+        return
+      }
+      uni.setClipboardData({
+        data: text,
+        success: () => uni.showToast({ title: '已复制', icon: 'success' }),
+        fail: (e) => uni.showToast({ title: '复制失败: ' + (e.errMsg || e), icon: 'none' })
       })
+    },
+    async onConnect() {
+      // 1. 保存配置 (粘贴带进来的前后空格一律裁掉, 否则平台报 invalid authorization)
+      saveConfig({
+        productId: (this.form.productId || '').trim(),
+        deviceName: (this.form.deviceName || '').trim(),
+        deviceAccessKey: (this.form.deviceAccessKey || '').trim(),
+        subDeviceName: (this.form.subDeviceName || '').trim(),
+        subDeviceAccessKey: (this.form.subDeviceAccessKey || '').trim()
+      })
+      this.form = Object.assign({}, getConfig())
 
       // 2. 真的去平台拉一次设备属性, 能拉到才算配置正确
       this.connecting = true
@@ -299,6 +325,22 @@ export default {
   font-size: 32rpx;
   color: #333;
   padding: 8rpx 0;
+}
+
+.secret-row {
+  display: flex;
+  align-items: center;
+}
+
+.secret-input {
+  flex: 1;
+}
+
+.mini-btn {
+  font-size: 24rpx;
+  color: #1677ff;
+  padding: 8rpx 16rpx;
+  white-space: nowrap;
 }
 
 .form-placeholder {
