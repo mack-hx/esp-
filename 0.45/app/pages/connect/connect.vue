@@ -111,6 +111,13 @@
         class="btn btn-ghost"
         @click="onReset"
       >恢复默认</button>
+
+      <button class="btn btn-primary" @click="onSendToBLE('main')" v-if="ble.main">
+        ➤ 发送配置到主车
+      </button>
+      <button class="btn btn-primary" @click="onSendToBLE('sub')" v-if="ble.sub">
+        ➤ 发送配置到副车
+      </button>
     </view>
 
     <!-- 调试信息 -->
@@ -214,7 +221,33 @@ export default {
     onBleDisconnect(w) {
       bleApi.disconnect(w)
     },
-    /** 复制某车 AccessKey 到剪贴板 (方便核对内容对不对)
+    
+    /** 发送 WiFi+MQTT 配置到小车 (通过 BLE)
+     * @param {string} which 'main' 主车 / 'sub' 副车
+     */
+    async onSendToBLE(which) {
+      const cfg = this.form
+      if (!cfg.productId || !cfg.deviceName) {
+        uni.showToast({ title: 'OneNet 配置不完整', icon: 'none' })
+        return
+      }
+      
+      // 构造 WiFi 配置命令: CFGW:{"ssid":"...","pass":"..."}
+      // 这里通过 WiFi 扫描接口从网页返回，简单起见发送 MQTT 配置
+      const mqttCfg = JSON.stringify({
+        pid: cfg.productId.trim(),
+        dev: cfg.deviceName.trim(),
+        ak: cfg.deviceAccessKey.trim()
+      })
+      const cmd = 'CFGM:' + mqttCfg
+      
+      try {
+        await bleApi.send(which, cmd)
+        uni.showToast({ title: '配置已发送，设备重启中...', icon: 'success' })
+      } catch (e) {
+        uni.showToast({ title: '发送失败: ' + (e.message || e), icon: 'none' })
+      }
+    },
      * @param {string} which 'main' 主车 / 'sub' 副车
      */
     copySecret(which) {

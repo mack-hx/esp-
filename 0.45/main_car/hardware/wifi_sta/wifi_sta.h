@@ -88,4 +88,13 @@ esp_err_t wifi_sta_get_ap_ssid(char *buf, uint32_t len);
  * @return ESP_OK 成功
  */
 esp_err_t wifi_sta_start_ap(void);
+
+/**
+ * @brief 保存 WiFi 配置到 NVS (用于 BLE 和 HTTP 接口)
+ * @param ssid WiFi SSID
+ * @param pass WiFi 密码
+ * @return ESP_OK 成功
+ */
+esp_err_t wifi_sta_save_credentials(const char *ssid, const char *pass);
+
 #endif // WIFI_STA_H

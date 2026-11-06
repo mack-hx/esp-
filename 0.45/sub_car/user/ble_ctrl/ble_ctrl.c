@@ -32,6 +32,13 @@ static void ble_advertise(void);
 /**
  * @brief 解析并执行一条 App 指令
  * @param s   指令文本 (以 '\0' 结尾)
+ * 
+ * 指令格式:
+ *   M:<v>         - 移动指令，v 为速度 (-100~100)
+ *   STOP           - 急停
+ *   STAND          - 起立
+ *   CFGW:<json>    - WiFi 配置: {"ssid":"name","pass":"pwd"}
+ *   CFGM:<json>    - MQTT 配置: {"pid":"...","dev":"...","ak":"..."}
  */
 static void ble_handle_cmd(const char *s)
 {
@@ -44,6 +51,80 @@ static void ble_handle_cmd(const char *s)
         remote_stop();
     } else if (strcmp(s, "STAND") == 0) {
         remote_stand();
+    } else if (strncmp(s, "CFGW:", 5) == 0) {
+        /* WiFi 配置: App 发来的格式为 {"ssid":"XXXX","pass":"YYYY"}
+         * 简单解析: 用 strstr 找 ssid 和 pass 的值 */
+        extern esp_err_t wifi_sta_save_credentials(const char *ssid, const char *pass);
+        const char *json = s + 5;
+        char ssid[33] = {0}, pass[65] = {0};
+        
+        /* 极简 JSON 解析：找 "ssid":"..." */
+        const char *p = strstr(json, "\"ssid\"");
+        if (p) {
+            p = strchr(p, '"');
+            if (p && *(++p)) {
+                int i = 0;
+                while (*p && *p != '"' && i < (int)sizeof(ssid) - 1) {
+                    ssid[i++] = *p++;
+                }
+                ssid[i] = '\0';
+            }
+        }
+        
+        /* 找 "pass":"..." */
+        p = strstr(json, "\"pass\"");
+        if (p) {
+            p = strchr(p, '"');
+            if (p && *(++p)) {
+                int i = 0;
+                while (*p && *p != '"' && i < (int)sizeof(pass) - 1) {
+                    pass[i++] = *p++;
+                }
+                pass[i] = '\0';
+            }
+        }
+        
+        if (ssid[0]) {
+            wifi_sta_save_credentials(ssid, pass);
+            ESP_LOGI(TAG, "★ BLE WiFi 配置已保存: SSID=%s, 重启中...", ssid);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_restart();
+        } else {
+            ESP_LOGW(TAG, "BLE WiFi 配置解析失败: %s", json);
+        }
+    } else if (strncmp(s, "CFGM:", 5) == 0) {
+        /* MQTT 配置 */
+        extern esp_err_t onenet_config_save(const char *pid, const char *dev, const char *ak);
+        const char *json = s + 5;
+        char pid[32] = {0}, dev[64] = {0}, ak[128] = {0};
+        
+        /* 极简 JSON 解析 */
+        const char *keys[] = {"\"pid\"", "\"dev\"", "\"ak\""};
+        char *outs[] = {pid, dev, ak};
+        size_t maxs[] = {sizeof(pid), sizeof(dev), sizeof(ak)};
+        
+        for (int j = 0; j < 3; j++) {
+            const char *p = strstr(json, keys[j]);
+            if (p) {
+                p = strchr(p, '"');
+                if (p && *(++p)) {
+                    int i = 0;
+                    while (*p && *p != '"' && i < (int)maxs[j] - 1) {
+                        outs[j][i++] = *p++;
+                    }
+                    outs[j][i] = '\0';
+                }
+            }
+        }
+        
+        if (pid[0] || dev[0] || ak[0]) {
+            onenet_config_save(pid[0] ? pid : NULL, dev[0] ? dev : NULL, ak[0] ? ak : NULL);
+            ESP_LOGI(TAG, "★ BLE MQTT 配置已保存, 重启中...");
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_restart();
+        } else {
+            ESP_LOGW(TAG, "BLE MQTT 配置解析失败: %s", json);
+        }
     } else {
         ESP_LOGW(TAG, "未知指令: %s", s);
     }
@@ -132,8 +213,12 @@ static void ble_advertise(void)
     struct ble_gap_adv_params p = {0};
     p.conn_mode = BLE_GAP_CONN_MODE_UND;
     p.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    p.itvl_min = 160;  /* 100ms (单位 0.625ms) */
+    p.itvl_max = 320;  /* 200ms */
     rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &p, gap_event, NULL);
-    if (rc != 0 && rc != BLE_HS_EALREADY) ESP_LOGE(TAG, "广播启动失败 %d", rc);
+    if (rc != 0 && rc != BLE_HS_EALREADY) {
+        ESP_LOGE(TAG, "广播启动失败 %d, 将自动重试", rc);
+    }
 }
 
 static void on_sync(void)
@@ -190,7 +275,7 @@ esp_err_t ble_ctrl_start(void)
     ble_svc_gap_device_name_set(BLE_DEVICE_NAME);
 
     nimble_port_freertos_init(host_task);
-    /* 绑 core 0, 不和 core 1 上的平衡控制任务抢 */
+    /* 通知任务绑 core 0, 优先级 3 */
     xTaskCreatePinnedToCore(notify_task, "ble_notify", 3072, NULL, 3, NULL, 0);
     return ESP_OK;
 }

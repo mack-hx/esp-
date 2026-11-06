@@ -12,7 +12,6 @@
  */
 
 #include "wifi_sta.h"
-#include "wifi_provision_page.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -27,6 +26,120 @@
 
 #include <string.h>
 #include <stdio.h>
+
+/* 配网页 HTML（内嵌） */
+static const char WIFI_PROV_PAGE_HTML[] = R"HTML(<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BalanceRobot</title>
+<style>
+body{margin:0;padding:20px;background:#111;color:#eee;font-family:system-ui,sans-serif}
+.wrap{max-width:400px;margin:0 auto}
+h1{color:#5ad1a0;margin:0 0 10px}
+h2{font-size:16px;color:#eee;margin:20px 0 8px}
+label{display:block;margin:12px 0 4px;font-size:14px}
+input,select{width:100%;padding:10px;margin:4px 0 8px;background:#222;color:#eee;border:1px solid #444;border-radius:4px;font:inherit}
+input:focus,select:focus{border-color:#5ad1a0;outline:0}
+button{width:100%;padding:10px;margin-top:12px;background:#2f7d5c;color:#fff;border:0;border-radius:4px;cursor:pointer;font-weight:600;font-size:14px}
+button.alt{background:#333;margin-top:6px;padding:8px}
+button:active{opacity:.8}
+button:disabled{opacity:.5;cursor:not-allowed}
+.hint{font-size:12px;color:#999;margin-top:2px}
+.warn{background:#3a2a12;border-left:3px solid #e8b04b;padding:10px;margin-top:12px;font-size:12px}
+.tab{display:flex;gap:6px;margin-bottom:16px}
+.tab button{margin:0;padding:8px 12px;background:#333;color:#999;flex:1}
+.tab button.active{background:#2f7d5c;color:#fff}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.wifilist{max-height:200px;overflow-y:auto;border:1px solid #444;border-radius:4px;background:#222;margin-top:6px}
+.wifiitem{padding:8px;border-bottom:1px solid #333;cursor:pointer}
+.wifiitem:last-child{border-bottom:0}
+.wifiitem:hover{background:#333}
+.wifissid{font-weight:600}
+.wifisignal{font-size:11px;color:#999}
+#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#2f7d5c;color:#fff;padding:8px 16px;border-radius:16px;opacity:0;transition:opacity .2s}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>BalanceRobot</h1>
+<div class="tab">
+<button class="tabBtn active" data-tab="wifi">WiFi</button>
+<button class="tabBtn" data-tab="mqtt">MQTT</button>
+</div>
+<div id="wifi" class="tab-content active">
+<label>WiFi名</label>
+<input id="ssid" type="text" placeholder="WiFi SSID">
+<button class="alt" id="btnScan">扫描WiFi</button>
+<label style="margin-top:12px">密码</label>
+<input id="pass" type="password" placeholder="留空=开放网络">
+<div class="hint">2.4GHz only</div>
+</div>
+<div id="mqtt" class="tab-content">
+<label>产品ID</label>
+<input id="pid" type="text" placeholder="Product ID">
+<label>设备名</label>
+<input id="dev" type="text" placeholder="Device Name">
+<label>AccessKey</label>
+<input id="ak" type="password" placeholder="Secret Key">
+<button class="alt" id="btnFromApp" style="width:100%;margin-top:12px">从App导入配置</button>
+</div>
+<button id="btnSave">保存</button>
+<div class="warn">保存后设备将重启</div>
+</div>
+<div id="toast"></div>
+<script>
+var $=id=>document.getElementById(id);
+var toast=t=>{let e=$('toast');e.textContent=t;e.style.opacity='1';setTimeout(()=>e.style.opacity='0',2e3);};
+document.querySelectorAll('.tabBtn').forEach(btn=>{btn.onclick=()=>{
+  document.querySelectorAll('.tabBtn').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
+  btn.classList.add('active');$(btn.dataset.tab).classList.add('active');};
+});
+try{let s=localStorage.getItem('ssid');if(s)$('ssid').value=s;}catch(e){}
+$('btnScan').onclick=()=>{
+  $('btnScan').disabled=true;$('btnScan').textContent='扫描中…';
+  fetch('/api/wifi/scan').then(r=>r.json()).then(d=>{
+    $('btnScan').disabled=false;$('btnScan').textContent='扫描WiFi';
+    if(d.networks&&d.networks.length){
+      let list=document.createElement('div');list.className='wifilist';
+      d.networks.forEach(net=>{
+        let item=document.createElement('div');item.className='wifiitem';
+        item.innerHTML='<div class="wifissid">'+net.ssid+'</div><div class="wifisignal">信号: '+net.rssi+' dBm</div>';
+        item.onclick=()=>{$('ssid').value=net.ssid;toast('已选: '+net.ssid);};
+        list.appendChild(item);
+      });
+      let old=document.querySelector('.wifilist');if(old)old.remove();
+      $('btnScan').parentNode.insertBefore(list, $('btnScan').nextSibling);
+      toast('扫到 '+d.networks.length+' 个');
+    }else toast('扫描失败');
+  }).catch(()=>{$('btnScan').disabled=false;$('btnScan').textContent='扫描WiFi';toast('网络错误');});
+};
+$('btnFromApp').onclick=()=>{
+  fetch('/api/cfg/get').then(r=>r.json()).then(d=>{
+    if(d.pid){$('pid').value=d.pid;}
+    if(d.dev){$('dev').value=d.dev;}
+    if(d.ak){$('ak').value=d.ak;}
+    if(d.pid||d.dev||d.ak){toast('✓ 已从App导入MQTT配置');}
+    else{toast('⚠ App未配置OneNet');}
+  }).catch(e=>{toast('✗ App导入失败: '+e.message);});
+};
+$('btnSave').onclick=()=>{
+  let s=$('ssid').value.trim(),p=$('pass').value,pid=$('pid').value.trim(),dev=$('dev').value.trim(),ak=$('ak').value.trim();
+  if(!s){toast('请输入WiFi名');$('ssid').focus();return;}
+  if(p.length>0&&p.length<8){toast('密码8位+');$('pass').focus();return;}
+  try{localStorage.setItem('ssid',s);}catch(e){}
+  $('btnSave').disabled=true;$('btnSave').textContent='保存中…';
+  fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:s,pass:p,pid,dev,ak})})
+    .then(r=>r.json()).then(d=>{
+      if(d.ok){toast('✓ 保存成功，重启中…');setTimeout(()=>{document.body.innerHTML='<div class="wrap"><h1>已保存</h1><p>设备重启中，尝试连接'+s+'</p></div>';},1000);}
+      else{toast('✗ 失败: '+(d.msg||'error'));$('btnSave').disabled=false;$('btnSave').textContent='保存';}
+    }).catch(()=>{toast('✗ 网络错误');$('btnSave').disabled=false;$('btnSave').textContent='保存';});
+};
+</script>
+)HTML";
 
 static const char *TAG = "WIFI_STA";
 
@@ -88,7 +201,7 @@ static bool load_credentials_from_nvs(char *ssid, size_t ssid_len,
  * @brief 把 SSID+密码写 NVS (用单独 handle 避免读写冲突)
  * @return ESP_OK 成功
  */
-static esp_err_t save_credentials_to_nvs(const char *ssid, const char *pass)
+static esp_err_t save_credentials_to_nvs_impl(const char *ssid, const char *pass)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open(WIFI_STA_NVS_NS, NVS_READWRITE, &h);
@@ -105,6 +218,14 @@ static esp_err_t save_credentials_to_nvs(const char *ssid, const char *pass)
     }
     nvs_close(h);
     return err;
+}
+
+/**
+ * @brief 公开 API: 保存 WiFi 凭证 (用于 BLE 和配网页)
+ */
+esp_err_t wifi_sta_save_credentials(const char *ssid, const char *pass)
+{
+    return save_credentials_to_nvs_impl(ssid, pass);
 }
 /* ========== 配网页 HTTP handler ========== */
 
@@ -158,10 +279,46 @@ static esp_err_t prov_get_wifi_scan_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json; charset=utf-8");
     
-    /* 不要使用阻塞的 esp_wifi_scan_start (1:1.5s 的延迟)
-     * 这里直接返回空列表, 真正的扫描交给 App
-     * 如需扫描, 客户端可定期检查或自行调用蓝牙扫描 */
-    httpd_resp_sendstr(req, "{\"networks\":[]}");
+    /* 触发 WiFi 扫描 */
+    wifi_scan_config_t config = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = true,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time.active.min = 0,
+        .scan_time.active.max = 150
+    };
+    esp_wifi_scan_start(&config, true);
+    
+    uint16_t ap_count = 0;
+    esp_wifi_scan_get_ap_num(&ap_count);
+    
+    char *resp = malloc(4096);
+    if (!resp) {
+        httpd_resp_sendstr(req, "{\"networks\":[],\"error\":\"memory\"}");
+        return ESP_OK;
+    }
+    
+    strcpy(resp, "{\"networks\":[");
+    wifi_ap_record_t *ap_list = malloc(ap_count * sizeof(wifi_ap_record_t));
+    if (ap_list) {
+        esp_wifi_scan_get_ap_records(&ap_count, ap_list);
+        for (int i = 0; i < ap_count && i < 30; i++) {
+            if (i > 0) strcat(resp, ",");
+            char item[256] = {0};
+            snprintf(item, sizeof(item), 
+                "{\"ssid\":\"%s\",\"rssi\":%d,\"channel\":%d}",
+                ap_list[i].ssid, ap_list[i].rssi, ap_list[i].primary);
+            strcat(resp, item);
+        }
+        free(ap_list);
+    }
+    strcat(resp, "]}");
+    
+    httpd_resp_sendstr(req, resp);
+    free(resp);
+    esp_wifi_scan_stop();
     return ESP_OK;
 }
 
@@ -205,7 +362,7 @@ static esp_err_t prov_post_wifi_handler(httpd_req_t *req)
     json_str(buf, "ak", ak, sizeof(ak));         /* OneNET ak */
 
     /* 保存 WiFi 配置 */
-    esp_err_t err = save_credentials_to_nvs(ssid, pass);
+    esp_err_t err = save_credentials_to_nvs_impl(ssid, pass);
     if (err != ESP_OK) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send(req, "{\"ok\":false,\"msg\":\"nvs save failed\"}", -1);
@@ -231,6 +388,160 @@ static esp_err_t prov_post_wifi_handler(httpd_req_t *req)
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
     return ESP_OK;  /* 不会到这里 */
+}
+
+/**
+ * @brief 简单 DNS 服务器: 所有查询都返回 192.168.4.1 (用于 Captive Portal)
+ */
+
+#include "lwip/netdb.h"
+#include "lwip/err.h"
+#include "lwip/udp.h"
+#include "lwip/dns.h"
+
+#define DNS_PORT 53
+
+static struct udp_pcb *dns_pcb = NULL;
+static TaskHandle_t dns_task = NULL;
+
+/** DNS 消息头结构 */
+typedef struct {
+    uint16_t id;
+    uint16_t flags;
+    uint16_t qdcount;
+    uint16_t ancount;
+    uint16_t nscount;
+    uint16_t arcount;
+} dns_hdr_t;
+
+static void dns_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+                             const ip_addr_t *addr, u16_t port)
+{
+    /* 极简 DNS 应答: 无脑返回 192.168.4.1
+     * 这是 Captive Portal 的标准做法，让手机自动打开配网页 */
+    if (!p || p->len < 12) {
+        pbuf_free(p);
+        return;
+    }
+
+    uint8_t *buf = (uint8_t *)p->payload;
+    dns_hdr_t *req = (dns_hdr_t *)buf;
+    uint16_t id = req->id;
+    uint16_t flags = 0x8480;  /* 响应 + 标准查询 + 权威应答 */
+
+    /* 构造响应包 */
+    static uint8_t resp[512];
+    int pos = 0;
+
+    /* 头 */
+    memcpy(resp + pos, &id, 2); pos += 2;
+    uint16_t f = htons(flags);
+    memcpy(resp + pos, &f, 2); pos += 2;
+    uint16_t qdcount = ntohs(req->qdcount);
+    uint16_t c = htons(1); memcpy(resp + pos, &c, 2); pos += 2;  /* ancount */
+    c = htons(0); memcpy(resp + pos, &c, 2); pos += 2;  /* nscount */
+    memcpy(resp + pos, &c, 2); pos += 2;  /* arcount */
+
+    /* 复制查询域名 (不解析, 直接抄) */
+    int qlen = 0;
+    uint8_t *q = buf + 12;
+    while (qlen < p->len - 12 - 4 && q[qlen] != 0) {
+        if (q[qlen] > 63) break;
+        qlen += 1 + q[qlen];
+    }
+    if (qlen < p->len - 12 - 4) qlen += 5;  /* 类型 + 类 */
+    if (pos + qlen < (int)sizeof(resp)) {
+        memcpy(resp + pos, q, qlen);
+        pos += qlen;
+    }
+
+    /* 应答记录: 指向查询域名的指针 + 类型 A + 类 IN + TTL + 长度 + IP */
+    if (pos + 16 < (int)sizeof(resp)) {
+        uint16_t ptr = htons(0xc00c);  /* 指针指向位置 12 */
+        memcpy(resp + pos, &ptr, 2); pos += 2;
+        uint16_t type_class = htons((1 << 8) | 1);  /* A (1) + IN (1) */
+        memcpy(resp + pos, &type_class, 2); pos += 2;
+        uint32_t ttl = htonl(60);
+        memcpy(resp + pos, &ttl, 4); pos += 4;
+        uint16_t rdlen = htons(4);
+        memcpy(resp + pos, &rdlen, 2); pos += 2;
+        uint8_t ipv4[] = {192, 168, 4, 1};
+        memcpy(resp + pos, ipv4, 4); pos += 4;
+    }
+
+    struct pbuf *pb = pbuf_alloc(PBUF_TRANSPORT, pos, PBUF_RAM);
+    if (pb) {
+        memcpy(pb->payload, resp, pos);
+        udp_sendto(pcb, pb, addr, port);
+        pbuf_free(pb);
+    }
+    pbuf_free(p);
+}
+
+static esp_err_t start_dns_spoofing(void)
+{
+    if (dns_pcb) return ESP_OK;
+
+    dns_pcb = udp_new_ip_type(IPADDR_TYPE_V4);
+    if (!dns_pcb) {
+        ESP_LOGE(TAG, "DNS PCB 创建失败");
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = udp_bind(dns_pcb, IP_ADDR_ANY, DNS_PORT);
+    if (err != ERR_OK) {
+        ESP_LOGE(TAG, "DNS 端口绑定失败: %d", err);
+        udp_remove(dns_pcb);
+        dns_pcb = NULL;
+        return ESP_FAIL;
+    }
+
+    udp_recv(dns_pcb, dns_recv_callback, NULL);
+    ESP_LOGI(TAG, "DNS 劫持已启动 (所有查询 → 192.168.4.1, 用于 Captive Portal)");
+    return ESP_OK;
+}
+
+static void stop_dns_spoofing(void)
+{
+    if (dns_pcb) {
+        udp_remove(dns_pcb);
+        dns_pcb = NULL;
+        ESP_LOGI(TAG, "DNS 劫持已关闭");
+    }
+}
+
+/**
+ * @brief GET /api/cfg/get → 返回已保存的 WiFi 和 MQTT 配置 (用于 App 导入)
+ */
+static esp_err_t prov_get_config_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json; charset=utf-8");
+    
+    char ssid[33] = {0}, pass[65] = {0};
+    char pid[32] = {0}, dev[64] = {0}, ak[128] = {0};
+    
+    /* 读 WiFi 配置 */
+    load_credentials_from_nvs(ssid, sizeof(ssid), pass, sizeof(pass));
+    
+    /* 读 OneNet 配置 */
+    extern esp_err_t onenet_config_load(char *pid, size_t pid_len, 
+                                        char *dev, size_t dev_len, 
+                                        char *ak, size_t ak_len);
+    onenet_config_load(pid, sizeof(pid), dev, sizeof(dev), ak, sizeof(ak));
+    
+    char *resp = malloc(512);
+    if (!resp) {
+        httpd_resp_sendstr(req, "{\"error\":\"memory\"}");
+        return ESP_OK;
+    }
+    
+    snprintf(resp, 512, "{\"ssid\":\"%s\",\"pass\":\"%s\",\"pid\":\"%s\",\"dev\":\"%s\",\"ak\":\"%s\"}",
+             ssid[0] ? ssid : "", pass[0] ? pass : "",
+             pid[0] ? pid : "", dev[0] ? dev : "", ak[0] ? ak : "");
+    
+    httpd_resp_sendstr(req, resp);
+    free(resp);
+    return ESP_OK;
 }
 
 /**
@@ -279,6 +590,13 @@ static esp_err_t start_provision_httpd(void)
     };
     httpd_register_uri_handler(s_prov_httpd, &uri_post);
 
+    /* GET /api/cfg/get → 返回已保存配置 (用于 App 导入) */
+    httpd_uri_t uri_cfg_get = {
+        .uri = "/api/cfg/get", .method = HTTP_GET,
+        .handler = prov_get_config_handler, .user_ctx = NULL
+    };
+    httpd_register_uri_handler(s_prov_httpd, &uri_cfg_get);
+
     /* Captive Portal: 兜底所有其他请求，重定向到根 */
     httpd_uri_t uri_catchall = {
         .uri = "/*", .method = HTTP_GET,
@@ -299,6 +617,7 @@ static void stop_provision_httpd(void)
     if (s_prov_httpd == NULL) return;
     httpd_stop(s_prov_httpd);
     s_prov_httpd = NULL;
+    stop_dns_spoofing();
     ESP_LOGI(TAG, "配网页已关闭");
 }
 
@@ -306,10 +625,11 @@ static void stop_provision_httpd(void)
 
 /**
  * @brief 启动 AP 模式 + 配网页
+ * @note  使用 AP+STA 混合模式以支持 WiFi 扫描 (纯 AP-only 无法扫描周围网络)
  */
 static esp_err_t start_ap_mode(void)
 {
-    ESP_LOGI(TAG, "NVS 无 WiFi 配置, 进入 AP 配网模式");
+    ESP_LOGI(TAG, "NVS 无 WiFi 配置, 进入 AP 配网模式 (AP+STA 混合以支持扫描)");
 
     s_state = WIFI_STA_AP_MODE;
 
@@ -319,10 +639,10 @@ static esp_err_t start_ap_mode(void)
     snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s_%02X%02X",
              WIFI_STA_AP_SSID, mac[4], mac[5]);
 
-    /* AP 必须在 STA 之前创建 netif, 用 AP-only 模式 */
-    esp_err_t ret = esp_wifi_set_mode(WIFI_MODE_AP);
+    /* 使用 AP+STA 混合模式以支持 WiFi 扫描 */
+    esp_err_t ret = esp_wifi_set_mode(WIFI_MODE_APSTA);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_set_mode(AP) 失败: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "esp_wifi_set_mode(AP+STA) 失败: %s", esp_err_to_name(ret));
         return ret;
     }
 
@@ -331,6 +651,12 @@ static esp_err_t start_ap_mode(void)
     if (s_ap_netif == NULL) {
         ESP_LOGE(TAG, "创建 AP netif 失败");
         return ESP_FAIL;
+    }
+
+    /* 创建 STA netif (用于混合模式扫描, 不会主动连接任何网络) */
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    if (sta_netif == NULL) {
+        ESP_LOGW(TAG, "创建 STA netif 失败 (非致命, 但扫描可能受限)");
     }
 
     /* create_default_wifi_ap() 已自动起 DHCP server, 必须先停 DHCP 再设 IP,
@@ -377,6 +703,9 @@ static esp_err_t start_ap_mode(void)
     }
 
     ESP_LOGI(TAG, "配网热点配置完成: SSID=%s  密码=%s", s_ap_ssid, WIFI_STA_AP_PASSWORD);
+
+    /* 启动 DNS 劫持 (Captive Portal 自动弹网页) */
+    start_dns_spoofing();
 
     /* 起配网页 */
     return start_provision_httpd();
