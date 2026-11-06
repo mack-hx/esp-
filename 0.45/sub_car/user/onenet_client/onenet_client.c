@@ -29,6 +29,8 @@
 #include "esp_system.h"
 #include "mbedtls/md.h"
 #include "mbedtls/base64.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,10 +39,13 @@
 
 #include "balance.h"
 #include "param.h"
+#include "status_led.h"   /* 手动设色后暂停自动状态色 */
 #include "trim.h"     /* 配平表 (标定点记录 / 保存 / 清空 / 导出) */
 #include "led.h"
 #include "servo.h"
+#include "magnet.h"
 #include "encoder.h"
+#include "pcf8574.h"
 #include "lcd_ui.h"   /* 起立/急停时切换 LCD 页面 */
 #include "esp_timer.h"
 #include "esp_netif_sntp.h"
@@ -48,22 +53,106 @@
 
 static const char *TAG = "ONENET";
 
-/* ========== 物模型 topic ==========
- * 官方 topic 表:
- *   属性上报   发布 .../thing/property/post      订阅 .../thing/property/post/reply
- *   属性设置   订阅 .../thing/property/set       发布 .../thing/property/set_reply
- *   服务调用   订阅 .../thing/service/{id}/invoke 发布 .../thing/service/{id}/invoke_reply
+/* ========== NVS 配置 (运行时读写) ========== */
+#define ONENET_NVS_NS       "onenet_cfg"
+#define ONENET_NVS_KEY_PID  "pid"
+#define ONENET_NVS_KEY_DEV  "dev"
+#define ONENET_NVS_KEY_AK   "ak"
+
+/* ========== 运行时配置缓冲 ========== */
+static char s_product_id[32] = {0};
+static char s_device_name[64] = {0};
+static char s_device_ak[128] = {0};
+static bool s_config_loaded = false;
+
+/* 动态 topic 缓冲 (运行时拼接) */
+static char s_topic_property_post[256] = {0};
+static char s_topic_property_post_reply[256] = {0};
+static char s_topic_property_set[256] = {0};
+static char s_topic_property_set_reply[256] = {0};
+static char s_topic_desired_get[256] = {0};
+static char s_topic_desired_get_reply[256] = {0};
+static char s_topic_event_post[256] = {0};
+static char s_topic_service_invoke_reply[256] = {0};
+static char s_topic_service_wildcard[256] = {0};
+
+/* ========== 配置读写 ========== */
+
+/**
+ * @brief 从 NVS 读或初始化 OneNET 配置
  */
-#define TOPIC_PROPERTY_POST        "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/post"
-#define TOPIC_PROPERTY_POST_REPLY  "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/post/reply"
-#define TOPIC_PROPERTY_SET         "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/set"
-#define TOPIC_PROPERTY_SET_REPLY   "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/set_reply"
-#define TOPIC_DESIRED_GET          "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/desired/get"
-#define TOPIC_DESIRED_GET_REPLY    "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/desired/get/reply"
-#define TOPIC_EVENT_POST           "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/event/post"
-#define TOPIC_SERVICE_INVOKE_REPLY "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/service/%s/invoke_reply"
-/* 服务类下行 topic 的通配符订阅 (一次性收齐所有服务的 invoke) */
-#define TOPIC_SERVICE_WILDCARD    "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/service/#"
+static void load_onenet_config(void)
+{
+    if (s_config_loaded) return;
+    
+    nvs_handle_t h;
+    if (nvs_open(ONENET_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        /* NVS 命名空间不存在，用默认值 */
+        strlcpy(s_product_id, ONENET_DEFAULT_PRODUCT_ID, sizeof(s_product_id));
+        strlcpy(s_device_name, ONENET_DEFAULT_DEVICE_NAME, sizeof(s_device_name));
+        s_device_ak[0] = '\0';
+        s_config_loaded = true;
+        return;
+    }
+    
+    size_t len = sizeof(s_product_id);
+    if (nvs_get_str(h, ONENET_NVS_KEY_PID, s_product_id, &len) != ESP_OK) {
+        strlcpy(s_product_id, ONENET_DEFAULT_PRODUCT_ID, sizeof(s_product_id));
+    }
+    
+    len = sizeof(s_device_name);
+    if (nvs_get_str(h, ONENET_NVS_KEY_DEV, s_device_name, &len) != ESP_OK) {
+        strlcpy(s_device_name, ONENET_DEFAULT_DEVICE_NAME, sizeof(s_device_name));
+    }
+    
+    len = sizeof(s_device_ak);
+    nvs_get_str(h, ONENET_NVS_KEY_AK, s_device_ak, &len);
+    
+    nvs_close(h);
+    s_config_loaded = true;
+    ESP_LOGI(TAG, "加载 OneNET 配置: pid=%s, dev=%s, ak=%s", s_product_id, s_device_name,
+             s_device_ak[0] ? "已配置" : "未配置");
+}
+
+/**
+ * @brief 拼接动态 topic
+ */
+static void build_topics(void)
+{
+    snprintf(s_topic_property_post, sizeof(s_topic_property_post),
+             "$sys/%s/%s/thing/property/post", s_product_id, s_device_name);
+    snprintf(s_topic_property_post_reply, sizeof(s_topic_property_post_reply),
+             "$sys/%s/%s/thing/property/post/reply", s_product_id, s_device_name);
+    snprintf(s_topic_property_set, sizeof(s_topic_property_set),
+             "$sys/%s/%s/thing/property/set", s_product_id, s_device_name);
+    snprintf(s_topic_property_set_reply, sizeof(s_topic_property_set_reply),
+             "$sys/%s/%s/thing/property/set_reply", s_product_id, s_device_name);
+    snprintf(s_topic_desired_get, sizeof(s_topic_desired_get),
+             "$sys/%s/%s/thing/property/desired/get", s_product_id, s_device_name);
+    snprintf(s_topic_desired_get_reply, sizeof(s_topic_desired_get_reply),
+             "$sys/%s/%s/thing/property/desired/get/reply", s_product_id, s_device_name);
+    snprintf(s_topic_event_post, sizeof(s_topic_event_post),
+             "$sys/%s/%s/thing/event/post", s_product_id, s_device_name);
+    /* service invoke reply 的前缀 (用于 snprintf 拼接 %s/invoke/reply) */
+    snprintf(s_topic_service_invoke_reply, sizeof(s_topic_service_invoke_reply),
+             "$sys/%s/%s/thing/service/", s_product_id, s_device_name);
+    snprintf(s_topic_service_wildcard, sizeof(s_topic_service_wildcard),
+             "$sys/%s/%s/thing/service/#", s_product_id, s_device_name);
+}
+
+/* 用宏代替编译期常量指向运行时缓冲 */
+#define TOPIC_PROPERTY_POST        (s_topic_property_post)
+#define TOPIC_PROPERTY_POST_REPLY  (s_topic_property_post_reply)
+#define TOPIC_PROPERTY_SET         (s_topic_property_set)
+#define TOPIC_PROPERTY_SET_REPLY   (s_topic_property_set_reply)
+#define TOPIC_DESIRED_GET          (s_topic_desired_get)
+#define TOPIC_DESIRED_GET_REPLY    (s_topic_desired_get_reply)
+#define TOPIC_EVENT_POST           (s_topic_event_post)
+#define TOPIC_SERVICE_INVOKE_REPLY (s_topic_service_invoke_reply)
+#define TOPIC_SERVICE_WILDCARD     (s_topic_service_wildcard)
+#define ONENET_PRODUCT_ID          (s_product_id)
+#define ONENET_DEVICE_NAME         (s_device_name)
+#define ONENET_DEVICE_AK           (s_device_ak)
 
 /* ========== 上报周期 ========== */
 /**
@@ -156,10 +245,6 @@ static int compute_token(char *out, size_t out_size)
     /* 1. base64 解码 AccessKey */
     uint8_t key_bin[64];
     size_t key_len = 0;
-    if (strlen(ONENET_DEVICE_AK) == 0) {
-        ESP_LOGE(TAG, "ONENET_DEVICE_AK 未填写 (onenet_client.h)");
-        return -1;
-    }
     if (mbedtls_base64_decode(key_bin, sizeof(key_bin), &key_len,
                               (const uint8_t *)ONENET_DEVICE_AK, strlen(ONENET_DEVICE_AK)) != 0) {
         ESP_LOGE(TAG, "AccessKey base64 解码失败");
@@ -609,6 +694,9 @@ static const char* state_to_string(bal_state_t state)
     }
 }
 
+/* 注: 微动开关的读取统一走 pcf8574_read_dock_switches() (在 pcf8574 驱动里),
+ * 车上的测试页 (ui_led_magnet.c) 和这里上报的 sw1/sw2 用的是同一个函数, 保证一致。 */
+
 /* ========== 周期上报任务 ========== */
 
 /**
@@ -625,7 +713,8 @@ static void publish_task(void *arg)
     static char gzbody[128];  /* 角速度帧 (step 0.01) */
     static char ibody[512];   /* 整数帧 */
     static char sbody[128];   /* 字符串帧 */
-    static char actbody[512]; /* 执行器状态帧 (灯) */
+    static char swbody[128];  /* 对接开关帧 */
+    static char actbody[512]; /* 执行器状态帧 (灯/电磁铁) */
     static char svbody[256];  /* 舵机角度帧 */
 
     while (1) {
@@ -677,26 +766,37 @@ static void publish_task(void *arg)
                     esp_mqtt_client_publish(s_client, TOPIC_PROPERTY_POST, sbody, sn, 0, 0);
                 }
 
-                /* --- 5. 1s 一帧的低速状态 --- */
-                static int64_t last_slow_ms = 0;
+                /* --- 5. 对接检测开关 (单独一帧, 1s 一帧) ---
+                 * 物模型里还没建 sw1/sw2 时平台会拒收这一帧 (code 2306),
+                 * 但不影响其它帧。建好之后自动就上报了。 */
+                static int64_t last_sw_ms = 0;
                 int64_t now_ms = esp_timer_get_time() / 1000;
-                if (now_ms - last_slow_ms >= 1000) {
-                    last_slow_ms = now_ms;
+                if (now_ms - last_sw_ms >= 1000) {
+                    last_sw_ms = now_ms;
+                    bool sw1 = false, sw2 = false;
+                    pcf8574_read_dock_switches(&sw1, &sw2);
+                    int n3 = build_property_post_i(swbody, sizeof(swbody), ts, 2,
+                        "sw1", (long long)(sw1 ? 1 : 0),
+                        "sw2", (long long)(sw2 ? 1 : 0));
+                    if (n3 > 0) {
+                        esp_mqtt_client_publish(s_client, TOPIC_PROPERTY_POST, swbody, n3, 0, 0);
+                    }
 
-                    /* 执行器状态 (灯)
+                    /* --- 6. 执行器状态 (灯 / 电磁铁), 1s 一帧 ---
                      * 这几个属性 App 只是下发, 设备把当前状态报回去,
                      * App 才能显示真实状态 (而不是自己瞎猜)。 */
                     led_color_t lc = led_get_color(LED_1);
                     int32_t led_rgb = ((int32_t)lc.r << 16) | ((int32_t)lc.g << 8) | lc.b;
-                    int n4 = build_property_post_i(actbody, sizeof(actbody), ts, 3,
+                    int n4 = build_property_post_i(actbody, sizeof(actbody), ts, 4,
                         "led_on",         (long long)(led_get_on(LED_1) ? 1 : 0),
                         "led_color",      (long long)led_rgb,
-                        "led_brightness", (long long)led_get_brightness(LED_1));
+                        "led_brightness", (long long)led_get_brightness(LED_1),
+                        "magnet_on",      (long long)(magnet_get(MAGNET_1) ? 1 : 0));
                     if (n4 > 0) {
                         esp_mqtt_client_publish(s_client, TOPIC_PROPERTY_POST, actbody, n4, 0, 0);
                     }
 
-                    /* 舵机角度 (float, step 1) */
+                    /* --- 7. 舵机角度 (float, step 1), 1s 一帧 --- */
                     int n5 = build_property_post_f(svbody, sizeof(svbody), ts, 2, 0,
                         "servo1_angle", (double)servo_get_angle(SERVO_1),
                         "servo2_angle", (double)servo_get_angle(SERVO_2));
@@ -828,11 +928,14 @@ void remote_stand(void)
  */
 static void handle_led_control(const char *json)
 {
+    bool manual = false;   /* 本次有没有手动改灯 */
+
     /* led_on: bool - 开/关 */
     bool led_on = false;
     if (json_find_value_bool(json, "led_on", &led_on)) {
         ESP_LOGI(TAG, "灯控制: led_on=%d", led_on);
         led_set_on(LED_1, led_on);
+        manual = true;
     }
 
     /* led_color: int - RGB 颜色值 (0x00RRGGBB) */
@@ -844,6 +947,7 @@ static void handle_led_control(const char *json)
         ESP_LOGI(TAG, "灯控制: led_color=0x%06X -> RGB(%d,%d,%d)", led_color, r, g, b);
         led_color_t color = { .r = r, .g = g, .b = b };
         led_set_color(LED_1, color);
+        manual = true;
     }
 
     /* led_brightness: int (0-255) - 亮度 */
@@ -853,6 +957,7 @@ static void handle_led_control(const char *json)
         if (led_brightness > 255) led_brightness = 255;
         ESP_LOGI(TAG, "灯控制: led_brightness=%d", led_brightness);
         led_set_brightness(LED_1, (uint8_t)led_brightness);
+        manual = true;
     }
 
     /* led_preset: int - 预设颜色 (0=关,1=红,...,7=白) */
@@ -860,8 +965,12 @@ static void handle_led_control(const char *json)
     if (json_find_value_int(json, "led_preset", &led_preset)) {
         if (led_preset >= 0 && led_preset < LED_PRESET_MAX) {
             led_set_preset(LED_1, (led_preset_t)led_preset);
+            manual = true;
         }
     }
+
+    /* 手动设色后保持用户颜色, 直到下一次状态切换才交还自动状态色 */
+    if (manual) status_led_manual_hold();
 }
 
 /**
@@ -889,6 +998,19 @@ static void handle_servo_control(const char *json)
 }
 
 /**
+ * @brief 处理电磁铁控制属性
+ * @param json 收到的 JSON
+ */
+static void handle_magnet_control(const char *json)
+{
+    bool magnet_on = false;
+    if (json_find_value_bool(json, "magnet_on", &magnet_on)) {
+        magnet_set_both(magnet_on, magnet_on);
+        ESP_LOGI(TAG, "电磁铁: %s", magnet_on ? "吸合" : "释放");
+    }
+}
+
+/**
  * @brief 处理 $sys/.../thing/property/set 消息 (云下发的属性)
  * @param json 收到的 JSON (以 '\0' 结尾)
  */
@@ -911,12 +1033,13 @@ static void handle_property_set(const char *json)
     if (has_vx) {
         if (!s_ble_link) remote_move(vx);
     } else {
-        ESP_LOGI(TAG, "属性设置: 没有移动指令 (vx/speed), 只处理灯/舵机");
+        ESP_LOGI(TAG, "属性设置: 没有移动指令 (vx/speed), 只处理灯/舵机/电磁铁");
     }
 
-    /* --- 灯 / 舵机 --- */
+    /* --- 灯 / 舵机 / 电磁铁 --- */
     handle_led_control(json);
     handle_servo_control(json);
+    handle_magnet_control(json);
 }
 
 /**
@@ -961,9 +1084,9 @@ static void service_reply(const char *name, const char *req_id, const char *data
 {
     if (!s_connected || !s_client) return;
 
-    static char topic[160];
+    static char topic[512];
     static char body[2048];     /* 静态区, 不占 MQTT 任务栈 */
-    snprintf(topic, sizeof(topic), TOPIC_SERVICE_INVOKE_REPLY, name);
+    snprintf(topic, sizeof(topic), "%s%s/invoke/reply", s_topic_service_invoke_reply, name);
 
     int n = snprintf(body, sizeof(body),
                      "{\"id\":\"%s\",\"code\":200,\"msg\":\"success\",\"data\":%s}",
@@ -1218,7 +1341,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         s_connected = false;
         break;
     case MQTT_EVENT_DATA: {
-        char topic[160] = {0};
+        char topic[512] = {0};
         int tlen = event->topic_len < (int)sizeof(topic) - 1 ? event->topic_len : (int)sizeof(topic) - 1;
         memcpy(topic, event->topic, tlen);
         topic[tlen] = '\0';
@@ -1276,15 +1399,87 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
 /* ========== 对外 API ========== */
 
+esp_err_t onenet_config_save(const char *pid, const char *dev, const char *ak)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(ONENET_NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open 失败: %s", esp_err_to_name(err));
+        return err;
+    }
+    
+    if (pid) {
+        err = nvs_set_str(h, ONENET_NVS_KEY_PID, pid);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "保存 pid 失败: %s", esp_err_to_name(err));
+            nvs_close(h);
+            return err;
+        }
+    }
+    
+    if (dev) {
+        err = nvs_set_str(h, ONENET_NVS_KEY_DEV, dev);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "保存 dev 失败: %s", esp_err_to_name(err));
+            nvs_close(h);
+            return err;
+        }
+    }
+    
+    if (ak) {
+        err = nvs_set_str(h, ONENET_NVS_KEY_AK, ak);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "保存 ak 失败: %s", esp_err_to_name(err));
+            nvs_close(h);
+            return err;
+        }
+    }
+    
+    err = nvs_commit(h);
+    nvs_close(h);
+    
+    if (err == ESP_OK) {
+        /* 重新加载配置，刷新缓冲 */
+        s_config_loaded = false;
+        load_onenet_config();
+        build_topics();
+        ESP_LOGI(TAG, "OneNET 配置已保存并重新加载");
+    }
+    
+    return err;
+}
+
+void onenet_config_load(char *pid_out, size_t pid_cap, char *dev_out, size_t dev_cap,
+                        char *ak_out, size_t ak_cap)
+{
+    load_onenet_config();
+    
+    strlcpy(pid_out, s_product_id, pid_cap);
+    strlcpy(dev_out, s_device_name, dev_cap);
+    strlcpy(ak_out, s_device_ak, ak_cap);
+}
+
+/* ========== 对外 API ========== */
+
 esp_err_t mqtt_client_start(void)
 {
     if (s_client) return ESP_OK;
+
+    /* 加载配置 (从 NVS 或默认值) */
+    load_onenet_config();
+    build_topics();
+
+    /* AccessKey 为空则不启动 */
+    if (strlen(ONENET_DEVICE_AK) == 0) {
+        ESP_LOGE(TAG, "ONENET_DEVICE_AK 未配置，请在配网页设置");
+        return ESP_FAIL;
+    }
 
     /* 0. 启动 SNTP 校时 (属性上报的 time 字段必须是真实时间戳) */
     sntp_start();
 
     /* 1. 算 token (在 mqtt 启动前算好) */
-    char token[256];
+    char token[512];
     if (compute_token(token, sizeof(token)) != 0) {
         ESP_LOGE(TAG, "token 计算失败, mqtt 客户端不启动");
         return ESP_FAIL;

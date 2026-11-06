@@ -29,6 +29,8 @@
 #include "esp_system.h"
 #include "mbedtls/md.h"
 #include "mbedtls/base64.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,22 +53,106 @@
 
 static const char *TAG = "ONENET";
 
-/* ========== 物模型 topic ==========
- * 官方 topic 表:
- *   属性上报   发布 .../thing/property/post      订阅 .../thing/property/post/reply
- *   属性设置   订阅 .../thing/property/set       发布 .../thing/property/set_reply
- *   服务调用   订阅 .../thing/service/{id}/invoke 发布 .../thing/service/{id}/invoke_reply
+/* ========== NVS 配置 (运行时读写) ========== */
+#define ONENET_NVS_NS       "onenet_cfg"
+#define ONENET_NVS_KEY_PID  "pid"
+#define ONENET_NVS_KEY_DEV  "dev"
+#define ONENET_NVS_KEY_AK   "ak"
+
+/* ========== 运行时配置缓冲 ========== */
+static char s_product_id[32] = {0};
+static char s_device_name[64] = {0};
+static char s_device_ak[128] = {0};
+static bool s_config_loaded = false;
+
+/* 动态 topic 缓冲 (运行时拼接) */
+static char s_topic_property_post[256] = {0};
+static char s_topic_property_post_reply[256] = {0};
+static char s_topic_property_set[256] = {0};
+static char s_topic_property_set_reply[256] = {0};
+static char s_topic_desired_get[256] = {0};
+static char s_topic_desired_get_reply[256] = {0};
+static char s_topic_event_post[256] = {0};
+static char s_topic_service_invoke_reply[256] = {0};
+static char s_topic_service_wildcard[256] = {0};
+
+/* ========== 配置读写 ========== */
+
+/**
+ * @brief 从 NVS 读或初始化 OneNET 配置
  */
-#define TOPIC_PROPERTY_POST        "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/post"
-#define TOPIC_PROPERTY_POST_REPLY  "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/post/reply"
-#define TOPIC_PROPERTY_SET         "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/set"
-#define TOPIC_PROPERTY_SET_REPLY   "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/set_reply"
-#define TOPIC_DESIRED_GET          "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/desired/get"
-#define TOPIC_DESIRED_GET_REPLY    "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/property/desired/get/reply"
-#define TOPIC_EVENT_POST           "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/event/post"
-#define TOPIC_SERVICE_INVOKE_REPLY "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/service/%s/invoke_reply"
-/* 服务类下行 topic 的通配符订阅 (一次性收齐所有服务的 invoke) */
-#define TOPIC_SERVICE_WILDCARD    "$sys/" ONENET_PRODUCT_ID "/" ONENET_DEVICE_NAME "/thing/service/#"
+static void load_onenet_config(void)
+{
+    if (s_config_loaded) return;
+    
+    nvs_handle_t h;
+    if (nvs_open(ONENET_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        /* NVS 命名空间不存在，用默认值 */
+        strlcpy(s_product_id, ONENET_DEFAULT_PRODUCT_ID, sizeof(s_product_id));
+        strlcpy(s_device_name, ONENET_DEFAULT_DEVICE_NAME, sizeof(s_device_name));
+        s_device_ak[0] = '\0';
+        s_config_loaded = true;
+        return;
+    }
+    
+    size_t len = sizeof(s_product_id);
+    if (nvs_get_str(h, ONENET_NVS_KEY_PID, s_product_id, &len) != ESP_OK) {
+        strlcpy(s_product_id, ONENET_DEFAULT_PRODUCT_ID, sizeof(s_product_id));
+    }
+    
+    len = sizeof(s_device_name);
+    if (nvs_get_str(h, ONENET_NVS_KEY_DEV, s_device_name, &len) != ESP_OK) {
+        strlcpy(s_device_name, ONENET_DEFAULT_DEVICE_NAME, sizeof(s_device_name));
+    }
+    
+    len = sizeof(s_device_ak);
+    nvs_get_str(h, ONENET_NVS_KEY_AK, s_device_ak, &len);
+    
+    nvs_close(h);
+    s_config_loaded = true;
+    ESP_LOGI(TAG, "加载 OneNET 配置: pid=%s, dev=%s, ak=%s", s_product_id, s_device_name,
+             s_device_ak[0] ? "已配置" : "未配置");
+}
+
+/**
+ * @brief 拼接动态 topic
+ */
+static void build_topics(void)
+{
+    snprintf(s_topic_property_post, sizeof(s_topic_property_post),
+             "$sys/%s/%s/thing/property/post", s_product_id, s_device_name);
+    snprintf(s_topic_property_post_reply, sizeof(s_topic_property_post_reply),
+             "$sys/%s/%s/thing/property/post/reply", s_product_id, s_device_name);
+    snprintf(s_topic_property_set, sizeof(s_topic_property_set),
+             "$sys/%s/%s/thing/property/set", s_product_id, s_device_name);
+    snprintf(s_topic_property_set_reply, sizeof(s_topic_property_set_reply),
+             "$sys/%s/%s/thing/property/set_reply", s_product_id, s_device_name);
+    snprintf(s_topic_desired_get, sizeof(s_topic_desired_get),
+             "$sys/%s/%s/thing/property/desired/get", s_product_id, s_device_name);
+    snprintf(s_topic_desired_get_reply, sizeof(s_topic_desired_get_reply),
+             "$sys/%s/%s/thing/property/desired/get/reply", s_product_id, s_device_name);
+    snprintf(s_topic_event_post, sizeof(s_topic_event_post),
+             "$sys/%s/%s/thing/event/post", s_product_id, s_device_name);
+    /* service invoke reply 的前缀 (用于 snprintf 拼接 %s/invoke/reply) */
+    snprintf(s_topic_service_invoke_reply, sizeof(s_topic_service_invoke_reply),
+             "$sys/%s/%s/thing/service/", s_product_id, s_device_name);
+    snprintf(s_topic_service_wildcard, sizeof(s_topic_service_wildcard),
+             "$sys/%s/%s/thing/service/#", s_product_id, s_device_name);
+}
+
+/* 用宏代替编译期常量指向运行时缓冲 */
+#define TOPIC_PROPERTY_POST        (s_topic_property_post)
+#define TOPIC_PROPERTY_POST_REPLY  (s_topic_property_post_reply)
+#define TOPIC_PROPERTY_SET         (s_topic_property_set)
+#define TOPIC_PROPERTY_SET_REPLY   (s_topic_property_set_reply)
+#define TOPIC_DESIRED_GET          (s_topic_desired_get)
+#define TOPIC_DESIRED_GET_REPLY    (s_topic_desired_get_reply)
+#define TOPIC_EVENT_POST           (s_topic_event_post)
+#define TOPIC_SERVICE_INVOKE_REPLY (s_topic_service_invoke_reply)
+#define TOPIC_SERVICE_WILDCARD     (s_topic_service_wildcard)
+#define ONENET_PRODUCT_ID          (s_product_id)
+#define ONENET_DEVICE_NAME         (s_device_name)
+#define ONENET_DEVICE_AK           (s_device_ak)
 
 /* ========== 上报周期 ========== */
 /**
@@ -998,9 +1084,9 @@ static void service_reply(const char *name, const char *req_id, const char *data
 {
     if (!s_connected || !s_client) return;
 
-    static char topic[160];
+    static char topic[512];
     static char body[2048];     /* 静态区, 不占 MQTT 任务栈 */
-    snprintf(topic, sizeof(topic), TOPIC_SERVICE_INVOKE_REPLY, name);
+    snprintf(topic, sizeof(topic), "%s%s/invoke/reply", s_topic_service_invoke_reply, name);
 
     int n = snprintf(body, sizeof(body),
                      "{\"id\":\"%s\",\"code\":200,\"msg\":\"success\",\"data\":%s}",
@@ -1255,7 +1341,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         s_connected = false;
         break;
     case MQTT_EVENT_DATA: {
-        char topic[160] = {0};
+        char topic[512] = {0};
         int tlen = event->topic_len < (int)sizeof(topic) - 1 ? event->topic_len : (int)sizeof(topic) - 1;
         memcpy(topic, event->topic, tlen);
         topic[tlen] = '\0';
@@ -1313,15 +1399,87 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
 /* ========== 对外 API ========== */
 
+esp_err_t onenet_config_save(const char *pid, const char *dev, const char *ak)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(ONENET_NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open 失败: %s", esp_err_to_name(err));
+        return err;
+    }
+    
+    if (pid) {
+        err = nvs_set_str(h, ONENET_NVS_KEY_PID, pid);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "保存 pid 失败: %s", esp_err_to_name(err));
+            nvs_close(h);
+            return err;
+        }
+    }
+    
+    if (dev) {
+        err = nvs_set_str(h, ONENET_NVS_KEY_DEV, dev);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "保存 dev 失败: %s", esp_err_to_name(err));
+            nvs_close(h);
+            return err;
+        }
+    }
+    
+    if (ak) {
+        err = nvs_set_str(h, ONENET_NVS_KEY_AK, ak);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "保存 ak 失败: %s", esp_err_to_name(err));
+            nvs_close(h);
+            return err;
+        }
+    }
+    
+    err = nvs_commit(h);
+    nvs_close(h);
+    
+    if (err == ESP_OK) {
+        /* 重新加载配置，刷新缓冲 */
+        s_config_loaded = false;
+        load_onenet_config();
+        build_topics();
+        ESP_LOGI(TAG, "OneNET 配置已保存并重新加载");
+    }
+    
+    return err;
+}
+
+void onenet_config_load(char *pid_out, size_t pid_cap, char *dev_out, size_t dev_cap,
+                        char *ak_out, size_t ak_cap)
+{
+    load_onenet_config();
+    
+    strlcpy(pid_out, s_product_id, pid_cap);
+    strlcpy(dev_out, s_device_name, dev_cap);
+    strlcpy(ak_out, s_device_ak, ak_cap);
+}
+
+/* ========== 对外 API ========== */
+
 esp_err_t mqtt_client_start(void)
 {
     if (s_client) return ESP_OK;
+
+    /* 加载配置 (从 NVS 或默认值) */
+    load_onenet_config();
+    build_topics();
+
+    /* AccessKey 为空则不启动 */
+    if (strlen(ONENET_DEVICE_AK) == 0) {
+        ESP_LOGE(TAG, "ONENET_DEVICE_AK 未配置，请在配网页设置");
+        return ESP_FAIL;
+    }
 
     /* 0. 启动 SNTP 校时 (属性上报的 time 字段必须是真实时间戳) */
     sntp_start();
 
     /* 1. 算 token (在 mqtt 启动前算好) */
-    char token[256];
+    char token[512];
     if (compute_token(token, sizeof(token)) != 0) {
         ESP_LOGE(TAG, "token 计算失败, mqtt 客户端不启动");
         return ESP_FAIL;

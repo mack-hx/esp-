@@ -29,18 +29,35 @@
 #include "esp_err.h"
 #include <stdbool.h>
 
-/* ========== 编译期配置 ==========
- * 产品 / 设备名写在这里; 设备级 AccessKey 放在不入库的 onenet_secret.h
- * (参考 onenet_secret.example.h), 避免公开仓库泄露密钥. */
-#define ONENET_PRODUCT_ID    "6YlUqr9lue"
-#define ONENET_DEVICE_NAME   "balancing_dog"
-#include "onenet_secret.h"   /* 提供 ONENET_DEVICE_AK */
+/* ========== 默认编译期配置 ==========
+ * AccessKey 从 NVS 读, 无需 onenet_secret.h; 配网页配置后存 NVS */
+#define ONENET_DEFAULT_PRODUCT_ID    "6YlUqr9lue"
+#define ONENET_DEFAULT_DEVICE_NAME   "balancing_dog"
 
 /* ========== 对外 API ========== */
 
 /**
+ * @brief 保存 OneNET 配置到 NVS (产品ID / 设备名 / AccessKey)
+ * @param pid  产品 ID (可为 NULL，保持现有值)
+ * @param dev  设备名 (可为 NULL，保持现有值)
+ * @param ak   AccessKey base64 (可为 NULL，保持现有值)
+ * @return ESP_OK 成功
+ */
+esp_err_t onenet_config_save(const char *pid, const char *dev, const char *ak);
+
+/**
+ * @brief 从 NVS 读 OneNET 配置 (不存在时用默认值)
+ * @param pid_out  [出参] 产品 ID (缓冲至少 32 字节)
+ * @param dev_out  [出参] 设备名 (缓冲至少 64 字节)
+ * @param ak_out   [出参] AccessKey (缓冲至少 128 字节, 为空表示未配置)
+ */
+void onenet_config_load(char *pid_out, size_t pid_cap, char *dev_out, size_t dev_cap, 
+                        char *ak_out, size_t ak_cap);
+
+/**
  * @brief 启动 MQTT 客户端 (后台任务)
  * @note  内部建一条任务处理 MQTT 事件循环, 不需要外部喂事件
+ * @note  AccessKey 为空时不启动，返回 ESP_FAIL
  * @return ESP_OK 成功
  */
 esp_err_t mqtt_client_start(void);

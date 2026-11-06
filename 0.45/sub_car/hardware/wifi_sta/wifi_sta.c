@@ -152,12 +152,39 @@ static bool json_str(const char *json, const char *key, char *out, size_t cap)
 }
 
 /**
- * @brief POST /api/wifi → 收 {ssid, pass}, 存 NVS, 返回 ok
+ * @brief GET /api/wifi/scan → 扫描周围 WiFi，返回 JSON 数组
+ */
+static esp_err_t prov_get_wifi_scan_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json; charset=utf-8");
+    
+    /* 不要使用阻塞的 esp_wifi_scan_start (1:1.5s 的延迟)
+     * 这里直接返回空列表, 真正的扫描交给 App
+     * 如需扫描, 客户端可定期检查或自行调用蓝牙扫描 */
+    httpd_resp_sendstr(req, "{\"networks\":[]}");
+    return ESP_OK;
+}
+
+/**
+ * @brief Captive Portal: 用户访问任何网址都跳到配网页根目录
+ *        浏览器会自动检测连接检查网址 (如 connectivitycheck 开头或 captive 开头等),
+ *        自动重定向到配网页
+ */
+static esp_err_t prov_captive_portal_handler(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, "", 0);
+    return ESP_OK;
+}
+
+/**
+ * @brief POST /api/wifi → 收 {ssid, pass, pid, dev, ak}, 存 NVS, 返回 ok
  *        之后会软重启
  */
 static esp_err_t prov_post_wifi_handler(httpd_req_t *req)
 {
-    char buf[256] = {0};
+    char buf[512] = {0};
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
         httpd_resp_set_type(req, "application/json");
@@ -166,14 +193,18 @@ static esp_err_t prov_post_wifi_handler(httpd_req_t *req)
     }
     buf[ret] = '\0';
 
-    char ssid[33] = {0}, pass[65] = {0};
+    char ssid[33] = {0}, pass[65] = {0}, pid[32] = {0}, dev[64] = {0}, ak[128] = {0};
     if (!json_str(buf, "ssid", ssid, sizeof(ssid))) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send(req, "{\"ok\":false,\"msg\":\"missing ssid\"}", -1);
         return ESP_OK;
     }
     json_str(buf, "pass", pass, sizeof(pass));   /* pass 可空 (开放 WiFi) */
+    json_str(buf, "pid", pid, sizeof(pid));      /* OneNET pid */
+    json_str(buf, "dev", dev, sizeof(dev));      /* OneNET dev */
+    json_str(buf, "ak", ak, sizeof(ak));         /* OneNET ak */
 
+    /* 保存 WiFi 配置 */
     esp_err_t err = save_credentials_to_nvs(ssid, pass);
     if (err != ESP_OK) {
         httpd_resp_set_type(req, "application/json");
@@ -181,7 +212,18 @@ static esp_err_t prov_post_wifi_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "已保存 WiFi 配置: SSID=%s, 重启中...", ssid);
+    /* 保存 OneNET 配置 (如果提供了的话) */
+    if (pid[0] || dev[0] || ak[0]) {
+        extern esp_err_t onenet_config_save(const char *pid, const char *dev, const char *ak);
+        /* 只传非空的字段，NVS 会保留之前的值 */
+        err = onenet_config_save(pid[0] ? pid : NULL, dev[0] ? dev : NULL, ak[0] ? ak : NULL);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "OneNET 配置保存失败: %s (WiFi 已保存，继续重启)", esp_err_to_name(err));
+        }
+    }
+
+    ESP_LOGI(TAG, "已保存配置: SSID=%s, pid=%s, dev=%s, ak=%s, 重启中...", 
+             ssid, pid[0] ? "已设置" : "空", dev[0] ? "已设置" : "空", ak[0] ? "已设置" : "空");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, "{\"ok\":true}", -1);
 
@@ -223,12 +265,26 @@ static esp_err_t start_provision_httpd(void)
     };
     httpd_register_uri_handler(s_prov_httpd, &uri_index);
 
+    /* GET /api/wifi/scan → 扫描结果 */
+    httpd_uri_t uri_scan = {
+        .uri = "/api/wifi/scan", .method = HTTP_GET,
+        .handler = prov_get_wifi_scan_handler, .user_ctx = NULL
+    };
+    httpd_register_uri_handler(s_prov_httpd, &uri_scan);
+
     /* POST /api/wifi → 收配置 */
     httpd_uri_t uri_post = {
         .uri = "/api/wifi", .method = HTTP_POST,
         .handler = prov_post_wifi_handler, .user_ctx = NULL
     };
     httpd_register_uri_handler(s_prov_httpd, &uri_post);
+
+    /* Captive Portal: 兜底所有其他请求，重定向到根 */
+    httpd_uri_t uri_catchall = {
+        .uri = "/*", .method = HTTP_GET,
+        .handler = prov_captive_portal_handler, .user_ctx = NULL
+    };
+    httpd_register_uri_handler(s_prov_httpd, &uri_catchall);
 
     ESP_LOGI(TAG, "配网页已启动: http://" WIFI_STA_AP_IP "/");
     return ESP_OK;
