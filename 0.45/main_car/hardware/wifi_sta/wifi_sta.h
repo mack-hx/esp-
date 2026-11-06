@@ -97,4 +97,9 @@ esp_err_t wifi_sta_start_ap(void);
  */
 esp_err_t wifi_sta_save_credentials(const char *ssid, const char *pass);
 
+/**
+ * @brief 清除 WiFi 配置，重启后进入 AP 模式（用于重新配网）
+ */
+void wifi_sta_force_ap_mode(void);
+
 #endif // WIFI_STA_H

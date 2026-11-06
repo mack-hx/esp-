@@ -236,6 +236,22 @@ esp_err_t wifi_sta_save_credentials(const char *ssid, const char *pass)
 {
     return save_credentials_to_nvs_impl(ssid, pass);
 }
+
+/**
+ * @brief 清除 WiFi 配置，重启后进入 AP 模式（用于重新配网）
+ */
+void wifi_sta_force_ap_mode(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(WIFI_STA_NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, WIFI_STA_NVS_KEY_SSID);
+        nvs_erase_key(h, WIFI_STA_NVS_KEY_PASS);
+        nvs_commit(h);
+        nvs_close(h);
+        ESP_LOGI(TAG, "已清除配置，15s 后重启进入 AP 模式");
+    }
+}
+
 /* ========== 配网页 HTTP handler ========== */
 
 /**
