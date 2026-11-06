@@ -118,13 +118,22 @@ $('btnScan').onclick=()=>{
   }).catch(()=>{$('btnScan').disabled=false;$('btnScan').textContent='扫描WiFi';toast('网络错误');});
 };
 $('btnFromApp').onclick=()=>{
-  fetch('/api/cfg/get').then(r=>r.json()).then(d=>{
-    if(d.pid){$('pid').value=d.pid;}
-    if(d.dev){$('dev').value=d.dev;}
-    if(d.ak){$('ak').value=d.ak;}
-    if(d.pid||d.dev||d.ak){toast('✓ 已从App导入MQTT配置');}
-    else{toast('⚠ App未配置OneNet');}
-  }).catch(e=>{toast('✗ App导入失败: '+e.message);});
+  fetch('/api/cfg/get').then(r=>{
+    if(!r.ok){toast('✗ 服务端错误: '+r.status);return;}
+    return r.json();
+  }).then(d=>{
+    if(!d){toast('✗ JSON 解析失败');return;}
+    if(d.pid||d.dev||d.ak){
+      $('pid').value=d.pid||'';
+      $('dev').value=d.dev||'';
+      $('ak').value=d.ak||'';
+      toast('✓ 已从App导入MQTT配置');
+    }else{
+      toast('⚠ App未配置OneNet');
+    }
+  }).catch(e=>{
+    toast('✗ 导入失败: '+e.message);
+  });
 };
 $('btnSave').onclick=()=>{
   let s=$('ssid').value.trim(),p=$('pass').value,pid=$('pid').value.trim(),dev=$('dev').value.trim(),ak=$('ak').value.trim();
@@ -524,23 +533,21 @@ static esp_err_t prov_get_config_handler(httpd_req_t *req)
     load_credentials_from_nvs(ssid, sizeof(ssid), pass, sizeof(pass));
     
     /* 读 OneNet 配置 */
-    extern esp_err_t onenet_config_load(char *pid, size_t pid_len, 
-                                        char *dev, size_t dev_len, 
-                                        char *ak, size_t ak_len);
+    extern void onenet_config_load(char *pid, size_t pid_len, 
+                                   char *dev, size_t dev_len, 
+                                   char *ak, size_t ak_len);
     onenet_config_load(pid, sizeof(pid), dev, sizeof(dev), ak, sizeof(ak));
     
-    char *resp = malloc(512);
-    if (!resp) {
-        httpd_resp_sendstr(req, "{\"error\":\"memory\"}");
-        return ESP_OK;
-    }
-    
-    snprintf(resp, 512, "{\"ssid\":\"%s\",\"pass\":\"%s\",\"pid\":\"%s\",\"dev\":\"%s\",\"ak\":\"%s\"}",
-             ssid[0] ? ssid : "", pass[0] ? pass : "",
-             pid[0] ? pid : "", dev[0] ? dev : "", ak[0] ? ak : "");
+    char resp[512] = {0};
+    snprintf(resp, sizeof(resp), 
+             "{\"ssid\":\"%s\",\"pass\":\"%s\",\"pid\":\"%s\",\"dev\":\"%s\",\"ak\":\"%s\"}",
+             ssid[0] ? ssid : "", 
+             pass[0] ? pass : "",
+             pid[0] ? pid : "", 
+             dev[0] ? dev : "", 
+             ak[0] ? ak : "");
     
     httpd_resp_sendstr(req, resp);
-    free(resp);
     return ESP_OK;
 }
 
