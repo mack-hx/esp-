@@ -338,6 +338,12 @@ static esp_err_t prov_get_wifi_scan_handler(httpd_req_t *req)
  */
 static esp_err_t prov_captive_portal_handler(httpd_req_t *req)
 {
+    /* 跳过 API 请求，让特定处理器接管 */
+    if (strncmp(req->uri, "/api/", 5) == 0) {
+        return ESP_FAIL;  /* 让 httpd 返回 404 */
+    }
+    
+    /* 其他请求重定向到首页（Captive Portal） */
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", "/");
     httpd_resp_send(req, "", 0);
