@@ -131,6 +131,8 @@ static float s_pitch_zero = 0.0f;
 static float s_roll_zero = 0.0f;   /* Roll 零点 (°), 配平时同步标定 */
 /* 修正链里扣掉配平表补偿、但**还没扣零点**的 pitch (配平采样要用) */
 static float s_pitch_corr = 0.0f;
+/* 原始 roll (未扣零点), 配平采样要用 */
+static float s_roll_corr = 0.0f;
 
 /* 配平采样状态: 控制任务连续采 CALIB_SAMPLES 个点取平均 */
 #define CALIB_SAMPLES   50          /* 50 个点 × 10ms = 0.5s */
@@ -280,6 +282,7 @@ static void balance_read_sensors(void)
 
             s_data.pitch_raw = euler.pitch;
             s_data.roll      = euler.roll;  /* 横滚角存入全局状态 */
+            s_data.roll_raw  = euler.roll;  /* 原始横滚角 (未扣零点) */
             s_pitch_corr     = euler.pitch - comp;   /* 配平采样用 (未扣零点) */
             s_data.pitch     = s_pitch_corr - s_pitch_zero;
             s_data.trim_comp = comp;
@@ -315,12 +318,14 @@ static void balance_read_sensors(void)
             s_yaw_rate = s_yaw_lpf;
             
             /* Roll 角更新到舵机补偿模块 (扣配平零点, 正值=右侧高) */
-            servo_set_roll_angle(euler.roll - s_roll_zero);
+            s_roll_corr = euler.roll;                   /* 配平采样用 (未扣零点) */
+            servo_set_roll_angle(s_roll_corr - s_roll_zero);
         }
     } else {
         s_data.pitch     = 0.0f;
         s_data.gyro      = 0.0f;
         s_data.pitch_raw = 0.0f;
+        s_data.roll_raw  = 0.0f;
         s_data.trim_comp = 0.0f;
         s_yaw_rate       = 0.0f;
         s_yaw_lpf_primed = false;
@@ -724,8 +729,7 @@ static void balance_control_step(float dt)
     /* --- 执行: 双轮同向输出 (+ 差速) ---
      * BAL_MOTOR_SIGN 烘焙在代码里 (不在网页上可调):
      * 改电机装配方向后, 要改的是 balance.h 的宏, 然后重烧固件。
-     * ⚠ 实测: 这个符号必须取 +1, 取反会导致前倾时轮子往后跑,
-     *   车必然往前扑倒。详见 balance.h 的方向常量说明。 */
+     * 详见 balance.h 的方向常量说明。 */
     float out = s_data.bal_out * BAL_MOTOR_SIGN;
 
     float out_max = param_get_float(PARAM_MOTOR_OUT_MAX);
@@ -816,16 +820,15 @@ static void balance_apply_direct_move(void)
 
 /**
  * @brief 配平采样: 控制任务里连续采 CALIB_SAMPLES 个 pitch + roll 取平均
- * @note  采样的是**未扣零点**的 pitch (s_pitch_corr),
- *        否则第二次配平会把零点又减一遍, 越配越偏。
- *        Roll 直接从 servo_get_roll_angle() 读, 无需修正链。
+ * @note  采样的是**未扣零点**的 pitch (s_pitch_corr) 和 roll (s_roll_corr),
+ *        保证两个通道对称: 原始值 → 存储为零点 → 下次显示时减去零点。
  */
 static void balance_calib_step(void)
 {
     if (!s_calib_active) return;
 
     s_calib_sum_p += s_pitch_corr;
-    s_calib_sum_r += servo_get_roll_angle();
+    s_calib_sum_r += s_roll_corr;
     s_calib_count++;
 
     if (s_calib_count < CALIB_SAMPLES) return;

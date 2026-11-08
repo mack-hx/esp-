@@ -866,7 +866,7 @@ static void mpu9250_fuse_euler(const mpu9250_data_t *data, euler_angle_t *out)
      *     俯仰旋转轴 = MPU 的 X 轴
      */
     /* 重力参考：水平时 az≈1g, ax≈0, ay≈0
-     * pitch（俯仰）：前倾时 ay 增大，用 atan2(ay, az)
+     * pitch（俯仰）：用 atan2(ay, az), 前倾为负, 与陀螺 gx 积分同号
      * roll（横滚）：左倾时 ax 增大，用 atan2(ax, az) */
     float accel_pitch = atan2f(data->accel.y, data->accel.z) * 180.0f / M_PI
                        - PITCH_ZERO_REF;

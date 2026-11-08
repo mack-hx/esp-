@@ -61,6 +61,7 @@
             placeholder-class="form-placeholder"
           />
           <text class="mini-btn" @click="hideMain = !hideMain">{{ hideMain ? '显示' : '隐藏' }}</text>
+          <text class="mini-btn" @click="pasteSecret('main')">粘贴</text>
           <text class="mini-btn" @click="copySecret('main')">复制</text>
         </view>
         <text class="form-hint">设备级 AccessKey 即可 (跟 ESP32 端用同一把, 平台会同时校验产品+设备权限)</text>
@@ -87,6 +88,7 @@
             placeholder-class="form-placeholder"
           />
           <text class="mini-btn" @click="hideSub = !hideSub">{{ hideSub ? '显示' : '隐藏' }}</text>
+          <text class="mini-btn" @click="pasteSecret('sub')">粘贴</text>
           <text class="mini-btn" @click="copySecret('sub')">复制</text>
         </view>
       </view>
@@ -104,12 +106,12 @@
       <button
         v-else
         class="btn btn-danger"
-        @click="onReset"
+        @click="onDisconnect"
       >断开连接</button>
 
       <button
         class="btn btn-ghost"
-        @click="onReset"
+        @click="onRestoreDefault"
       >恢复默认</button>
 
       <button class="btn btn-primary" @click="onSendToBLE('main')" v-if="ble.main">
@@ -145,7 +147,7 @@
 </template>
 
 <script>
-import { getConfig, saveConfig, resetConfig } from '../../common/config.js'
+import { getConfig, saveConfig } from '../../common/config.js'
 import { oneApi } from '../../common/oneapi.js'
 import * as bleApi from '../../common/ble.js'
 
@@ -248,6 +250,7 @@ export default {
         uni.showToast({ title: '发送失败: ' + (e.message || e), icon: 'none' })
       }
     },
+    /**
      * @param {string} which 'main' 主车 / 'sub' 副车
      */
     copySecret(which) {
@@ -260,6 +263,23 @@ export default {
         data: text,
         success: () => uni.showToast({ title: '已复制', icon: 'success' }),
         fail: (e) => uni.showToast({ title: '复制失败: ' + (e.errMsg || e), icon: 'none' })
+      })
+    },
+
+    /**
+     * @param {string} which 'main' 主车 / 'sub' 副车
+     */
+    pasteSecret(which) {
+      uni.getClipboardData({
+        success: (res) => {
+          if (which === 'sub') {
+            this.form.subDeviceAccessKey = res.data
+          } else {
+            this.form.deviceAccessKey = res.data
+          }
+          uni.showToast({ title: '已粘贴', icon: 'success' })
+        },
+        fail: (e) => uni.showToast({ title: '粘贴失败: ' + (e.errMsg || e), icon: 'none' })
       })
     },
     async onConnect() {
@@ -286,15 +306,28 @@ export default {
       }
     },
 
-    onReset() {
+    onDisconnect() {
       uni.showModal({
         title: '确认',
-        content: '恢复 OneNet 默认配置? (不会影响 ESP32 端)',
+        content: '断开连接? (本地配置会保留)',
         success: (res) => {
           if (res.confirm) {
-            resetConfig()
-            this.form = Object.assign({}, getConfig())
+            // 只改变连接状态，不清空配置
             oneApi._setState('idle', null)
+            uni.showToast({ title: '已断开', icon: 'success' })
+          }
+        }
+      })
+    },
+
+    onRestoreDefault() {
+      uni.showModal({
+        title: '确认',
+        content: '恢复上次验证成功时的配置?',
+        success: (res) => {
+          if (res.confirm) {
+            // 只重新加载已保存的配置，不清空
+            this.form = Object.assign({}, getConfig())
             uni.showToast({ title: '已恢复', icon: 'success' })
           }
         }

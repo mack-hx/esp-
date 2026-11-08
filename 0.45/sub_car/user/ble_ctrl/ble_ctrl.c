@@ -52,35 +52,40 @@ static void ble_handle_cmd(const char *s)
     } else if (strcmp(s, "STAND") == 0) {
         remote_stand();
     } else if (strncmp(s, "CFGW:", 5) == 0) {
-        /* WiFi 配置: App 发来的格式为 {"ssid":"XXXX","pass":"YYYY"}
-         * 简单解析: 用 strstr 找 ssid 和 pass 的值 */
+        /* WiFi 配置 */
         extern esp_err_t wifi_sta_save_credentials(const char *ssid, const char *pass);
         const char *json = s + 5;
         char ssid[33] = {0}, pass[65] = {0};
         
-        /* 极简 JSON 解析：找 "ssid":"..." */
+        /* 找 ssid: 值 */
         const char *p = strstr(json, "\"ssid\"");
         if (p) {
-            p = strchr(p, '"');
-            if (p && *(++p)) {
-                int i = 0;
-                while (*p && *p != '"' && i < (int)sizeof(ssid) - 1) {
-                    ssid[i++] = *p++;
+            p = strchr(p, ':');
+            if (p) {
+                p = strchr(p, '"');
+                if (p && *(++p)) {
+                    int i = 0;
+                    while (*p && *p != '"' && i < (int)sizeof(ssid) - 1) {
+                        ssid[i++] = *p++;
+                    }
+                    ssid[i] = '\0';
                 }
-                ssid[i] = '\0';
             }
         }
         
-        /* 找 "pass":"..." */
+        /* 找 pass: 值 */
         p = strstr(json, "\"pass\"");
         if (p) {
-            p = strchr(p, '"');
-            if (p && *(++p)) {
-                int i = 0;
-                while (*p && *p != '"' && i < (int)sizeof(pass) - 1) {
-                    pass[i++] = *p++;
+            p = strchr(p, ':');
+            if (p) {
+                p = strchr(p, '"');
+                if (p && *(++p)) {
+                    int i = 0;
+                    while (*p && *p != '"' && i < (int)sizeof(pass) - 1) {
+                        pass[i++] = *p++;
+                    }
+                    pass[i] = '\0';
                 }
-                pass[i] = '\0';
             }
         }
         
@@ -98,7 +103,7 @@ static void ble_handle_cmd(const char *s)
         const char *json = s + 5;
         char pid[32] = {0}, dev[64] = {0}, ak[128] = {0};
         
-        /* 极简 JSON 解析 */
+        /* 极简 JSON 解析: {"pid":"...","dev":"...","ak":"..."} */
         const char *keys[] = {"\"pid\"", "\"dev\"", "\"ak\""};
         char *outs[] = {pid, dev, ak};
         size_t maxs[] = {sizeof(pid), sizeof(dev), sizeof(ak)};
@@ -106,16 +111,22 @@ static void ble_handle_cmd(const char *s)
         for (int j = 0; j < 3; j++) {
             const char *p = strstr(json, keys[j]);
             if (p) {
-                p = strchr(p, '"');
-                if (p && *(++p)) {
-                    int i = 0;
-                    while (*p && *p != '"' && i < (int)maxs[j] - 1) {
-                        outs[j][i++] = *p++;
+                /* 找到 key 后，跳过到冒号，再找值的开始引号 */
+                p = strchr(p, ':');
+                if (p) {
+                    p = strchr(p, '"');
+                    if (p && *(++p)) {
+                        int i = 0;
+                        while (*p && *p != '"' && i < (int)maxs[j] - 1) {
+                            outs[j][i++] = *p++;
+                        }
+                        outs[j][i] = '\0';
                     }
-                    outs[j][i] = '\0';
                 }
             }
         }
+        
+        ESP_LOGI(TAG, "BLE MQTT 配置: pid=%s dev=%s ak_len=%d", pid, dev, (int)strlen(ak));
         
         if (pid[0] || dev[0] || ak[0]) {
             onenet_config_save(pid[0] ? pid : NULL, dev[0] ? dev : NULL, ak[0] ? ak : NULL);
@@ -130,7 +141,13 @@ static void ble_handle_cmd(const char *s)
     }
 }
 
-/** @brief 0xFFE1 访问回调: 只处理写 */
+static char   s_cfg_buf[256];   /* CFG 指令拼包缓冲 */
+static size_t s_cfg_len = 0;    /* 缓冲已有字节数, 0 = 未在拼包 */
+
+/**
+ * @brief 0xFFE1 访问回调: 只处理写
+ * 单次写入最多 20 字节; 以 "CFG" 开头的指令由 App 分多次写入, 这里拼接到以 '}' 结尾后再解析
+ */
 static int chr_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
@@ -140,7 +157,20 @@ static int chr_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt 
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
     buf[len] = '\0';
-    ble_handle_cmd(buf);
+
+    if (strncmp(buf, "CFG", 3) == 0) s_cfg_len = 0;       /* 新的 CFG 指令, 丢弃未完成的旧数据 */
+    if (s_cfg_len == 0 && strncmp(buf, "CFG", 3) != 0) {
+        ble_handle_cmd(buf);                               /* 普通短指令 */
+        return 0;
+    }
+    if (s_cfg_len + len >= sizeof(s_cfg_buf)) { s_cfg_len = 0; return 0; }
+    memcpy(s_cfg_buf + s_cfg_len, buf, len);
+    s_cfg_len += len;
+    s_cfg_buf[s_cfg_len] = '\0';
+    if (s_cfg_buf[s_cfg_len - 1] == '}') {
+        s_cfg_len = 0;
+        ble_handle_cmd(s_cfg_buf);
+    }
     return 0;
 }
 
@@ -283,4 +313,18 @@ esp_err_t ble_ctrl_start(void)
 bool ble_ctrl_is_connected(void)
 {
     return s_conn != BLE_HS_CONN_HANDLE_NONE;
+}
+
+bool ble_ctrl_get_peer(char *out, size_t cap)
+{
+    if (s_conn == BLE_HS_CONN_HANDLE_NONE || !out || cap < 18) return false;
+    
+    struct ble_gap_conn_desc desc;
+    if (ble_gap_conn_find(s_conn, &desc) != 0) return false;
+    
+    snprintf(out, cap, "%02X:%02X:%02X:%02X:%02X:%02X",
+             desc.peer_id_addr.val[5], desc.peer_id_addr.val[4],
+             desc.peer_id_addr.val[3], desc.peer_id_addr.val[2],
+             desc.peer_id_addr.val[1], desc.peer_id_addr.val[0]);
+    return true;
 }

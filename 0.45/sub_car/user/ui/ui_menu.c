@@ -25,7 +25,7 @@ static const menu_item_t menu_items[] = {
     { UI_PAGE_SERVO,    "2. Servo Debug"    },
     { UI_PAGE_ENCODER,  "3. Encoder & Motor"},
     { UI_PAGE_MPU9250,  "4. MPU9250"        },
-    { UI_PAGE_LED,       "5. LED"           },
+    { UI_PAGE_LED_MAGNET,"5. LED & Magnet"   },
     { UI_PAGE_NETSTAT,  "6. Network"        },
 };
 #define MENU_ITEM_COUNT  (sizeof(menu_items) / sizeof(menu_items[0]))

@@ -49,6 +49,9 @@ function call(fn, opts = {}, ms = 0) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
+/** 单次写入的最大字节数 (默认 ATT MTU 23 - 3) */
+const BLE_CHUNK = 20
+
 function str2buf(s) {
   const u = new Uint8Array(s.length)
   for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i) & 0xff
@@ -168,17 +171,19 @@ export function isConnected(which) {
 }
 
 /**
- * @brief 发一条指令 (同一辆车的写操作串行执行)
+ * @brief 发一条指令 (同一辆车的写操作串行执行，超过20字节自动分包)
  * @param which 'main' | 'sub'
  * @param text  指令文本
  * @return Promise, 写失败时 reject
  */
 export function send(which, text) {
   const l = links[which]
-  const job = l.chain.then(() => call('writeBLECharacteristicValue', {
+  const parts = []
+  for (let i = 0; i < text.length; i += BLE_CHUNK) parts.push(text.slice(i, i + BLE_CHUNK))
+  const job = parts.reduce((p, part) => p.then(() => call('writeBLECharacteristicValue', {
     deviceId: l.deviceId, serviceId: SERVICE_ID, characteristicId: CHAR_ID,
-    value: str2buf(text), writeType: 'writeNoResponse'
-  }))
+    value: str2buf(part), writeType: 'writeNoResponse'
+  })), l.chain)
   l.chain = job.catch(() => {})
   return job
 }

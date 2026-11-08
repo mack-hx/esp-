@@ -84,7 +84,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <input id="dev" type="text" placeholder="Device Name">
 <label>AccessKey</label>
 <input id="ak" type="password" placeholder="Secret Key">
-<button class="alt" id="btnFromApp" style="width:100%;margin-top:12px">从App导入配置</button>
+</div>
 </div>
 <button id="btnSave">保存</button>
 <div class="warn">保存后设备将重启</div>
@@ -116,24 +116,6 @@ $('btnScan').onclick=()=>{
       toast('扫到 '+d.networks.length+' 个');
     }else toast('扫描失败');
   }).catch(()=>{$('btnScan').disabled=false;$('btnScan').textContent='扫描WiFi';toast('网络错误');});
-};
-$('btnFromApp').onclick=()=>{
-  fetch('/api/cfg/get').then(r=>{
-    if(!r.ok){toast('✗ 服务端错误: '+r.status);return;}
-    return r.json();
-  }).then(d=>{
-    if(!d){toast('✗ JSON 解析失败');return;}
-    if(d.pid||d.dev||d.ak){
-      $('pid').value=d.pid||'';
-      $('dev').value=d.dev||'';
-      $('ak').value=d.ak||'';
-      toast('✓ 已从App导入MQTT配置');
-    }else{
-      toast('⚠ App未配置OneNet');
-    }
-  }).catch(e=>{
-    toast('✗ 导入失败: '+e.message);
-  });
 };
 $('btnSave').onclick=()=>{
   let s=$('ssid').value.trim(),p=$('pass').value,pid=$('pid').value.trim(),dev=$('dev').value.trim(),ak=$('ak').value.trim();
@@ -170,6 +152,9 @@ static char s_sta_ssid[33] = {0};
 
 /* AP 模式下的 netif 句柄 (创建后持有, 关闭时清理) */
 static esp_netif_t *s_ap_netif = NULL;
+
+/* STA 模式下的 netif 句柄 (创建后持有, 仅创建一次) */
+static esp_netif_t *s_sta_netif = NULL;
 
 /* 配网页 httpd 实例 (AP 模式下持有, STA 模式下销毁) */
 static httpd_handle_t s_prov_httpd = NULL;
@@ -542,38 +527,6 @@ static void stop_dns_spoofing(void)
 }
 
 /**
- * @brief GET /api/cfg/get → 返回已保存的 WiFi 和 MQTT 配置 (用于 App 导入)
- */
-static esp_err_t prov_get_config_handler(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "application/json; charset=utf-8");
-    
-    char ssid[33] = {0}, pass[65] = {0};
-    char pid[32] = {0}, dev[64] = {0}, ak[128] = {0};
-    
-    /* 读 WiFi 配置 */
-    load_credentials_from_nvs(ssid, sizeof(ssid), pass, sizeof(pass));
-    
-    /* 读 OneNet 配置 */
-    extern void onenet_config_load(char *pid, size_t pid_len, 
-                                   char *dev, size_t dev_len, 
-                                   char *ak, size_t ak_len);
-    onenet_config_load(pid, sizeof(pid), dev, sizeof(dev), ak, sizeof(ak));
-    
-    char resp[512] = {0};
-    snprintf(resp, sizeof(resp), 
-             "{\"ssid\":\"%s\",\"pass\":\"%s\",\"pid\":\"%s\",\"dev\":\"%s\",\"ak\":\"%s\"}",
-             ssid[0] ? ssid : "", 
-             pass[0] ? pass : "",
-             pid[0] ? pid : "", 
-             dev[0] ? dev : "", 
-             ak[0] ? ak : "");
-    
-    httpd_resp_sendstr(req, resp);
-    return ESP_OK;
-}
-
-/**
  * @brief 启动配网页 HTTP server (AP 模式下)
  */
 static esp_err_t start_provision_httpd(void)
@@ -619,13 +572,6 @@ static esp_err_t start_provision_httpd(void)
     };
     httpd_register_uri_handler(s_prov_httpd, &uri_post);
 
-    /* GET /api/cfg/get → 返回已保存配置 (用于 App 导入) */
-    httpd_uri_t uri_cfg_get = {
-        .uri = "/api/cfg/get", .method = HTTP_GET,
-        .handler = prov_get_config_handler, .user_ctx = NULL
-    };
-    httpd_register_uri_handler(s_prov_httpd, &uri_cfg_get);
-
     /* Captive Portal: 兜底所有其他请求，重定向到根 */
     httpd_uri_t uri_catchall = {
         .uri = "/*", .method = HTTP_GET,
@@ -640,7 +586,6 @@ static esp_err_t start_provision_httpd(void)
 /**
  * @brief 关闭配网页 HTTP server (STA 模式下)
  */
-static void stop_provision_httpd(void) __attribute__((unused));
 static void stop_provision_httpd(void)
 {
     if (s_prov_httpd == NULL) return;
@@ -682,10 +627,12 @@ static esp_err_t start_ap_mode(void)
         return ESP_FAIL;
     }
 
-    /* 创建 STA netif (用于混合模式扫描, 不会主动连接任何网络) */
-    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
-    if (sta_netif == NULL) {
-        ESP_LOGW(TAG, "创建 STA netif 失败 (非致命, 但扫描可能受限)");
+    /* 创建 STA netif (用于混合模式扫描, 仅创建一次) */
+    if (s_sta_netif == NULL) {
+        s_sta_netif = esp_netif_create_default_wifi_sta();
+        if (s_sta_netif == NULL) {
+            ESP_LOGW(TAG, "创建 STA netif 失败 (非致命, 但扫描可能受限)");
+        }
     }
 
     /* create_default_wifi_ap() 已自动起 DHCP server, 必须先停 DHCP 再设 IP,
@@ -754,12 +701,13 @@ static esp_err_t start_sta_mode(const char *ssid, const char *pass)
     strlcpy(s_sta_ssid, ssid, sizeof(s_sta_ssid));
     memset(&s_sta_ip, 0, sizeof(s_sta_ip));
 
-    /* 直接使用 esp_netif_create_default_wifi_sta() 创建 netif
-     * ESP-IDF 会自动处理 DHCP client */
-    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
-    if (sta_netif == NULL) {
-        ESP_LOGE(TAG, "创建STA netif失败");
-        return ESP_FAIL;
+    /* 创建或获取 STA netif (仅第一次创建) */
+    if (s_sta_netif == NULL) {
+        s_sta_netif = esp_netif_create_default_wifi_sta();
+        if (s_sta_netif == NULL) {
+            ESP_LOGE(TAG, "创建STA netif失败");
+            return ESP_FAIL;
+        }
     }
     ESP_LOGI(TAG, "STA netif 创建成功");
 
@@ -959,12 +907,16 @@ esp_err_t wifi_sta_start_ap(void)
 {
     ESP_LOGI(TAG, "切换到 AP 配网模式");
 
+    /* 停止旧的 HTTP 服务（如果存在） */
+    stop_provision_httpd();
+
+    /* 停止现有 WiFi（必须在切模式前） */
+    esp_wifi_stop();
+
     /* 停止现有 STA 连接 */
     if (s_state == WIFI_STA_CONNECTED || s_state == WIFI_STA_CONNECTING) {
         esp_wifi_disconnect();
     }
-
-    /* 先创建 AP netif (必须先于 esp_wifi_set_mode) */
     if (s_ap_netif == NULL) {
         s_ap_netif = esp_netif_create_default_wifi_ap();
         if (s_ap_netif == NULL) {
@@ -1000,11 +952,19 @@ esp_err_t wifi_sta_start_ap(void)
     snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s_%02X%02X",
              WIFI_STA_AP_SSID, mac[4], mac[5]);
 
-    /* 切换到 AP-only 模式 */
-    ret = esp_wifi_set_mode(WIFI_MODE_AP);
+    /* 切换到 APSTA 模式 (支持扫描) */
+    ret = esp_wifi_set_mode(WIFI_MODE_APSTA);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_set_mode(AP) 失败: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "esp_wifi_set_mode(APSTA) 失败: %s", esp_err_to_name(ret));
         return ret;
+    }
+
+    /* 创建 STA netif 供扫描用 (仅创建一次) */
+    if (s_sta_netif == NULL) {
+        s_sta_netif = esp_netif_create_default_wifi_sta();
+        if (s_sta_netif == NULL) {
+            ESP_LOGW(TAG, "创建 STA netif 失败 (可能已存在)");
+        }
     }
 
     /* 配置 AP WiFi 参数 - WPA2 + 固定密码 */
@@ -1022,6 +982,23 @@ esp_err_t wifi_sta_start_ap(void)
         ESP_LOGE(TAG, "esp_wifi_set_config(AP) 失败: %s", esp_err_to_name(ret));
         return ret;
     }
+
+    /* 清空 STA 配置，防止自动连接之前保存的网络 */
+    wifi_config_t sta_wc = {0};
+    ret = esp_wifi_set_config(WIFI_IF_STA, &sta_wc);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "清空 STA 配置失败: %s", esp_err_to_name(ret));
+    }
+
+    /* 启动 WiFi */
+    ret = esp_wifi_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_start 失败: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    /* 启动 DNS 劫持 (Captive Portal 自动弹网页) */
+    start_dns_spoofing();
 
     /* 启动配网页 */
     ret = start_provision_httpd();

@@ -14,6 +14,7 @@
 #include "tft_display.h"
 #include "led.h"
 #include "servo.h"
+#include "magnet.h"
 #include "motor_driver.h"
 #include "encoder.h"
 #include "mpu9250.h"
@@ -22,6 +23,8 @@
 #include "wifi_sta.h"
 #include "param.h"
 #include "balance.h"
+#include "status_led.h"
+#include "rolltest.h"
 #include "onenet_client.h"
 #include "ble_ctrl.h"
 #include "ui_home.h"
@@ -31,7 +34,7 @@
 #include "ui_encoder.h"
 #include "ui_mpu9250.h"
 #include "ui_netstat.h"
-#include "ui_led.h"
+#include "ui_led_magnet.h"
 
 static const char *TAG = "MAIN";
 
@@ -80,7 +83,7 @@ static ui_key_t key_get_none(void)
  */
 void app_main(void)
 {
-    ESP_LOGI(TAG, "ESP32-S3R8N8 平衡轮腿机械狗 (副车) 启动...");
+    ESP_LOGI(TAG, "ESP32-S3R8N8 平衡轮腿机械狗启动...");
 
     /* 初始化 NVS (Non-Volatile Storage) */
     esp_err_t ret = nvs_flash_init();
@@ -97,8 +100,11 @@ void app_main(void)
      * 注意: 依赖 NVS, 必须在 nvs_flash_init 之后 */
     param_load();
 
-    /* 1. 初始化 74HC595 (电机方向控制) */
+    /* 1. 初始化 74HC595 (电机方向/电磁铁控制) */
     ESP_ERROR_CHECK(hc595_init());
+
+    /* 0.11 初始化电磁铁 (走 74HC595 Q5/Q6, 默认释放) */
+    ESP_ERROR_CHECK(magnet_init());
 
     /* 2. 初始化 TFT 显示屏 (RST 已接 VCC, 依赖内部 POR) */
     ESP_ERROR_CHECK(tft_display_init());
@@ -121,7 +127,8 @@ void app_main(void)
     /* 6. 初始化编码器 */
     ESP_ERROR_CHECK(encoder_init());
 
-    /* 6.1 初始化 PCF8574 (按键) - 允许失败: 模块可能未接 */
+    /* 6.1 初始化 PCF8574 (按键 + 对接微动开关) - 允许失败: 模块可能未接
+     * 提前到这里是因为 OneNet 上报任务要读 P4/P5 两个微动开关 (对接检测) */
     esp_err_t pcf_ret = pcf8574_init();
     if (pcf_ret != ESP_OK) {
         ESP_LOGE(TAG, "PCF8574 初始化失败 (按键模块未接), UI 无法响应按键");
@@ -153,6 +160,20 @@ void app_main(void)
         ESP_LOGE(TAG, "平衡控制初始化失败 (%s)", esp_err_to_name(bal_ret));
     }
 
+    /* 8.0.1 启动状态灯: 依赖 balance/servo/magnet/pcf8574, 必须在它们之后 */
+    if (status_led_start() != ESP_OK) {
+        ESP_LOGW(TAG, "状态灯任务未启动, 灯只受 App/LCD 手动控制");
+    }
+
+    /* 8.0.2 横滚角实测工具 (串口命令, 允许失败) */
+    rolltest_start();
+
+    /* 8.0 启动 BLE 直控: 控制器要连续的内部 RAM, 必须在 WiFi/MQTT 占用内存之前; 允许失败 */
+    esp_err_t ble_ret = ble_ctrl_start();
+    if (ble_ret != ESP_OK) {
+        ESP_LOGE(TAG, "BLE 启动失败 (%s), 蓝牙直控不可用", esp_err_to_name(ble_ret));
+    }
+
     /* 8.1 启动 WiFi (STA 模式连家里 WiFi, 没配过进 AP 配网)
      * WiFi 驱动依赖 NVS, 必须在 nvs_flash_init 之后调用; 允许失败 */
     esp_err_t wifi_ret = wifi_sta_start();
@@ -168,12 +189,6 @@ void app_main(void)
         ESP_LOGE(TAG, "OneNet MQTT 启动失败 (%s), App 远程不可用", esp_err_to_name(mqtt_ret));
     }
 
-    /* 8.3 启动 BLE 直控 (与 WiFi 共存); 允许失败 */
-    esp_err_t ble_ret = ble_ctrl_start();
-    if (ble_ret != ESP_OK) {
-        ESP_LOGE(TAG, "BLE 启动失败 (%s), 蓝牙直控不可用", esp_err_to_name(ble_ret));
-    }
-
     /* ========================================================
      * UI 系统初始化
      * ======================================================== */
@@ -185,7 +200,7 @@ void app_main(void)
     ESP_ERROR_CHECK(ui_encoder_register());
     ESP_ERROR_CHECK(ui_mpu9250_register());
     ESP_ERROR_CHECK(ui_netstat_register());
-    ESP_ERROR_CHECK(ui_led_register());
+    ESP_ERROR_CHECK(ui_led_magnet_register());
 
     /* 根据 PCF8574 是否就绪, 选择按键回调
      * - 就绪: 从 PCF8574 读取真实按键

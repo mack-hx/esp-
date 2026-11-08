@@ -114,8 +114,9 @@ static void ui_balance_refresh_vals(void)
     snprintf(buf, sizeof(buf), "%6.2f g%6.1f", (double)d.pitch, (double)d.gyro);
     draw_val_if_changed(Y_PITCH, buf, TFT_COLOR_WHITE, s_prev_pitch);
 
-    /* 横滚角: 已扣配平零点, 与横滚闭环用的是同一个值 */
-    snprintf(buf, sizeof(buf), "%6.2f deg", (double)d.roll);
+    /* 横滚角: 已扣配平零点, 与横滚闭环用的是同一个值
+     * 显示格式: 原始/修正 (用于验证配平采样对称性修复) */
+    snprintf(buf, sizeof(buf), "%5.1f/%-5.1f", (double)d.roll_raw, (double)d.roll);
     draw_val_if_changed(Y_ROLL, buf, TFT_COLOR_MAGENTA, s_prev_roll);
 
     snprintf(buf, sizeof(buf), "%6.2f deg", (double)d.target_pitch);

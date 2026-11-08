@@ -118,6 +118,8 @@ static float s_out_ramp = BAL_RAMP_START_PCT;
  * 零点管"整体安装/摆放的基准角"。 */static float s_pitch_zero = 0.0f;
 /* 修正链里扣掉配平表补偿、但**还没扣零点**的 pitch (配平采样要用) */
 static float s_pitch_corr = 0.0f;
+/* 原始 roll (未扣零点), 配平采样要用 */
+static float s_roll_corr = 0.0f;
 
 /* 配平采样状态: 控制任务连续采 CALIB_SAMPLES 个点取平均 */
 #define CALIB_SAMPLES   50          /* 50 个点 × 10ms = 0.5s */

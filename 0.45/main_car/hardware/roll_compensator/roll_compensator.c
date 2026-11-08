@@ -74,7 +74,7 @@ void roll_comp_calculate(float dt, float roll_deg, roll_comp_output_t *output)
     if (valid) {
         float err = soft_deadband(roll_deg);
 
-        /* 无响应看门狗: 出了力但横滚不动 = 该侧腿没受力, 冻结积分 */
+        /* 无响应看门狗: 出了力但横滚不动 = 该侧腿没受力, 冻结偏置和积分 */
         float droll_rate = (roll_deg - s_prev_roll) / dt;
         if (fabsf(s_out) > ROLL_RESP_MIN_OUT &&
             fabsf(droll_rate) < ROLL_RESP_MIN_RATE) {
@@ -108,7 +108,13 @@ void roll_comp_calculate(float dt, float roll_deg, roll_comp_output_t *output)
     /* 变化率限制: 抬起快、收回慢, 避免横滚刚归零就把腿收掉 */
     float step = ((fabsf(target) > fabsf(s_out)) ? ROLL_SLEW_PER_S
                                                  : ROLL_RELEASE_PER_S) * dt;
-    s_out += clampf(target - s_out, -step, step);
+    
+    /* ⚠ 看门狗触发时冻结偏置，防止腿落地猛跳 */
+    bool in_watchdog = s_enabled && fabsf(s_out) > ROLL_RESP_MIN_OUT &&
+                       fabsf((roll_deg - s_prev_roll) / dt) < ROLL_RESP_MIN_RATE;
+    if (!in_watchdog) {
+        s_out += clampf(target - s_out, -step, step);
+    }
     s_prev_roll = roll_deg;
 
     output->roll_angle = roll_deg;

@@ -33,4 +33,12 @@ esp_err_t ble_ctrl_start(void);
  */
 bool ble_ctrl_is_connected(void);
 
+/**
+ * @brief 取已连接手机的蓝牙地址
+ * @param out  输出缓冲, 格式 "AA:BB:CC:DD:EE:FF"
+ * @param cap  缓冲长度 (至少 18)
+ * @return true 已连接且取到地址; false 未连接, out 不变
+ */
+bool ble_ctrl_get_peer(char *out, size_t cap);
+
 #endif // BLE_CTRL_H

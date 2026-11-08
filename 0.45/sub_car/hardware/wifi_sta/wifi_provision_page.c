@@ -59,6 +59,11 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <input id="dev" type="text" placeholder="Device Name">
 <label>AccessKey</label>
 <input id="ak" type="password" placeholder="Secret Key">
+<div style="display:flex;gap:8px;margin-top:8px">
+<button id="btnMain" style="margin:0;flex:1;background:#333">主车</button>
+<button id="btnSub" style="margin:0;flex:1;background:#333">副车</button>
+</div>
+<div class="hint">拉取当前设备配置或载入已记录配置</div>
 </div>
 
 <button id="btnSave">保存</button>
@@ -75,6 +80,29 @@ document.querySelectorAll('.tabBtn').forEach(btn=>{btn.onclick=()=>{
   btn.classList.add('active');$(btn.dataset.tab).classList.add('active');};
 });
 try{let s=localStorage.getItem('ssid');if(s)$('ssid').value=s;}catch(e){}
+$('btnMain').onclick=()=>{
+  fetch('/api/cfg/get').then(r=>r.json()).then(d=>{
+    if(d.pid)$('pid').value=d.pid;if(d.dev)$('dev').value=d.dev;if(d.ak)$('ak').value=d.ak;
+    try{localStorage.setItem('rob_main',JSON.stringify({pid:d.pid,dev:d.dev,ak:d.ak}));}catch(e){}
+    toast('已拉取主车配置');
+  }).catch(()=>toast('拉取失败'));
+};
+$('btnSub').onclick=()=>{
+  try{
+    let sub=localStorage.getItem('rob_sub');
+    if(sub){
+      let d=JSON.parse(sub);
+      if(d.pid)$('pid').value=d.pid;if(d.dev)$('dev').value=d.dev;if(d.ak)$('ak').value=d.ak;
+      toast('已载入副车配置');
+    }else{
+      fetch('/api/cfg/get').then(r=>r.json()).then(d=>{
+        if(d.pid)$('pid').value=d.pid;if(d.dev)$('dev').value=d.dev;if(d.ak)$('ak').value=d.ak;
+        localStorage.setItem('rob_sub',JSON.stringify({pid:d.pid,dev:d.dev,ak:d.ak}));
+        toast('已拉取副车配置');
+      }).catch(()=>toast('拉取失败'));
+    }
+  }catch(e){toast('副车配置加载失败');}
+};
 $('btnSave').onclick=()=>{
   let s=$('ssid').value.trim(),p=$('pass').value,pid=$('pid').value.trim(),dev=$('dev').value.trim(),ak=$('ak').value.trim();
   if(!s){toast('请输入WiFi名');$('ssid').focus();return;}

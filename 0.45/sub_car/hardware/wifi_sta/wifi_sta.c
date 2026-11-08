@@ -84,7 +84,12 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <input id="dev" type="text" placeholder="Device Name">
 <label>AccessKey</label>
 <input id="ak" type="password" placeholder="Secret Key">
-<button class="alt" id="btnFromApp" style="width:100%;margin-top:12px">从App导入配置</button>
+<div style="display:flex;gap:8px;margin-top:8px">
+<button class="alt" id="btnMain" style="margin:0;flex:1">主车</button>
+<button class="alt" id="btnSub" style="margin:0;flex:1">副车</button>
+</div>
+<div class="hint">点按钮拉取当前设备配置或载入已记录配置</div>
+</div>
 </div>
 <button id="btnSave">保存</button>
 <div class="warn">保存后设备将重启</div>
@@ -117,23 +122,27 @@ $('btnScan').onclick=()=>{
     }else toast('扫描失败');
   }).catch(()=>{$('btnScan').disabled=false;$('btnScan').textContent='扫描WiFi';toast('网络错误');});
 };
-$('btnFromApp').onclick=()=>{
-  fetch('/api/cfg/get').then(r=>{
-    if(!r.ok){toast('✗ 服务端错误: '+r.status);return;}
-    return r.json();
-  }).then(d=>{
-    if(!d){toast('✗ JSON 解析失败');return;}
-    if(d.pid||d.dev||d.ak){
-      $('pid').value=d.pid||'';
-      $('dev').value=d.dev||'';
-      $('ak').value=d.ak||'';
-      toast('✓ 已从App导入MQTT配置');
-    }else{
-      toast('⚠ App未配置OneNet');
+$('btnMain').onclick=()=>{
+  fetch('/api/cfg/get').then(r=>r.json()).then(d=>{
+    if(d.pid)$('pid').value=d.pid;if(d.dev)$('dev').value=d.dev;if(d.ak)$('ak').value=d.ak;
+    try{localStorage.setItem('rob_main',JSON.stringify({pid:d.pid,dev:d.dev,ak:d.ak}));}catch(e){}
+    toast('已拉取主车配置');
+  }).catch(()=>toast('拉取失败'));
+};
+$('btnSub').onclick=()=>{
+  try{
+    let sub=localStorage.getItem('rob_sub');
+    if(sub){
+      let d=JSON.parse(sub);
+      if(d.pid)$('pid').value=d.pid;if(d.dev)$('dev').value=d.dev;if(d.ak)$('ak').value=d.ak;
+      toast('已载入副车配置');return;
     }
-  }).catch(e=>{
-    toast('✗ 导入失败: '+e.message);
-  });
+  }catch(e){}
+  fetch('/api/cfg/get').then(r=>r.json()).then(d=>{
+    if(d.pid)$('pid').value=d.pid;if(d.dev)$('dev').value=d.dev;if(d.ak)$('ak').value=d.ak;
+    try{localStorage.setItem('rob_sub',JSON.stringify({pid:d.pid,dev:d.dev,ak:d.ak}));}catch(e){}
+    toast('已拉取副车配置');
+  }).catch(()=>toast('拉取失败'));
 };
 $('btnSave').onclick=()=>{
   let s=$('ssid').value.trim(),p=$('pass').value,pid=$('pid').value.trim(),dev=$('dev').value.trim(),ak=$('ak').value.trim();
@@ -640,7 +649,6 @@ static esp_err_t start_provision_httpd(void)
 /**
  * @brief 关闭配网页 HTTP server (STA 模式下)
  */
-static void stop_provision_httpd(void) __attribute__((unused));
 static void stop_provision_httpd(void)
 {
     if (s_prov_httpd == NULL) return;
@@ -959,12 +967,16 @@ esp_err_t wifi_sta_start_ap(void)
 {
     ESP_LOGI(TAG, "切换到 AP 配网模式");
 
+    /* 停止旧的 HTTP 服务（如果存在） */
+    stop_provision_httpd();
+
+    /* 停止现有 WiFi（必须在切模式前） */
+    esp_wifi_stop();
+
     /* 停止现有 STA 连接 */
     if (s_state == WIFI_STA_CONNECTED || s_state == WIFI_STA_CONNECTING) {
         esp_wifi_disconnect();
     }
-
-    /* 先创建 AP netif (必须先于 esp_wifi_set_mode) */
     if (s_ap_netif == NULL) {
         s_ap_netif = esp_netif_create_default_wifi_ap();
         if (s_ap_netif == NULL) {
@@ -1000,12 +1012,15 @@ esp_err_t wifi_sta_start_ap(void)
     snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s_%02X%02X",
              WIFI_STA_AP_SSID, mac[4], mac[5]);
 
-    /* 切换到 AP-only 模式 */
-    ret = esp_wifi_set_mode(WIFI_MODE_AP);
+    /* 切换到 APSTA 模式 (支持扫描) */
+    ret = esp_wifi_set_mode(WIFI_MODE_APSTA);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_set_mode(AP) 失败: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "esp_wifi_set_mode(APSTA) 失败: %s", esp_err_to_name(ret));
         return ret;
     }
+
+    /* 创建 STA netif 供扫描用 */
+    esp_netif_create_default_wifi_sta();
 
     /* 配置 AP WiFi 参数 - WPA2 + 固定密码 */
     wifi_config_t wc = {0};
@@ -1022,6 +1037,16 @@ esp_err_t wifi_sta_start_ap(void)
         ESP_LOGE(TAG, "esp_wifi_set_config(AP) 失败: %s", esp_err_to_name(ret));
         return ret;
     }
+
+    /* 启动 WiFi */
+    ret = esp_wifi_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_start 失败: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    /* 启动 DNS 劫持 (Captive Portal 自动弹网页) */
+    start_dns_spoofing();
 
     /* 启动配网页 */
     ret = start_provision_httpd();
