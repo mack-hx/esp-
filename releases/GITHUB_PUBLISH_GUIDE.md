@@ -13,8 +13,8 @@
 
 - ✅ 代码已提交到本地 git 并推送到 GitHub
 - ✅ GitHub 上共 20 个 release（v0.1.0 ~ v1.5、v0.17、v0.2、v0.21、v0.22、v0.30、v0.40 ~ v0.46；v1.6 只有 tag 没有 release）
-- ✅ 本地保留 `0.45/`、`0.46/`、`0.47/`（0.45 已发布，可删）
-- ✅ `releases/` 里新增 `esp_balance_robot-0.45.tar.gz`、`esp_balance_robot-0.46.tar.gz`
+- ✅ 本地只保留 `0.46/`（参考）和 `0.47/`（当前开发），0.44/0.45 已从本地删除，源码在 git tag 里
+- ✅ `releases/` 里只放最新两版的源码包（`esp_balance_robot-0.45.tar.gz`、`esp_balance_robot-0.46.tar.gz`），0.43/0.44 的旧包已删（GitHub release 附件里都有）
 
 ## 推送到 GitHub
 
