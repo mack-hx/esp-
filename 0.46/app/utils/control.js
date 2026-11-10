@@ -6,7 +6,7 @@
  * 命令下发分两类:
  *   - 持续指令 (移动 / 灯 / 舵机 / 电磁铁): 走 setDesiredProperty
  *       → 平台把期望值推给设备的 $sys/.../thing/property/set 消息
- *   - 单次动作 (急停 / 起立 / 配平 / 参数读写): 走 invokeService
+ *   - 单次动作 (急停 / 起立 / 配平 / 参数读写 / 配平表): 走 invokeService
  *       → 平台把服务调用推给设备的 $sys/.../thing/service/{name}/invoke 消息
  *
  * @note  移动指令走物模型里已有的 `speed` 属性 (标幺 -1~1):
@@ -26,8 +26,10 @@
  *        'main' 主车 / 'sub' 副车 / 'both' 两车 (对接合体后, 同一指令同时发给两个设备)。
  *        参数 / 配平这类单设备操作在 'both' 时落到主车。
  *
- * @note  蓝牙直控: 某辆车的蓝牙已连上时, 它的移动 / 急停 / 起立走蓝牙 (common/ble.js),
- *        其余指令仍走 OneNet。蓝牙移动指令每 BLE_KEEPALIVE_MS 补发一次 (车端 600ms 超时归零)。
+ * @note  蓝牙直控: 某辆车的蓝牙已连上时, 它的全部控制 (移动 / 急停 / 起立 / 配平 /
+ *        参数 / 配平表 / 灯 / 舵机 / 电磁铁) 走蓝牙 (common/ble.js), 车端此时忽略 OneNet 下发;
+ *        蓝牙没连的车才走 OneNet。OneNet 连上蓝牙后只用来看数据。
+ *        蓝牙移动指令每 BLE_KEEPALIVE_MS 补发一次 (车端 600ms 超时归零)。
  */
 
 import { oneApi } from '../common/oneapi.js'
@@ -88,14 +90,24 @@ class Controller {
     return this.target === 'sub' ? 'sub' : 'main'
   }
 
-  /** 把同一个期望值同时下发给当前控制对象的所有设备 */
+  /** 把同一个属性值下发给当前控制对象的所有设备 (蓝牙已连的走蓝牙) */
   _setAll(values) {
-    return Promise.all(this._devices().map(d => setDesiredProperty(values, d)))
+    return Promise.all(this._devices().map(d =>
+      ble.isConnected(d) ? ble.setProps(d, values) : setDesiredProperty(values, d)))
   }
 
-  /** 把同一个服务调用同时发给当前控制对象的所有设备 */
-  _invokeAll(name, input) {
-    return Promise.all(this._devices().map(d => invokeService(name, input, d)))
+  /**
+   * @brief 对一辆车调一个服务: 蓝牙已连走蓝牙, 否则走 OneNet
+   * @param name  服务名 (param_get / trim_record / calibrate ...)
+   * @param input 入参对象, 如 { values: '...' }; 无入参传 {}
+   * @param dev   'main' | 'sub'
+   * @return {Promise<string|null>} 车端返回文本 (无返回文本为 ''); OneNet 无应答数据为 null
+   */
+  async _call(name, input, dev) {
+    if (ble.isConnected(dev)) return ble.request(dev, name, input.values || '')
+    const res = await invokeService(name, input, dev)
+    if (!res) return null
+    return (res.data && res.data.values) ? String(res.data.values) : ''
   }
 
   /**
@@ -113,14 +125,19 @@ class Controller {
     return this._devices().every(d => ble.isConnected(d))
   }
 
-  /** 检查 OneNet API 是否就绪 (实时指令在所有目标车都连着蓝牙时不需要 OneNet) */
-  _check(realtime = false) {
-    if (realtime && this._allBle()) return true
-    if (oneApi.getState().state !== 'ready') {
-      uni.showToast({ title: '请先在连接页配置 OneNet', icon: 'none' })
-      return false
-    }
-    return true
+  /**
+   * @brief 能否下发指令: 目标车都连着蓝牙就不需要 OneNet, 否则要 OneNet 就绪
+   * @param devs 目标设备列表, 默认单设备操作用的那辆车
+   */
+  canSend(devs = [this._single()]) {
+    return devs.every(d => ble.isConnected(d)) || oneApi.getState().state === 'ready'
+  }
+
+  /** canSend 的带提示版本 (不能下发时弹提示) */
+  _check(devs = this._devices()) {
+    if (this.canSend(devs)) return true
+    uni.showToast({ title: '请先连接蓝牙或配置 OneNet', icon: 'none' })
+    return false
   }
 
   /**
@@ -131,7 +148,7 @@ class Controller {
    * @note  平台的 speed 属性范围是 -10~10, 指令值由 _dirToCmd() 编码。
    */
   startMove(dir, level = 60) {
-    if (!this._check(true)) return
+    if (!this._check()) return
     if (!(dir in DIR_SIGN)) return
     this.active = { [MOVE_PROP]: this._dirToCmd(dir, level) }
     this._publishMove(true)
@@ -205,7 +222,7 @@ class Controller {
 
   /** 急停 (单次服务调用) */
   async emergencyStop() {
-    if (!this._check(true)) return
+    if (!this._check()) return
     if (this.timer) { clearInterval(this.timer); this.timer = null }
     this.active = { [MOVE_PROP]: 0 }
     try {
@@ -217,7 +234,7 @@ class Controller {
 
   /** 起立 */
   async stand() {
-    if (!this._check(true)) return
+    if (!this._check()) return
     try {
       await this._realtimeAll('STAND', 'stand')
     } catch (e) {
@@ -233,7 +250,8 @@ class Controller {
       content: '请把车摆正, 然后点确定. 标定过程约 3 秒, 期间不要动车.',
       success: (res) => {
         if (res.confirm) {
-          this._invokeAll('calibrate', {}).catch(e => this.reportError(e))
+          Promise.all(this._devices().map(d => this._call('calibrate', {}, d)))
+            .catch(e => this.reportError(e))
           uni.showLoading({ title: '配平中...' })
           setTimeout(() => uni.hideLoading(), 3500)
         }
@@ -248,14 +266,11 @@ class Controller {
    *        (比如物模型里 values 的长度限制不够, 平台会回 "string length error")
    */
   async getParams() {
-    if (!this._check()) return null
+    if (!this._check([this._single()])) return null
     try {
-      const res = await invokeService('param_get', {}, this._single())
-      /* 物模型 output: values (string), 内容是设备给的扁平 JSON 字符串 */
-      if (res && res.data && res.data.values) {
-        return JSON.parse(res.data.values)
-      }
-      return null
+      /* 车端返回扁平 JSON 字符串 */
+      const text = await this._call('param_get', {}, this._single())
+      return text ? JSON.parse(text) : null
     } catch (e) {
       this.reportError(e)
       throw e
@@ -269,16 +284,15 @@ class Controller {
    * @note  出错时往上抛, 让页面能把平台的具体原因显示出来
    */
   async setParams(values) {
-    if (!this._check()) return false
+    if (!this._check([this._single()])) return false
     try {
-      /* 物模型 input: values (string), 所以要 stringify。
-       * 带上 "_v" = App 内置的参数表版本号, 车端比对不一致就告警
-       * (见 onenet_client.c 的 param_set 分支)。 */
+      /* 带上 "_v" = App 内置的参数表版本号, 车端比对不一致就告警 (见 remote_service) */
       const payload = Object.assign({}, values, { _v: PARAM_VER })
-      const r1 = await invokeService('param_set', { values: JSON.stringify(payload) }, this._single())
-      if (!r1) return false
-      const r2 = await invokeService('param_save', {}, this._single())
-      return !!r2
+      const dev = this._single()
+      const r1 = await this._call('param_set', { values: JSON.stringify(payload) }, dev)
+      if (r1 === null) return false
+      const r2 = await this._call('param_save', {}, dev)
+      return r2 !== null
     } catch (e) {
       this.reportError(e)
       throw e
@@ -290,19 +304,16 @@ class Controller {
    * @return {Promise<boolean>} 是否成功
    */
   async resetParams() {
-    if (!this._check()) return false
+    if (!this._check([this._single()])) return false
     try {
-      /* 物模型 input: values (string), 所以要 stringify。
-       * 带上 "_v" = App 内置的参数表版本号, 车端比对不一致就告警
-       * (见 onenet_client.c 的 param_set 分支)。
-       * ⚠ 恢复默认也必须带 "_v": 车端把"没有版本号"当成"旧版 App"标记,
-       *   会给用户弹提示条说参数可能被旧版 App 改坏。 */
-      const r1 = await invokeService('param_set', {
+      /* 恢复默认也必须带 "_v": 车端把"没有版本号"当成旧版 App 标记 */
+      const dev = this._single()
+      const r1 = await this._call('param_set', {
         values: JSON.stringify({ _reset: true, _v: PARAM_VER })
-      }, this._single())
-      if (!r1) return false
-      const r2 = await invokeService('param_save', {}, this._single())
-      return !!r2
+      }, dev)
+      if (r1 === null) return false
+      const r2 = await this._call('param_save', {}, dev)
+      return r2 !== null
     } catch (e) {
       this.reportError(e)
       throw e
@@ -329,9 +340,10 @@ class Controller {
    * @param {Object} payload { magnet_on }
    */
   async sendMagnet(payload) {
-    if (!this._check()) return
+    if (!this._check(['main'])) return
     try {
-      await setDesiredProperty(payload, 'main')
+      if (ble.isConnected('main')) await ble.setProps('main', payload)
+      else await setDesiredProperty(payload, 'main')
     } catch (e) {
       this.reportError(e)
       throw e
@@ -361,11 +373,9 @@ class Controller {
    *        修正后 pitch —— 修正链里还会再扣一次, 存错了会重复扣。
    */
   async trimRecord() {
-    if (!this._check()) return null
+    if (!this._check([this._single()])) return null
     try {
-      const res = await invokeService('trim_record', {}, this._single())
-      if (res && res.data && res.data.values) return String(res.data.values)
-      return null
+      return (await this._call('trim_record', {}, this._single())) || null
     } catch (e) {
       this.reportError(e)
       throw e
@@ -377,11 +387,9 @@ class Controller {
    * @return {Promise<string|null>} 车端回的文本
    */
   async trimSave() {
-    if (!this._check()) return null
+    if (!this._check([this._single()])) return null
     try {
-      const res = await invokeService('trim_save', {}, this._single())
-      if (res && res.data && res.data.values) return String(res.data.values)
-      return null
+      return (await this._call('trim_save', {}, this._single())) || null
     } catch (e) {
       this.reportError(e)
       throw e
@@ -393,11 +401,9 @@ class Controller {
    * @return {Promise<string|null>} 车端回的文本
    */
   async trimClear() {
-    if (!this._check()) return null
+    if (!this._check([this._single()])) return null
     try {
-      const res = await invokeService('trim_clear', {}, this._single())
-      if (res && res.data && res.data.values) return String(res.data.values)
-      return null
+      return (await this._call('trim_clear', {}, this._single())) || null
     } catch (e) {
       this.reportError(e)
       throw e
@@ -412,13 +418,10 @@ class Controller {
    *        pts = 每个点的 [舵机角, 原始 pitch]。
    */
   async trimGet() {
-    if (!this._check()) return null
+    if (!this._check([this._single()])) return null
     try {
-      const res = await invokeService('trim_get', {}, this._single())
-      if (res && res.data && res.data.values) {
-        return JSON.parse(res.data.values)
-      }
-      return null
+      const text = await this._call('trim_get', {}, this._single())
+      return text ? JSON.parse(text) : null
     } catch (e) {
       this.reportError(e)
       throw e

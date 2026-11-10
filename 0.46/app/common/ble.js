@@ -5,7 +5,10 @@
  * 协议与车端 ble_ctrl.h 一致:
  *   服务 0xFFE0, 特征 0xFFE1 (写 + 通知), ASCII 文本
  *   App → 车: "M:<v>" 移动 / "STOP" 急停 / "STAND" 起立
+ *             "PROP:<json>\n" 灯/舵机/电磁铁属性 (无应答)
+ *             "SV:<name>[:<入参>]\n" 服务调用 (参数/配平/标定), 见 request()
  *   车 → App: "P:<pitch>" 俯仰角 (度), 约 20Hz
+ *             "A:<name>:<1|0>:<返回文本>\n" SV 应答 (按 MTU 分片, 到 '\n' 结束)
  *
  * 车端非零移动指令 600ms 不刷新会自动归零, 所以按住方向键时要持续补发。
  */
@@ -21,8 +24,8 @@ const STORE_KEY = 'ebr_ble_ids_v1'
 
 /** 每辆车的连接: { deviceId, connected, chain (串行写队列) } */
 const links = {
-  main: { deviceId: '', connected: false, chain: Promise.resolve() },
-  sub:  { deviceId: '', connected: false, chain: Promise.resolve() }
+  main: { deviceId: '', connected: false, chain: Promise.resolve(), rx: '', pending: null, reqChain: Promise.resolve() },
+  sub:  { deviceId: '', connected: false, chain: Promise.resolve(), rx: '', pending: null, reqChain: Promise.resolve() }
 }
 
 const stateListeners = new Set()   // (which, connected) => void
@@ -70,6 +73,7 @@ function whichOf(deviceId) {
 
 function setConnected(which, v) {
   links[which].connected = v
+  if (!v) failPending(which)
   stateListeners.forEach(cb => cb(which, v))
 }
 
@@ -89,7 +93,23 @@ async function ensureAdapter() {
     const w = whichOf(res.deviceId)
     if (!w) return
     const s = buf2str(res.value)
-    if (s.startsWith('P:')) {
+    const l = links[w]
+    if (s.startsWith('A:')) l.rx = ''                 /* 新应答开头 */
+    if (l.rx || s.startsWith('A:')) {
+      l.rx += s
+      if (l.rx.endsWith('\n')) {
+        const frame = l.rx.slice(2, -1)
+        l.rx = ''
+        const m = frame.match(/^([^:]*):([01]):([\s\S]*)$/)
+        if (m && l.pending && l.pending.name === m[1]) {
+          const p = l.pending
+          l.pending = null
+          clearTimeout(p.timer)
+          if (m[2] === '1') p.resolve(m[3])
+          else p.reject(new Error('车端执行失败: ' + m[1]))
+        }
+      }
+    } else if (s.startsWith('P:')) {
       const v = Number(s.slice(2))
       if (!isNaN(v)) pitchListeners.forEach(cb => cb(w, v))
     }
@@ -165,6 +185,17 @@ export async function disconnect(which) {
   if (l.connected) setConnected(which, false)
 }
 
+/** 连接断开时清掉未完成的请求 */
+function failPending(which) {
+  const l = links[which]
+  l.rx = ''
+  if (l.pending) {
+    clearTimeout(l.pending.timer)
+    l.pending.reject(new Error('蓝牙已断开'))
+    l.pending = null
+  }
+}
+
 /** @return 该车蓝牙是否已连接 */
 export function isConnected(which) {
   return links[which].connected
@@ -198,4 +229,41 @@ export function onBleState(cb) {
 export function onPitch(cb) {
   pitchListeners.add(cb)
   return () => pitchListeners.delete(cb)
+}
+
+/**
+ * @brief 向车发一个服务请求并等应答 (同一辆车的请求串行执行)
+ * @param which 'main' | 'sub'
+ * @param name  服务名: calibrate / param_get / param_set / param_save /
+ *              trim_record / trim_save / trim_clear / trim_get
+ * @param input 入参文本 (param_set 传参数 JSON), 可省略
+ * @param ms    等应答超时 (毫秒)
+ * @return Promise<string> 车端返回文本; 车端执行失败 / 超时 / 断开时 reject
+ */
+export function request(which, name, input = '', ms = 6000) {
+  const l = links[which]
+  const run = () => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (l.pending && l.pending.name === name) { l.pending = null; l.rx = '' }
+      reject(new Error('车端无应答: ' + name))
+    }, ms)
+    l.pending = { name, resolve, reject, timer }
+    send(which, 'SV:' + name + (input ? ':' + input : '') + '\n').catch(e => {
+      clearTimeout(timer)
+      l.pending = null
+      reject(e)
+    })
+  })
+  const job = l.reqChain.then(run, run)
+  l.reqChain = job.catch(() => {})
+  return job
+}
+
+/**
+ * @brief 设置灯 / 舵机 / 电磁铁属性 (无应答)
+ * @param which   'main' | 'sub'
+ * @param payload 扁平对象, 键同 OneNet 物模型属性 (led_on / servo1_angle / magnet_on ...)
+ */
+export function setProps(which, payload) {
+  return send(which, 'PROP:' + JSON.stringify(payload) + '\n')
 }

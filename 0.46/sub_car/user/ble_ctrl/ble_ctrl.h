@@ -6,10 +6,17 @@
  *   App → 车:  "M:<v>"   移动指令, v 编码同 remote_move()
  *              "STOP"    急停
  *              "STAND"   起立
+ *              "PROP:<json>\n"       灯 / 舵机 / 电磁铁属性, 无应答
+ *              "SV:<name>[:<入参>]\n"  服务调用, name 同 remote_service():
+ *                  calibrate / param_get / param_set / param_save /
+ *                  trim_record / trim_save / trim_clear / trim_get
+ *              长指令 (PROP / SV / CFG) 由 App 按 20 字节分片写入
  *   车 → App:  "P:<pitch>"  俯仰角 (度, 1 位小数), 每 BLE_NOTIFY_MS 一帧
+ *              "A:<name>:<1|0>:<返回文本>\n"  SV 应答, 按 MTU 分片通知,
+ *              发送期间不插 P 帧
  *
  * 非零移动指令超过 BLE_MOVE_TIMEOUT_MS 没刷新、或蓝牙断开时, 移动指令归零 (不关平衡)。
- * 蓝牙连接期间车端忽略 OneNET 下发的移动指令。
+ * 蓝牙连接期间车端忽略 OneNET 下发的全部控制指令 (MQTT 只上报数据)。
  */
 #ifndef BLE_CTRL_H
 #define BLE_CTRL_H

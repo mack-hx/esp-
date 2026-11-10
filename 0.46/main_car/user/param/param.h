@@ -56,6 +56,7 @@ typedef enum {
     PARAM_LQR_KX,            // LQR 位置偏差增益 (%/cm)
     PARAM_LQR_KV,            // LQR 平移速度增益 (%/(cm/s))
     PARAM_LQR_AMAX,          // LQR 回位减速度上限 (cm/s²)
+    PARAM_LQR_KD,            // LQR 平衡环角速度阻尼 (%/(°/s))
     PARAM_MAX                // 哨兵
 } param_id_t;
 

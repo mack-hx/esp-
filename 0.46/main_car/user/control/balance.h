@@ -71,7 +71,7 @@
  * GYRO_YAW_SIGN: 陀螺 Z 轴 → 左转为正的符号 (装配方向反了改 -1)
  * YAW_DAMP_K:    (°/s) → 目标轮速差 (rpm), 0 = 关闭 */
 #define GYRO_YAW_SIGN          (+1.0f)
-#define YAW_DAMP_K             0.40f
+#define YAW_DAMP_K             0.0f   /* 0.43 没有偏航阻尼, 先关掉 */
 #define YAW_DAMP_MIN_RATE      10.0f  /* °/s 低于此角速度不改目标差速 (噪声/抖动不参与) */
 #define YAW_DAMP_MAX_RPM       4.0f   /* rpm 阻尼项对目标差速的最大修正 (防单侧悬空打滑时越拱越快) */
 
@@ -79,7 +79,7 @@
  * 低通后的车身倾角 ≈ 坡上必须常驻的倾角。行走时按比例补进倾角目标:
  * 上坡 (前倾, pitch<0) 多给前倾, 下坡 (后仰, pitch>0) 多给后仰。
  * K=0 关闭。 */
-#define SLOPE_FF_K             0.35f
+#define SLOPE_FF_K             0.0f   /* 关闭: 倾角回灌目标会自激 (平地猛冲) */
 #define SLOPE_FF_LPF_TAU       1.5f   /* s 倾角低通时间常数 */
 #define SLOPE_FF_MAX           3.0f   /* ° 前馈量上限 */
 

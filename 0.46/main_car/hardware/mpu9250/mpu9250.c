@@ -168,7 +168,7 @@ static const float alpha = 0.997f;
 
 /* ========== 俯仰角零点基准 (°) ==========
  * 俯仰角 = 相对配平姿态往前倾多少度, 配平位读数应换算成 0°。
- * 当前公式 atan2(ay, az): 水平时 ay≈0, az≈1 → atan2(0,1)=0°,
+ * 当前公式 atan2(ay, √(ax²+az²)): 水平时 ay≈0 → 0°,
  * 所以 PITCH_ZERO_REF = 0 (无需减去基准值)。
  * 若换 MPU 或改安装方向需重新标定: 车扶到平衡姿态, 读一次角度作为零点。 */
 #define PITCH_ZERO_REF   0.0f
@@ -863,12 +863,19 @@ static void mpu9250_fuse_euler(const mpu9250_data_t *data, euler_angle_t *out)
      *     车体左右轴 = MPU 的 X 轴
      *     俯仰旋转轴 = MPU 的 X 轴
      */
-    /* 重力参考：水平时 az≈1g, ax≈0, ay≈0
-     * pitch（俯仰）：用 atan2(ay, az), 前倾为负, 与陀螺 gx 积分同号
-     * roll（横滚）：左倾时 ax 增大，用 atan2(ax, az) */
-    float accel_pitch = atan2f(data->accel.y, data->accel.z) * 180.0f / M_PI
+    /* 重力参考: 水平时 az≈1g, ax≈0, ay≈0
+     * 车身同时有 pitch 和 roll 时 (斜前方倾斜, 例如上单边拱桥), 单轴
+     * atan2(ay, az) 会把 roll 分量算进 pitch, 读数偏 → 平衡环跟着偏。
+     * 二元解算用另一个轴与 az 的合成作分母, 两个角互不耦合:
+     *   pitch = atan2(ay, √(ax²+az²))   前倾为负, 与陀螺 gx 积分同号
+     *   roll  = atan2(ax, √(ay²+az²))   左倾为负
+     * 只有单轴倾斜时 √(0+az²)=|az|, 自动退化成原来的 atan2(ay, az)。 */
+    const float ax = data->accel.x;
+    const float ay = data->accel.y;
+    const float az = data->accel.z;
+    float accel_pitch = atan2f(ay, sqrtf(ax * ax + az * az)) * 180.0f / M_PI
                        - PITCH_ZERO_REF;
-    float accel_roll  = atan2f(data->accel.x, data->accel.z) * 180.0f / M_PI;
+    float accel_roll  = atan2f(ax, sqrtf(ay * ay + az * az)) * 180.0f / M_PI;
 
 
 

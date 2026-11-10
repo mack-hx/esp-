@@ -116,8 +116,8 @@ export default {
       this.dirty = true
     },
     async onRefresh() {
-      if (oneApi.getState().state !== 'ready') {
-        uni.showToast({ title: '未连接 OneNet', icon: 'none' })
+      if (!controller.canSend()) {
+        uni.showToast({ title: '请先连接蓝牙或 OneNet', icon: 'none' })
         return
       }
       try {
@@ -138,8 +138,8 @@ export default {
       }
     },
     async onSave() {
-      if (oneApi.getState().state !== 'ready') {
-        uni.showToast({ title: '未连接 OneNet', icon: 'none' })
+      if (!controller.canSend()) {
+        uni.showToast({ title: '请先连接蓝牙或 OneNet', icon: 'none' })
         return
       }
       try {
@@ -161,8 +161,8 @@ export default {
      * @brief 恢复默认: 由**车端**执行, App 不再下发本地默认值表
      */
     onReset() {
-      if (oneApi.getState().state !== 'ready') {
-        uni.showToast({ title: '未连接 OneNet', icon: 'none' })
+      if (!controller.canSend()) {
+        uni.showToast({ title: '请先连接蓝牙或 OneNet', icon: 'none' })
         return
       }
       uni.showModal({

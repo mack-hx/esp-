@@ -242,7 +242,7 @@ export default {
      * @brief 拉一次配平表 (trim_get), 刷新列表 / 配平零点 / 跨度
      */
     async _refreshTrim() {
-      if (oneApi.getState().state !== 'ready') return
+      if (!controller.canSend()) return
       try {
         const t = await controller.trimGet()
         if (!t) return

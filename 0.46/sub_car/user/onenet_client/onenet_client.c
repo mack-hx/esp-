@@ -16,7 +16,7 @@
  *      设备回 .../thing/service/{identifier}/invoke_reply
  *      {"id":"<请求里的 id>","code":200,"msg":"success","data":{...}}
  *
- * @note  服务应答 topic 必须写成 ".../invoke/reply", 写成 invoke_reply 会被平台断开连接。
+ * @note  服务应答 topic 结尾必须是 "invoke_reply" (下划线), 写成 "invoke/reply" 会被平台断开连接。
  */
 
 #include "onenet_client.h"
@@ -133,7 +133,7 @@ static void build_topics(void)
              "$sys/%s/%s/thing/property/desired/get/reply", s_product_id, s_device_name);
     snprintf(s_topic_event_post, sizeof(s_topic_event_post),
              "$sys/%s/%s/thing/event/post", s_product_id, s_device_name);
-    /* service invoke reply 的前缀 (用于 snprintf 拼接 %s/invoke/reply) */
+    /* service invoke reply 的前缀 (用于 snprintf 拼接 %s/invoke_reply) */
     snprintf(s_topic_service_invoke_reply, sizeof(s_topic_service_invoke_reply),
              "$sys/%s/%s/thing/service/", s_product_id, s_device_name);
     snprintf(s_topic_service_wildcard, sizeof(s_topic_service_wildcard),
@@ -1010,12 +1010,24 @@ static void handle_magnet_control(const char *json)
     }
 }
 
+void remote_property(const char *json)
+{
+    handle_led_control(json);
+    handle_servo_control(json);
+    handle_magnet_control(json);
+}
+
 /**
  * @brief 处理 $sys/.../thing/property/set 消息 (云下发的属性)
  * @param json 收到的 JSON (以 '\0' 结尾)
+ * @note  蓝牙直控期间忽略 (MQTT 只收数据)
  */
 static void handle_property_set(const char *json)
 {
+    if (s_ble_link) {
+        ESP_LOGI(TAG, "蓝牙直控中, 忽略云端属性设置");
+        return;
+    }
     ESP_LOGI(TAG, "收到属性设置: %s", json);
 
     /* --- 移动指令 ---
@@ -1086,7 +1098,7 @@ static void service_reply(const char *name, const char *req_id, const char *data
 
     static char topic[512];
     static char body[2048];     /* 静态区, 不占 MQTT 任务栈 */
-    snprintf(topic, sizeof(topic), "%s%s/invoke/reply", s_topic_service_invoke_reply, name);
+    snprintf(topic, sizeof(topic), "%s%s/invoke_reply", s_topic_service_invoke_reply, name);
 
     int n = snprintf(body, sizeof(body),
                      "{\"id\":\"%s\",\"code\":200,\"msg\":\"success\",\"data\":%s}",
@@ -1099,11 +1111,90 @@ static void service_reply(const char *name, const char *req_id, const char *data
 }
 
 /**
+ * @brief 执行一条服务 (OneNET 服务调用与蓝牙 SV 指令共用)
+ * @param name  stop / stand / calibrate / param_get / param_set / param_save /
+ *              trim_record / trim_save / trim_clear / trim_get
+ * @param in    入参文本 (param_set: 参数 JSON; 其它服务可为 NULL)
+ * @param out   [出参] 返回文本 (param_get / trim_* 有内容), 可为 NULL
+ * @param cap   out 容量
+ * @return 成功返回 out 内文本长度 (无返回文本为 0); 失败或服务名未知返回 -1
+ */
+int remote_service(const char *name, const char *in, char *out, size_t cap)
+{
+    if (out && cap) out[0] = '\0';
+
+    if (strcmp(name, "stop") == 0) {
+        remote_stop();
+    } else if (strcmp(name, "stand") == 0) {
+        remote_stand();
+    } else if (strcmp(name, "calibrate") == 0) {
+        /* 只记录当前 pitch 作为平衡零点, 不驱动电机 */
+        balance_calibrate();
+    } else if (strcmp(name, "param_get") == 0) {
+        if (!out) return -1;
+        int n = param_to_map_json(out, (uint32_t)cap);
+        return (n > 0) ? n : -1;
+    } else if (strcmp(name, "param_set") == 0) {
+        if (!in || !in[0]) return -1;
+        /* "_v" 是 App 内置参数表版本, 与车端不一致说明下发的默认值可能过期 */
+        const char *vp = strstr(in, "\"_v\"");
+        if (vp == NULL) {
+            param_mark_stale_write(true);
+        } else {
+            const char *colon = strchr(vp, ':');
+            int app_ver = colon ? atoi(colon + 1) : 0;
+            if (app_ver != (int)param_get_data_version()) {
+                ESP_LOGW(TAG, "param_set: App 参数表 v%d != 车端 v%u",
+                         app_ver, (unsigned)param_get_data_version());
+            }
+        }
+        return (param_from_json(in) == ESP_OK) ? 0 : -1;
+    } else if (strcmp(name, "param_save") == 0) {
+        return (param_save() == ESP_OK) ? 0 : -1;
+    } else if (strcmp(name, "trim_record") == 0) {
+        /* 存的是原始 pitch (修正链里还会再扣一次 trim_pitch()) */
+        esp_err_t ret = balance_record_trim_point();
+        if (!out) return (ret == ESP_OK) ? 0 : -1;
+        if (ret != ESP_OK) {
+            return snprintf(out, cap, "fail: %s", esp_err_to_name(ret));
+        }
+        const trim_t *t = trim_get();
+        float phi = (float)servo_get_angle(SERVO_1);
+        float pitch = 0.0f;
+        for (uint8_t i = 0; i < t->count; i++) {
+            if (t->pts[i].servo_deg == phi) { pitch = t->pts[i].pitch_deg; break; }
+        }
+        return snprintf(out, cap, "ok, phi=%.0f, pitch=%.2f, n=%u",
+                        (double)phi, (double)pitch, (unsigned)t->count);
+    } else if (strcmp(name, "trim_save") == 0) {
+        esp_err_t ret = trim_save();
+        if (!out) return (ret == ESP_OK) ? 0 : -1;
+        if (ret == ESP_OK) return snprintf(out, cap, "ok, n=%u", (unsigned)trim_get()->count);
+        return snprintf(out, cap, "fail: %s", esp_err_to_name(ret));
+    } else if (strcmp(name, "trim_clear") == 0) {
+        trim_clear();
+        esp_err_t ret = trim_save();
+        if (!out) return (ret == ESP_OK) ? 0 : -1;
+        if (ret == ESP_OK) return snprintf(out, cap, "ok, cleared");
+        return snprintf(out, cap, "fail: %s", esp_err_to_name(ret));
+    } else if (strcmp(name, "trim_get") == 0) {
+        if (!out) return -1;
+        int n = balance_get_trim_json(out, (uint32_t)cap);
+        if (n > 0) return n;
+        return snprintf(out, cap, "{}");
+    } else {
+        return -1;
+    }
+    return 0;
+}
+
+/**
  * @brief 处理 $sys/.../thing/service/{name}/invoke 消息
  * @param topic     完整 topic (用来取服务名)
  * @param topic_len topic 长度
  * @param data      消息内容
  * @param data_len  长度
+ * @note  蓝牙直控期间不执行, 直接回失败 (MQTT 只收数据)
  */
 static void handle_service_invoke(const char *topic, int topic_len, const char *data, int data_len)
 {
@@ -1111,12 +1202,7 @@ static void handle_service_invoke(const char *topic, int topic_len, const char *
     static char t[160] = {0};       /* 静态区, 不占 MQTT 任务栈 */
     int copy = (topic_len < (int)sizeof(t) - 1) ? topic_len : (int)sizeof(t) - 1;
     memcpy(t, topic, copy);
-    /* ⚠ 必须在这里补 '\0'! t 是 static 缓冲区, 上一次调用留下的尾巴
-     *   不会被清掉。比如先收到 "param_save"(61 字符) 再收到 "stop"(55 字符),
-     *   不补 '\0' 的话 t 会变成 ".../stop/invoke" + 残留的 "invoke",
-     *   strrchr 找出来的最后一段是 "/invokeinvoke" != "/invoke",
-     *   于是这个服务被直接丢掉, 平台收不到应答就报"设备响应超时"。 */
-    t[copy] = '\0';
+    t[copy] = '\0';                 /* t 是 static, 必须补 '\0', 否则残留上次的尾巴 */
 
     char *last = strrchr(t, '/');
     if (!last || strcmp(last, "/invoke") != 0) return;
@@ -1132,165 +1218,36 @@ static void handle_service_invoke(const char *topic, int topic_len, const char *
 
     ESP_LOGI(TAG, "服务调用: %s (id=%s)", name, req_id[0] ? req_id : "-");
 
+    if (s_ble_link) {
+        ESP_LOGI(TAG, "蓝牙直控中, 忽略云端服务调用: %s", name);
+        service_reply(name, req_id, "{\"ok\":false}");
+        if (json) free(json);
+        return;
+    }
+
     /* --- 3. 执行 --- */
-    if (strcmp(name, "stop") == 0) {
-        remote_stop();
-        service_reply(name, req_id, "{\"ok\":true}");
-    } else if (strcmp(name, "stand") == 0) {
-        remote_stand();
-        service_reply(name, req_id, "{\"ok\":true}");
-    } else if (strcmp(name, "calibrate") == 0) {
-        /* 配平: **只记录当前 pitch 作为平衡零点, 不驱动任何电机**。
-         * 这个动作**不能**写成"停平衡 → 再开平衡": 电机会在重新起立时猛冲,
-         * 看起来像配平引起剧烈抖动 —— 其实配平和电机没关系。 */
-        balance_calibrate();
-        service_reply(name, req_id, "{\"ok\":true}");
-    } else if (strcmp(name, "param_get") == 0) {
-        /* 物模型 output: values (string), 内容是整张参数表的 JSON (扁平键值对) */
-        static char pbody[1024];    /* 静态区, 不占 MQTT 任务栈 */
-        static char escaped[1200];
-        static char data_json[1400];
-        int n = param_to_map_json(pbody, sizeof(pbody));
-        if (n > 0) {
-            size_t elen = json_escape_string(pbody, escaped, sizeof(escaped));
-            if (elen < sizeof(escaped)) {
-                snprintf(data_json, sizeof(data_json), "{\"values\":%.*s}", (int)elen, escaped);
-                service_reply(name, req_id, data_json);
-            }
-        }
-    } else if (strcmp(name, "param_set") == 0) {
-        /* 平台下发: {"id":"..","version":"1.0","params":{"values":"{\"bal_kp\":40,..}"}}
-         * values 是物模型里声明的 string 类型, 内容是一段 JSON 字符串
-         * (内层引号是转义的, 要用 json_find_string 还原) */
-        int ok = 0;
-        if (json) {
-            static char inner[1024];   /* 静态区, 不占 MQTT 任务栈 */
-            if (json_find_string(json, "values", inner, sizeof(inner)) && inner[0]) {
-                ESP_LOGI(TAG, "param_set: %s", inner);
+    static char in[1024];           /* 静态区, 不占 MQTT 任务栈 */
+    static char out[1024];
+    static char escaped[1200];
+    static char data_json[1300];
+    in[0] = '\0';
+    /* param_set: 物模型 input values 是 string, 内层引号被转义, 用 json_find_string 还原 */
+    if (json && strcmp(name, "param_set") == 0) json_find_string(json, "values", in, sizeof(in));
 
-                /* 版本对账: App 会在 values 里带 "_v" 说明它内置的参数表版本。
-                 * 不一致 = App 的默认值表过期了, 它下发的可能是老参数。
-                 * App 还停在旧默认值时, 点一次
-                 * "恢复默认"就把速度环打开 (spd_kp=20/spd_ki=30), 车只朝一个
-                 * 方向转根本稳不住。这里明确告警, 方便看日志定位。 */
-                uint16_t my_ver = param_get_data_version();
-                const char *vp = strstr(inner, "\"_v\"");
-                if (vp == NULL) {
-                    ESP_LOGW(TAG, "param_set: 下发的参数里没有版本号, "
-                                  "可能来自旧版 App (车端参数表 v%u)",
-                             (unsigned)my_ver);
-                    /* 只提示不拦截: 打个标记, App 参数页会显示提示条,
-                     * 提醒用户"参数可能被旧版 App 改坏, 建议恢复默认"。
-                     * (版本号存在时, 由 param_from_json 里的 "_v" 分支统一处理) */
-                    param_mark_stale_write(true);
-                } else {
-                    /* vp 指向 "_v" 那一段, 后面是 :数字。
-                     * ⚠ atoi 不能直接用在 ":10" 上 (atoi 遇到非数字就返回 0),
-                     *   必须先跳过冒号。 */
-                    const char *colon = strchr(vp, ':');
-                    int app_ver = colon ? atoi(colon + 1) : 0;
-                    if (app_ver != (int)my_ver) {
-                        ESP_LOGW(TAG, "param_set: ⚠ App 参数表 v%d != 车端 v%u, "
-                                      "下发的默认值可能过期! 请重新打包 App",
-                                 app_ver, (unsigned)my_ver);
-                    }
-                }
-
-                ok = (param_from_json(inner) == ESP_OK);
-            } else {
-                ESP_LOGW(TAG, "param_set: 没找到 values 参数");
-            }
-        }
-        (void)ok;
+    int n = remote_service(name, in, out, sizeof(out));
+    if (strcmp(name, "param_set") == 0) {
         service_reply(name, req_id, "{}");
-    } else if (strcmp(name, "param_save") == 0) {
-        esp_err_t ret = param_save();
-        char data_json[32];
-        snprintf(data_json, sizeof(data_json), "{\"ok\":%s}", (ret == ESP_OK) ? "true" : "false");
-        service_reply(name, req_id, data_json);
-    } else if (strcmp(name, "trim_record") == 0) {
-        /* 记录一个配平表标定点: 当前舵机角 → 当前**原始** pitch。
-         * ⚠ 存的是原始 pitch (pitch_raw): 修正链里还会再扣一次 trim_pitch(),
-         *   存修正后的会重复扣, 补偿就废了。 */
-        esp_err_t ret = balance_record_trim_point();
-
-        char msg[160];
-        if (ret == ESP_OK) {
-            /* 把刚记的点报回去 (用户要确认"记的是哪一档") */
-            const trim_t *t = trim_get();
-            float phi = (float)servo_get_angle(SERVO_1);
-            float pitch = 0.0f;
-            bool  found = false;
-            for (uint8_t i = 0; i < t->count; i++) {
-                if (t->pts[i].servo_deg == phi) {
-                    pitch = t->pts[i].pitch_deg;
-                    found = true;
-                    break;
-                }
-            }
-            snprintf(msg, sizeof(msg), "ok, phi=%.0f, pitch=%.2f, n=%u",
-                     (double)phi, (double)(found ? pitch : 0.0f), (unsigned)t->count);
-        } else {
-            snprintf(msg, sizeof(msg), "fail: %s", esp_err_to_name(ret));
-        }
-
-        static char escaped[200];
-        static char data_json[240];
-        size_t elen = json_escape_string(msg, escaped, sizeof(escaped));
+    } else if (n < 0) {
+        service_reply(name, req_id, "{\"ok\":false}");
+    } else if (strcmp(name, "param_get") == 0 || strncmp(name, "trim_", 5) == 0) {
+        /* 有返回文本的服务: 物模型 output values (string) */
+        size_t elen = json_escape_string(out, escaped, sizeof(escaped));
         if (elen < sizeof(escaped)) {
             snprintf(data_json, sizeof(data_json), "{\"values\":%.*s}", (int)elen, escaped);
             service_reply(name, req_id, data_json);
-        }
-    } else if (strcmp(name, "trim_save") == 0) {
-        /* 配平表落盘 (NVS), 断电不丢 */
-        esp_err_t ret = trim_save();
-        char msg[96];
-        if (ret == ESP_OK) {
-            snprintf(msg, sizeof(msg), "ok, n=%u", (unsigned)trim_get()->count);
-        } else {
-            snprintf(msg, sizeof(msg), "fail: %s", esp_err_to_name(ret));
-        }
-        static char escaped[128];
-        static char data_json[160];
-        size_t elen = json_escape_string(msg, escaped, sizeof(escaped));
-        if (elen < sizeof(escaped)) {
-            snprintf(data_json, sizeof(data_json), "{\"values\":%.*s}", (int)elen, escaped);
-            service_reply(name, req_id, data_json);
-        }
-    } else if (strcmp(name, "trim_clear") == 0) {
-        /* 清空配平表并落盘 (换机械结构后用) */
-        trim_clear();
-        esp_err_t ret = trim_save();
-        char msg[96];
-        if (ret == ESP_OK) {
-            snprintf(msg, sizeof(msg), "ok, cleared");
-        } else {
-            snprintf(msg, sizeof(msg), "fail: %s", esp_err_to_name(ret));
-        }
-        static char escaped[128];
-        static char data_json[160];
-        size_t elen = json_escape_string(msg, escaped, sizeof(escaped));
-        if (elen < sizeof(escaped)) {
-            snprintf(data_json, sizeof(data_json), "{\"values\":%.*s}", (int)elen, escaped);
-            service_reply(name, req_id, data_json);
-        }
-    } else if (strcmp(name, "trim_get") == 0) {
-        /* 物模型 output: values (string), 内容是配平表的 JSON (和 param_get 一个格式) */
-        static char tjson[512];     /* 静态区, 不占 MQTT 任务栈 */
-        static char escaped[600];
-        static char data_json[700];
-        int n = balance_get_trim_json(tjson, sizeof(tjson));
-        if (n > 0) {
-            size_t elen = json_escape_string(tjson, escaped, sizeof(escaped));
-            if (elen < sizeof(escaped)) {
-                snprintf(data_json, sizeof(data_json), "{\"values\":%.*s}", (int)elen, escaped);
-                service_reply(name, req_id, data_json);
-            }
-        } else {
-            service_reply(name, req_id, "{\"values\":\"{}\"}");
         }
     } else {
-        service_reply(name, req_id, "{\"ok\":false}");
+        service_reply(name, req_id, "{\"ok\":true}");
     }
 
     if (json) free(json);

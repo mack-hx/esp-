@@ -84,7 +84,25 @@ bool mqtt_client_is_connected(void);
 void remote_move(float v);
 
 /**
- * @brief 标记蓝牙直控是否连接; 连接期间忽略 OneNET 下发的移动指令
+ * @brief 执行一条服务 (OneNET 服务调用与蓝牙 SV 指令共用)
+ * @param name  stop / stand / calibrate / param_get / param_set / param_save /
+ *              trim_record / trim_save / trim_clear / trim_get
+ * @param in    入参文本 (param_set: 参数 JSON; 其它服务可为 NULL)
+ * @param out   [出参] 返回文本 (param_get / trim_* 有内容), 可为 NULL
+ * @param cap   out 容量
+ * @return 成功返回 out 内文本长度 (无返回文本为 0); 失败或服务名未知返回 -1
+ */
+int remote_service(const char *name, const char *in, char *out, size_t cap);
+
+/**
+ * @brief 设置灯 / 舵机 / 电磁铁属性
+ * @param json 扁平 JSON, 键: led_on / led_color / led_brightness / led_preset /
+ *             servo1_angle / servo2_angle / magnet_on
+ */
+void remote_property(const char *json);
+
+/**
+ * @brief 标记蓝牙直控是否连接; 连接期间忽略 OneNET 下发的全部控制 (属性设置 / 服务调用 / 移动期望值)
  * @param on true = 已连接
  */
 void remote_set_ble_link(bool on);
