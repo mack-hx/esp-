@@ -10,6 +10,7 @@
 #include "speed_pid.h"
 #include "steer_pid.h"
 #include "lqr.h"
+#include "pid.h"
 #include "trim.h"
 #include "mpu9250.h"
 #include "encoder.h"
@@ -46,7 +47,10 @@ static const char *TAG = "BALANCE";
  *   ≤ BAL_GAIN_STAND_ANGLE → ×1.0;  ≥ BAL_GAIN_CROUCH_ANGLE → ×BAL_GAIN_CROUCH_K */
 #define BAL_GAIN_STAND_ANGLE    40.0f   /* 站姿腿角 (°) */
 #define BAL_GAIN_CROUCH_ANGLE  100.0f   /* 蹲姿腿角 (°) */
-#define BAL_GAIN_CROUCH_K        0.40f  /* 蹲姿内环增益倍率: 蹲下仍打摆就减小, 发软就加大 */
+#define BAL_GAIN_CROUCH_K        0.55f  /* 蹲姿内环增益倍率: 蹲下仍打摆就减小, 发软就加大
+                                         * 0.40 时蹲姿 KP_eff 只有 7.2, 位置环要 5° 前倾
+                                         * 只给 36% 输出, 追不上 → 站不住。11Hz 陷波
+                                         * 补上后可以给到 0.55 (KD_eff 0.83) */
 
 /* ================= 模块内部状态 ================= */
 
@@ -74,8 +78,79 @@ static float s_yaw_rate = 0.0f;
 static float s_yaw_lpf = 0.0f;
 static bool  s_yaw_lpf_primed = false;
 
+/* ========== 陀螺陷波 (10~17Hz 结构模态) ==========
+ * 轮子—腿—车身的结构共振不是固定频点: 11/9 实测 16.7Hz, 11/10 实测 10.3~11.4Hz
+ * (随腿角、负载、胎面变化漂移)。D 项在共振频点的增益会把车身震成 ±2°/±100%
+ * 的等幅抖 (实测 out/gyro 斜率 = lqr_kd, 即输出全来自 D 项)。
+ * 单节 15Hz 陷波只对 10.5Hz 压到 0.70, 盖不住漂移 → 改用两节级联:
+ *   N1 f0=11Hz Q=1.4, N2 f0=16Hz Q=1.4 (RBJ, fs=100Hz)
+ * 合成响应: 10~11.4Hz 0.23→0, 15~16.7Hz 0.15→0, 2~3Hz 仍 0.99/0.97 (相位 -12°/-19°)。
+ * 系数由 python 按 RBJ 公式算好写死, 改采样率或频点要重算。 */
+#define NOTCH1_B0   0.814563f
+#define NOTCH1_B1  -1.255264f
+#define NOTCH1_B2   0.814563f
+#define NOTCH1_A1  -1.255264f
+#define NOTCH1_A2   0.629127f
+
+#define NOTCH2_B0   0.768317f
+#define NOTCH2_B1  -0.823370f
+#define NOTCH2_B2   0.768317f
+#define NOTCH2_A1  -0.823370f
+#define NOTCH2_A2   0.536634f
+
+typedef struct {
+    float x1, x2, y1, y2;
+} notch_state_t;
+
+static notch_state_t s_notch1;
+static notch_state_t s_notch2;
+
+/**
+ * @brief 单节二阶 IIR 陷波
+ * @param s  滤波器状态
+ * @param x  本周期输入
+ * @param b0,b1,b2,a1,a2 归一化后的系数 (a0=1)
+ * @return 滤波输出
+ */
+static float balance_notch_run(notch_state_t *s, float x,
+                               float b0, float b1, float b2,
+                               float a1, float a2)
+{
+    float y = b0 * x + b1 * s->x1 + b2 * s->x2 - a1 * s->y1 - a2 * s->y2;
+    s->x2 = s->x1;
+    s->x1 = x;
+    s->y2 = s->y1;
+    s->y1 = y;
+    return y;
+}
+
+/**
+ * @brief 陀螺陷波: 11Hz + 16Hz 两节级联, 只压结构模态频段
+ * @param x 本周期角速度 (°/s)
+ * @return 陷波后的角速度
+ */
+static float balance_gyro_notch(float x)
+{
+    float y = balance_notch_run(&s_notch1, x,
+                                NOTCH1_B0, NOTCH1_B1, NOTCH1_B2,
+                                NOTCH1_A1, NOTCH1_A2);
+    return balance_notch_run(&s_notch2, y,
+                             NOTCH2_B0, NOTCH2_B1, NOTCH2_B2,
+                             NOTCH2_A1, NOTCH2_A2);
+}
+
+/** @brief 清空陷波器状态 (重新起立 / 摔倒后) */
+static void balance_gyro_notch_reset(void)
+{
+    s_notch1.x1 = s_notch1.x2 = s_notch1.y1 = s_notch1.y2 = 0.0f;
+    s_notch2.x1 = s_notch2.x2 = s_notch2.y1 = s_notch2.y2 = 0.0f;
+}
+
 /* 本周期算出的配平补偿量 (°), 供 UI / 网页观察 */
 static float s_trim_comp = 0.0f;
+
+/* 位置环的轮速阻尼项 (%), 直接叠加在平衡环输出上 (不随蹲姿缩放) */
+static float s_wheel_damp = 0.0f;
 
 /* 低通后的车身倾角 (°), 坡度前馈用 */
 static float s_slope_lpf = 0.0f;
@@ -224,6 +299,7 @@ static void balance_reset_pid(void)
     speed_pid_reset();
     steer_pid_reset();
     lqr_pos_integral_reset();
+    balance_gyro_notch_reset();
     s_lpf_primed = false;
     /* 目标轮速也归零: 摔倒 / 停机时不能还挂着"往前走"的目标 */
     s_tgt_avg  = 0.0f;
@@ -300,10 +376,12 @@ static void balance_read_sensors(void)
             if (!s_lpf_primed) {
                 s_gyro_lpf   = rate;
                 s_lpf_primed = true;
+                balance_gyro_notch_reset();
             } else {
                 s_gyro_lpf += a * (rate - s_gyro_lpf);
             }
-            s_data.gyro = s_gyro_lpf;
+            /* 陷波掉 12~17Hz 的结构共振, 否则 D 项会把它激成等幅抖 */
+            s_data.gyro = balance_gyro_notch(s_gyro_lpf);
 
             /* 航向角速度: 车体绕竖直轴转动 = 绕 MPU 的 **Y 轴** (见 mpu9250.c
              * 的姿态积分: yaw 用 gyro.y, roll 用 gyro.z, pitch 用 gyro.x)。
@@ -725,6 +803,8 @@ static void balance_control_step(float dt)
     s_data.bal_out = lqr_balance_out(s_data.pitch - s_data.target_pitch, s_data.gyro);
     /* 蹲姿增益缩放: 腿越短, 内环环路增益越大, 不缩放会在 11Hz 左右自激 */
     s_data.bal_out *= balance_posture_gain();
+    /* 轮速阻尼: 刹车不走倾角, 直接反拉电机 (不随蹲姿缩放, 蹲姿也要刹得住) */
+    s_data.bal_out += s_wheel_damp;
 
     /* --- 执行: 双轮同向输出 (+ 差速) ---
      * BAL_MOTOR_SIGN 烘焙在代码里 (不在网页上可调):
@@ -888,7 +968,7 @@ static void balance_task(void *arg)
         balance_state_machine(dt);
 
         /* 2.6) 横滚闭环: 只在平衡起立时生效, 用左右腿长差把车身横滚拉回 0 */
-        roll_comp_set_enable(s_state == BAL_STATE_BALANCING);
+        roll_comp_set_enable(false);   /* 0.43 默认关闭: 开启后舵机抖动会串进姿态 */
         {
             roll_comp_output_t roll_out;
             roll_comp_calculate(dt, servo_get_roll_angle(), &roll_out);
@@ -961,8 +1041,8 @@ static void balance_task(void *arg)
             ts.pos_err = s_pos_target_cm - s_data.position_cm;
             ts.pos_out = s_data.pos_out;
             ts.pos_vel = odom_get_velocity_cmps();
-            /* kd 记录当前生效的角速度阻尼系数 (LQR_KD 为编译期常量) */
-            ts.kd      = LQR_KD;
+            /* kd 记录当前生效的角速度阻尼系数 (运行时来自参数表 lqr_kd) */
+            ts.kd      = param_get_float(PARAM_LQR_KD);
             ts.dt      = dt * 1000.0f;
             ts.tavg    = s_tgt_avg;
             ts.tdiff   = s_tgt_diff;
