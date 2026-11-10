@@ -2,7 +2,7 @@
  * @file paramDef.js
  * @brief 1:1 镜像 ESP32 端 param.c 的参数定义
  *
- * 数据来源: main_car/user/param/param.c (PARAM_DATA_VERSION 39)
+ * 数据来源: main_car/user/param/param.c (PARAM_DATA_VERSION 45)
  * 改了 param.c 就要同步这个文件, 否则 App 显示的滑块范围/默认值会跟车端对不上.
  *
  * 约定:
@@ -14,11 +14,18 @@
  *      App 和车端必须同步改 step, 否则 App 拖 0.06、车端按 0.5 吸附 → 两边对不上
  *
  * 版本说明:
+ * 46: lqr_kd 1.5→1.1 (1.5 在 8~11Hz 自激; 陀螺不再串陷波)
+ * 45: lqr_kd 0.5→1.5 (站姿欠阻尼大晃动)
+ * 44: lqr_kd 2.0→0.5、lqr_amax 4→8 (回到 0.43 那套)
+ * 43: lqr_kd 默认值 1.2 → 2.0 (加陷波后 17Hz 结构模态不再受 KD 限制)
+ * 42: lqr_amax 默认值 8 → 4 (回程太猛会冲过头)
+ * 41: lqr_kd 默认值 2.5 → 1.2 (2.5 在蹲姿会激起 18Hz 结构自激)
+ * 40: 新增 lqr_kd (平衡环角速度阻尼, 之前是固件里的常量, App 调不了)
  * 39: 删除 bal_kp/bal_ki/bal_kd 与 pos_kp/pos_kd/pos_ki (直立环由 LQR 接管, 这些滑块不生效)
  */
 
 /** App 内置的参数表版本号, 必须跟 param.c 的 PARAM_DATA_VERSION 一致 */
-export const PARAM_VER = 39
+export const PARAM_VER = 46
 
 export const PARAM_GROUPS = {
   0: { key: 'speed', label: '速度环 / 位置环' },
@@ -69,7 +76,9 @@ export const PARAM_DEFS = [
   { id: 16, key: 'lqr_kv',      label: 'LQR Kv',         unit: '%/(cm/s)', def: 2.25, min: 0, max: 10, step: 0.125, dec: 3, grp: 0,
     hint: 'LQR 平移速度增益 (%/(cm/s)): 回位时的速度阻尼(刹车)。推完来回摆多次 → 加大; 车身高频抖或自己振起来 → 减小。步进 0.125' },
   { id: 17, key: 'lqr_amax',    label: 'LQR 回位减速度', unit: 'cm/s²', def: 8, min: 0, max: 150, step: 1, dec: 0, grp: 0,
-    hint: '回位减速度上限 (cm/s²): 偏差大时期望回位速度 = sqrt(2·值·偏差), 车会提前减速, 到位时速度接近 0。回位冲过头 → 减小; 回位太慢 → 加大。0 = 不限制回位速度 (退回纯线性)。步进 1' }
+    hint: '回位减速度上限 (cm/s²): 偏差大时期望回位速度 = sqrt(2·值·偏差), 车会提前减速, 到位时速度接近 0。回位冲过头 → 减小; 回位太慢 → 加大。0 = 不限制回位速度 (退回纯线性)。步进 1' },
+  { id: 18, key: 'lqr_kd',      label: 'LQR Kd 平衡环阻尼', unit: '%/(°/s)', def: 0.9, min: 0, max: 20, step: 0.1, dec: 2, grp: 0,
+    hint: '平衡环角速度阻尼 (%/(°/s)): 车被推后摆几下停不下来 → 加大; 站立时高频抖/电机嗡嗡 → 减小。太小 (<0.5) 会在 2Hz 附近持续打摆, 太大 (蹲姿等效 >1.0) 会激起 18Hz 结构自激。步进 0.1' }
 ]
 
 /** 用 key 找 def */

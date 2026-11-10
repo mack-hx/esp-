@@ -27,11 +27,18 @@ static const char *TAG = "PARAM";
 #endif
 
 /* 参数表版本与 App 前端同步, 每次增删参数就 +1
+ * 46: lqr_kd 1.5→1.1 (1.5 在 8~11Hz 自激; 陀螺不再串陷波, 高频增益靠 kd 限制)
+ * 45: lqr_kd 0.5→1.5 (站姿欠阻尼大晃动; 陷波已覆盖 12~17Hz)
+ * 44: lqr_kd 2.0→0.5、lqr_amax 4→8 (回到 0.43 那套)
+ * 43: lqr_kd 默认值 1.2 → 2.0 (加陷波后 17Hz 结构模态不再受 KD 限制)
+ * 42: lqr_amax 默认值 8 → 4 (回程太猛会冲过头)
+ * 41: lqr_kd 默认值 2.5 → 1.2 (2.5 在蹲姿会激起 18Hz 结构自激)
+ * 40: 新增 lqr_kd (平衡环角速度阻尼, 之前是代码常量调不了) (18 → 19 项)
  * 39: 删除 LQR 下不生效的 bal_kp/bal_ki/bal_kd 与 pos_kp/pos_kd/pos_ki (24 → 18 项)
  * 37: LQR 放开 (KP 22/KD 0.6/VMAX 35, motor_max 95%, 倾角限 35°, 起立 30%/800ms)
  *     + 速度环提速 (斜坡 150/120, kp 0.08/ki 0.04, move_rpm_max 120)
  *     + LCD 刷新 50ms + BLE 优先级 23 */
-#define PARAM_DATA_VERSION  39
+#define PARAM_DATA_VERSION  46
 
 /* 参数值数组 (下标 = param_id_t, 与 g_param_items 严格一一对应) */
 static float s_values[PARAM_MAX];
@@ -107,6 +114,10 @@ const param_item_t g_param_items[] = {
     { PARAM_LQR_AMAX, "lqr_amax", "LQR 回位减速度", "cm/s²", 8.0f, 0.0f, 150.0f, 1.0f, 0, PARAM_GRP_SPEED,
       "回位减速度上限 (cm/s²): 偏差大时期望回位速度 = sqrt(2·值·偏差), 车会提前减速, 到位时速度接近 0。"
       "回位冲过头 → 减小; 回位太慢 → 加大。0 = 不限制回位速度 (退回纯线性)。步进 1" },
+    { PARAM_LQR_KD, "lqr_kd", "LQR Kd (平衡环阻尼)", "%/(°/s)", 0.9f, 0.0f, 20.0f, 0.1f, 2, PARAM_GRP_SPEED,
+      "平衡环角速度阻尼 (%/(°/s)): 车被推后摆几下停不下来 → 加大; "
+      "站立时高频抖/电机嗡嗡 → 减小。太小(<0.5)会在 2Hz 附近持续打摆, "
+      "太大(蹲姿等效 >1.0)会激起 18Hz 结构自激。步进 0.1" },
 };
 
 /**
@@ -144,6 +155,23 @@ esp_err_t param_load(void)
     uint16_t ver = 0;
     size_t len = sizeof(ver);
     if (nvs_get_u16(h, NVS_KEY_VERSION, &ver) != ESP_OK || ver != PARAM_DATA_VERSION) {
+        /* 39→40 只是在末尾追加 lqr_kd、40 之后只调了几个默认值,
+         * 前面的下标都没动, 把旧值搬过来, 免得用户调好的增益被重置。
+         * 39 的旧 blob 没有 lqr_kd 这一项, 搬 18 项; 之后搬 19 项。
+         * lqr_kd / lqr_amax 的默认值改过, 一律用新默认值。 */
+        const int keep = (ver == 39) ? 18 : ((ver >= 40 && ver <= 45) ? 19 : 0);
+        float old[PARAM_MAX];
+        size_t olen = sizeof(old);
+        if (keep > 0 && nvs_get_blob(h, NVS_KEY_VALUES, old, &olen) == ESP_OK &&
+            olen == (size_t)keep * sizeof(float)) {
+            for (int i = 0; i < keep; i++) s_values[i] = old[i];
+            s_values[PARAM_LQR_KD]   = g_param_items[PARAM_LQR_KD].def;
+            s_values[PARAM_LQR_AMAX] = g_param_items[PARAM_LQR_AMAX].def;
+            nvs_close(h);
+            ESP_LOGW(TAG, "参数表 %u→%d: 保留旧值, lqr_kd/lqr_amax 用默认值", ver, PARAM_DATA_VERSION);
+            param_save();
+            return ESP_OK;
+        }
         ESP_LOGW(TAG, "参数表版本不匹配 (%u != %d), 用默认值", ver, PARAM_DATA_VERSION);
         nvs_close(h);
         /* 顺手把默认值写回去: 不然这份旧 blob 会一直留在 NVS 里,

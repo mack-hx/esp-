@@ -42,15 +42,16 @@ static const char *TAG = "BALANCE";
 #define BAL_TRACE_PERIOD_MS 10
 
 /* 蹲姿增益调度的腿角区间 (°):
- * 腿越短 (角度越大) 车身等效转动惯量越小, 同一内环增益的环路增益越大,
- * 蹲到 100° 附近会在 11Hz 左右激起等幅自激。这里按腿角线性缩小内环增益:
- *   ≤ BAL_GAIN_STAND_ANGLE → ×1.0;  ≥ BAL_GAIN_CROUCH_ANGLE → ×BAL_GAIN_CROUCH_K */
+ * 腿越短 (角度越大) 车身等效转动惯量越小, 同一内环增益的环路增益越大。
+ * 蹲姿的 P 和 D 要分开缩, 因为两者在这台车上干的事不一样:
+ *   - D 项是自激的来源 (8~11Hz 抖动时 out 的 3/4 来自 D), 必须多缩;
+ *   - P 项是"站得住"的刚度, 缩太狠 (×0.40 时 KP_eff 只有 7.2) 就顶不动,
+ *     位置环要 5° 前倾时只给 36% 输出 → 蹲着站不住。
+ * 所以蹲姿: P 缩到 0.55 (KP_eff 9.9), D 缩到 0.50 (KD_eff 0.55)。 */
 #define BAL_GAIN_STAND_ANGLE    40.0f   /* 站姿腿角 (°) */
 #define BAL_GAIN_CROUCH_ANGLE  100.0f   /* 蹲姿腿角 (°) */
-#define BAL_GAIN_CROUCH_K        0.55f  /* 蹲姿内环增益倍率: 蹲下仍打摆就减小, 发软就加大
-                                         * 0.40 时蹲姿 KP_eff 只有 7.2, 位置环要 5° 前倾
-                                         * 只给 36% 输出, 追不上 → 站不住。11Hz 陷波
-                                         * 补上后可以给到 0.55 (KD_eff 0.83) */
+#define BAL_GAIN_CROUCH_KP       0.55f  /* 蹲姿 P 倍率: 蹲下顶不动就加大 */
+#define BAL_GAIN_CROUCH_KD       0.50f  /* 蹲姿 D 倍率: 蹲下打摆就减小 */
 
 /* ================= 模块内部状态 ================= */
 
@@ -78,73 +79,15 @@ static float s_yaw_rate = 0.0f;
 static float s_yaw_lpf = 0.0f;
 static bool  s_yaw_lpf_primed = false;
 
-/* ========== 陀螺陷波 (10~17Hz 结构模态) ==========
- * 轮子—腿—车身的结构共振不是固定频点: 11/9 实测 16.7Hz, 11/10 实测 10.3~11.4Hz
- * (随腿角、负载、胎面变化漂移)。D 项在共振频点的增益会把车身震成 ±2°/±100%
- * 的等幅抖 (实测 out/gyro 斜率 = lqr_kd, 即输出全来自 D 项)。
- * 单节 15Hz 陷波只对 10.5Hz 压到 0.70, 盖不住漂移 → 改用两节级联:
- *   N1 f0=11Hz Q=1.4, N2 f0=16Hz Q=1.4 (RBJ, fs=100Hz)
- * 合成响应: 10~11.4Hz 0.23→0, 15~16.7Hz 0.15→0, 2~3Hz 仍 0.99/0.97 (相位 -12°/-19°)。
- * 系数由 python 按 RBJ 公式算好写死, 改采样率或频点要重算。 */
-#define NOTCH1_B0   0.814563f
-#define NOTCH1_B1  -1.255264f
-#define NOTCH1_B2   0.814563f
-#define NOTCH1_A1  -1.255264f
-#define NOTCH1_A2   0.629127f
-
-#define NOTCH2_B0   0.768317f
-#define NOTCH2_B1  -0.823370f
-#define NOTCH2_B2   0.768317f
-#define NOTCH2_A1  -0.823370f
-#define NOTCH2_A2   0.536634f
-
-typedef struct {
-    float x1, x2, y1, y2;
-} notch_state_t;
-
-static notch_state_t s_notch1;
-static notch_state_t s_notch2;
-
-/**
- * @brief 单节二阶 IIR 陷波
- * @param s  滤波器状态
- * @param x  本周期输入
- * @param b0,b1,b2,a1,a2 归一化后的系数 (a0=1)
- * @return 滤波输出
- */
-static float balance_notch_run(notch_state_t *s, float x,
-                               float b0, float b1, float b2,
-                               float a1, float a2)
-{
-    float y = b0 * x + b1 * s->x1 + b2 * s->x2 - a1 * s->y1 - a2 * s->y2;
-    s->x2 = s->x1;
-    s->x1 = x;
-    s->y2 = s->y1;
-    s->y1 = y;
-    return y;
-}
-
-/**
- * @brief 陀螺陷波: 11Hz + 16Hz 两节级联, 只压结构模态频段
- * @param x 本周期角速度 (°/s)
- * @return 陷波后的角速度
- */
-static float balance_gyro_notch(float x)
-{
-    float y = balance_notch_run(&s_notch1, x,
-                                NOTCH1_B0, NOTCH1_B1, NOTCH1_B2,
-                                NOTCH1_A1, NOTCH1_A2);
-    return balance_notch_run(&s_notch2, y,
-                             NOTCH2_B0, NOTCH2_B1, NOTCH2_B2,
-                             NOTCH2_A1, NOTCH2_A2);
-}
-
-/** @brief 清空陷波器状态 (重新起立 / 摔倒后) */
-static void balance_gyro_notch_reset(void)
-{
-    s_notch1.x1 = s_notch1.x2 = s_notch1.y1 = s_notch1.y2 = 0.0f;
-    s_notch2.x1 = s_notch2.x2 = s_notch2.y1 = s_notch2.y2 = 0.0f;
-}
+/* ========== 陀螺滤波: 不再用陷波 ==========
+ * 曾经在陀螺后面串过二阶陷波 (15Hz 单节, 后来 11Hz+16Hz 级联) 去压结构共振,
+ * 实测下来这个办法是错的:
+ *   - 15Hz 单节陷波时, 站立自激在 10.5Hz (陷波下裙边, 相位 -46°)
+ *   - 改成 11+16Hz 级联后, 站立/蹲姿自激都掉到 7.6~8.2Hz (11Hz 陷波下裙边, -69°)
+ *   振荡频率跟着陷波裙边走, 说明它不是固定结构模态, 而是**陷波自身的相位滞后
+ *   在环路里造出来的不稳定**。加陷波 = 把不稳定点往下搬, 越加越糟。
+ * 结论: 陀螺只留一阶低通, 高频增益靠 lqr_kd 本身限制 (11/9 实测 kd=1.2 无陷波
+ * 时静置 pitch ±0.50°/gyro ±6.9, 是干净的)。 */
 
 /* 本周期算出的配平补偿量 (°), 供 UI / 网页观察 */
 static float s_trim_comp = 0.0f;
@@ -299,7 +242,6 @@ static void balance_reset_pid(void)
     speed_pid_reset();
     steer_pid_reset();
     lqr_pos_integral_reset();
-    balance_gyro_notch_reset();
     s_lpf_primed = false;
     /* 目标轮速也归零: 摔倒 / 停机时不能还挂着"往前走"的目标 */
     s_tgt_avg  = 0.0f;
@@ -322,19 +264,20 @@ static float balance_trim_compensation(float phi, float phi_home)
 
 /**
  * @brief 计算蹲姿增益倍率 (按当前腿角在站姿与蹲姿之间线性过渡)
- * @return 平衡内环增益倍率, 站姿 1.0, 蹲姿 BAL_GAIN_CROUCH_K
+ * @param crouch_k 蹲姿处的倍率 (站姿恒为 1.0)
+ * @return 该通道的增益倍率
  * @note  腿角取两路舵机的逻辑角 (镜像安装, 两路相同), 用 SERVO_1 即可
  */
-static float balance_posture_gain(void)
+static float balance_posture_gain(float crouch_k)
 {
     float ang = (float)servo_get_angle(SERVO_1);
 
     if (ang <= BAL_GAIN_STAND_ANGLE) return 1.0f;
-    if (ang >= BAL_GAIN_CROUCH_ANGLE) return BAL_GAIN_CROUCH_K;
+    if (ang >= BAL_GAIN_CROUCH_ANGLE) return crouch_k;
 
     float t = (ang - BAL_GAIN_STAND_ANGLE) /
               (BAL_GAIN_CROUCH_ANGLE - BAL_GAIN_STAND_ANGLE);
-    return 1.0f - t * (1.0f - BAL_GAIN_CROUCH_K);
+    return 1.0f - t * (1.0f - crouch_k);
 }
 
 /**
@@ -376,12 +319,12 @@ static void balance_read_sensors(void)
             if (!s_lpf_primed) {
                 s_gyro_lpf   = rate;
                 s_lpf_primed = true;
-                balance_gyro_notch_reset();
             } else {
                 s_gyro_lpf += a * (rate - s_gyro_lpf);
             }
-            /* 陷波掉 12~17Hz 的结构共振, 否则 D 项会把它激成等幅抖 */
-            s_data.gyro = balance_gyro_notch(s_gyro_lpf);
+            /* 不再串陷波: 陷波的相位滞后会在自己的裙边上造出新的自激,
+             * 详见文件顶部"陀螺滤波"的说明。高频增益由 lqr_kd 本身限制 */
+            s_data.gyro = s_gyro_lpf;
 
             /* 航向角速度: 车体绕竖直轴转动 = 绕 MPU 的 **Y 轴** (见 mpu9250.c
              * 的姿态积分: yaw 用 gyro.y, roll 用 gyro.z, pitch 用 gyro.x)。
@@ -799,10 +742,11 @@ static void balance_control_step(float dt)
     float yaw = steer_pid_update(dt, s_diff_fwd, yaw_tgt);
     s_data.yaw_out = yaw;
 
-    /* --- 内环: LQR 倾角/角速度反馈 → 电机输出 --- */
-    s_data.bal_out = lqr_balance_out(s_data.pitch - s_data.target_pitch, s_data.gyro);
-    /* 蹲姿增益缩放: 腿越短, 内环环路增益越大, 不缩放会在 11Hz 左右自激 */
-    s_data.bal_out *= balance_posture_gain();
+    /* --- 内环: LQR 倾角/角速度反馈 → 电机输出 ---
+     * 蹲姿按腿角分别缩放 P / D: P 决定顶不顶得动, D 决定抖不抖 */
+    s_data.bal_out = lqr_balance_out(s_data.pitch - s_data.target_pitch, s_data.gyro,
+                                     balance_posture_gain(BAL_GAIN_CROUCH_KP),
+                                     balance_posture_gain(BAL_GAIN_CROUCH_KD));
     /* 轮速阻尼: 刹车不走倾角, 直接反拉电机 (不随蹲姿缩放, 蹲姿也要刹得住) */
     s_data.bal_out += s_wheel_damp;
 

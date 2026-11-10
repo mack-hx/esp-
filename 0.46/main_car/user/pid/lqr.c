@@ -6,6 +6,7 @@
 
 #include "lqr.h"
 #include "pid.h"
+#include "param.h"
 #include <math.h>
 
 /* 当前位置/速度增益与回位减速度上限 (取正值), 默认等于 lqr.h 的 -LQR_KX / -LQR_KV / LQR_AMAX */
@@ -46,6 +47,13 @@ static float vel_gain(float v)
     return t * t * (3.0f - 2.0f * t);
 }
 
+float lqr_desired_speed(float err_cm)
+{
+    float e = pid_soft_deadband(err_cm, LQR_ERR_DEADBAND, LQR_ERR_SOFT_BAND);
+    float p = (s_kx > 1e-6f && s_kv > 1e-6f) ? s_kx / s_kv : 2.22f;
+    return desired_return_speed(e, p);
+}
+
 float lqr_pos_lean(float err_cm, float v_cmps)
 {
     v_cmps *= vel_gain(v_cmps);
@@ -70,12 +78,8 @@ void lqr_pos_integral_reset(void)
 float lqr_pos_integral(float dt, float err_cm, float v_cmps)
 {
     float ea = fabsf(err_cm);
-    /* 偏差与速度反向 = 正在远离锚点 (溜坡)。这种情况必须继续累积并保留积分,
-     * 否则"越溜越没倾角、越没倾角越溜"会形成正反馈。 */
-    const bool sliding_away = (err_cm * v_cmps) < 0.0f;
     int accumulate = ea > LQR_ERR_DEADBAND && ea < LQR_POS_I_BAND &&
-                     (fabsf(v_cmps) < LQR_POS_I_VEL || sliding_away) &&
-                     (s_pos_i * err_cm) >= 0.0f;
+                     fabsf(v_cmps) < LQR_POS_I_VEL && (s_pos_i * err_cm) >= 0.0f;
 
     if (accumulate) {
         s_pos_i += LQR_POS_KI * err_cm * dt;
@@ -87,7 +91,8 @@ float lqr_pos_integral(float dt, float err_cm, float v_cmps)
     return s_pos_i;
 }
 
-float lqr_balance_out(float pitch_err, float gyro)
+float lqr_balance_out(float pitch_err, float gyro, float kp_scale, float kd_scale)
 {
-    return LQR_KP * pitch_err + LQR_KD * gyro;
+    return kp_scale * LQR_KP * pitch_err +
+           kd_scale * param_get_float(PARAM_LQR_KD) * gyro;
 }

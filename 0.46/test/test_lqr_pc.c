@@ -25,6 +25,7 @@
 #include "lqr.h"
 #include "lqr.h"
 #include "pid.h"
+#include "param.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -41,6 +42,19 @@ static int g_fail = 0;
     } while (0)
 
 static bool near(float a, float b, float tol) { return fabsf(a - b) <= tol; }
+
+/* ========== param 桩 ==========
+ * lqr.c 的 D 项走参数表 (lqr_kd), 离线编译没有 NVS, 这里返回与 lqr.h 一致的默认值 */
+float param_get_float(param_id_t id)
+{
+    switch (id) {
+    case PARAM_LQR_KD:   return LQR_KD;
+    case PARAM_LQR_KX:   return -LQR_KX;
+    case PARAM_LQR_KV:   return -LQR_KV;
+    case PARAM_LQR_AMAX: return LQR_AMAX;
+    default:             return 0.0f;
+    }
+}
 
 /* ========== 辨识模型 ==========
  * 状态 x = [位置 cm, 速度 cm/s, 倾角 °, 角速度 °/s], 输入 u = 电机输出 (%):
@@ -96,7 +110,7 @@ static bool simulate(const model_t *m, float b_scale, int delay_ms, const float 
             if (closed) {
                 /* 锚点 = 0, 站立不走: 目标倾角 = -位置环等效倾角 (前倾为正的位置环, 倾角前倾为负) */
                 float lean = lqr_pos_lean(-(float)x[0] * POS_SCALE, (float)x[1] * POS_SCALE);
-                u_cmd = lqr_balance_out((float)x[2] + lean, (float)x[3]);
+                u_cmd = lqr_balance_out((float)x[2] + lean, (float)x[3], 1.0f, 1.0f);
                 if (u_cmd >  95.0f) u_cmd =  95.0f;
                 if (u_cmd < -95.0f) u_cmd = -95.0f;
             }
@@ -126,10 +140,10 @@ static bool simulate(const model_t *m, float b_scale, int delay_ms, const float 
 static void test_balance_out(void)
 {
     printf("\n=== 倾角项 + 角速度项 ===\n");
-    CHECK(near(lqr_balance_out(0.0f, 0.0f), 0.0f, 1e-6f), "误差和角速度都是 0 → 输出 0");
-    CHECK(near(lqr_balance_out(2.0f, 0.0f), LQR_KP * 2.0f, 1e-4f), "倾角误差 2° → KP*2");
-    CHECK(near(lqr_balance_out(0.0f, 50.0f), LQR_KD * 50.0f, 1e-4f), "角速度 50°/s → KD*50");
-    CHECK(near(lqr_balance_out(-1.5f, 20.0f), LQR_KP * -1.5f + LQR_KD * 20.0f, 1e-4f),
+    CHECK(near(lqr_balance_out(0.0f, 0.0f, 1.0f, 1.0f), 0.0f, 1e-6f), "误差和角速度都是 0 → 输出 0");
+    CHECK(near(lqr_balance_out(2.0f, 0.0f, 1.0f, 1.0f), LQR_KP * 2.0f, 1e-4f), "倾角误差 2° → KP*2");
+    CHECK(near(lqr_balance_out(0.0f, 50.0f, 1.0f, 1.0f), LQR_KD * 50.0f, 1e-4f), "角速度 50°/s → KD*50");
+    CHECK(near(lqr_balance_out(-1.5f, 20.0f, 1.0f, 1.0f), LQR_KP * -1.5f + LQR_KD * 20.0f, 1e-4f),
           "两项叠加");
     CHECK(LQR_KP > 0.0f && LQR_KD > 0.0f, "KP、KD 为正 (车往哪边倒轮子往哪边追)");
 }
