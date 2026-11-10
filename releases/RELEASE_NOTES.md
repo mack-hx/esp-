@@ -1,5 +1,29 @@
 # Release Notes
 
+## v0.46 (2026-11-10)
+
+**代码清理版 + 平衡环整定**
+
+- 俯仰角改二元解算 `atan2(ay, √(ax²+az²))`，斜前方倾斜时 roll 不再耦合进 pitch
+- `lqr_kd` 参数化（App 可调），`PARAM_DATA_VERSION` 39 → 46
+- **删掉陀螺陷波**：自激主频跟着陷波裙边走（15Hz 陷波 → 抖在 10.5Hz；11Hz 陷波 → 抖在 8Hz），
+  说明不是固定结构模态，而是陷波相位滞后在环路里造出的不稳定。陀螺只留一阶低通
+- `lqr_kd` 默认 1.5 → 0.9（PC 离线测试扫 ±30% 增益 / ±5ms 延迟取最优）
+- 蹲姿增益拆成 P / D 两路：P ×0.55（保刚度）、D ×0.50（防自激）
+- 位置环试过「直接输出电机分量」结构，刹车会把车刹翻，已整体回退串级结构
+- 修复蓝牙 `ble_gatts_start()` 漏调导致连不上；OneNET `param_get` 应答 topic 改 `invoke_reply`
+- 修复 PC 端 `test_lqr_pc.c` 缺 `param_get_float` 桩
+
+## v0.45 (2026-10-26)
+
+**功能完整版：WiFi + MQTT 运行时化**
+
+- 双车工程 `main_car/` + `sub_car/` + `app/`
+- WiFi Captive Portal 配网，AP/STA 双模式
+- OneNET MQTT 的 pid/dev/ak 存 NVS 运行时配置，两阶段配置流程
+- 蓝牙直控（`M:` / `STOP` / `STAND` / `SV:` 参数与配平表）
+- `test/` 下 6 个 PC 端离线单元测试
+
 ## v0.44 (2026-11-05)
 
 **坡道保持 + 横滚闭环 + 偏航阻尼 + 参数表瘦身**

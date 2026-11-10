@@ -12,9 +12,9 @@
 ## 当前状态
 
 - ✅ 代码已提交到本地 git 并推送到 GitHub
-- ✅ GitHub 上共 18 个 release（v0.1.0 ~ v1.5、v0.17、v0.2、v0.21、v0.22、v0.30、v0.40 ~ v0.43；v1.6 只有 tag 没有 release）
-- ✅ 本地只保留 `0.43/` 和 `0.44/` 两个版本目录
-- ✅ `releases/` 里只放最新两版的源码包（`esp_balance_rob_v0.43.zip`、`esp_balance_robot-0.40.tar.gz`）
+- ✅ GitHub 上共 20 个 release（v0.1.0 ~ v1.5、v0.17、v0.2、v0.21、v0.22、v0.30、v0.40 ~ v0.46；v1.6 只有 tag 没有 release）
+- ✅ 本地保留 `0.45/`、`0.46/`、`0.47/`（0.45 已发布，可删）
+- ✅ `releases/` 里新增 `esp_balance_robot-0.45.tar.gz`、`esp_balance_robot-0.46.tar.gz`
 
 ## 推送到 GitHub
 
@@ -75,6 +75,8 @@ gh release create v0.3 \
 
 | Tag | 说明 | 附件 |
 |-----|------|------|
+| v0.46 | 代码清理版 + 平衡环整定（去陀螺陷波、kd 0.9、蹲姿 P/D 分路） | esp_balance_robot-0.46.tar.gz |
+| v0.45 | 功能完整版（WiFi + MQTT 运行时化、双车工程） | esp_balance_robot-0.45.tar.gz |
 | v0.41 | 双车工程 (main_car/sub_car) + 蓝牙直控 + App 双车状态页 | esp_balance_robot-0.41.tar.gz |
 | v0.40 | LQR 位置保持 + 编码器修正 + 脱机 flash 记录 | esp_balance_robot-0.40.tar.gz |
 | v0.32 | 位置环默认打开 + bal_kd 0.4 生效 + trace 组件化 | esp_balance_robot-0.32.tar.gz |
