@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Grep|Glob|Bash|Agent|WebFetch|WebSearch|ToolSearch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_rob/.workbuddy-ai/hooks/context_budget.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Volumes/Moving/work/01_code/03_Personal/ESP32/esp_balance_rob/.workbuddy-ai/hooks/limit_verbose_output.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
